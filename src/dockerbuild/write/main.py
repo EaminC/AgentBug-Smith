@@ -75,6 +75,14 @@ def _normalize_to_env_dockerfile(repo_root: Path) -> None:
     legacy.unlink(missing_ok=True)
 
 
+def _preview(text: str, max_chars: int = 600) -> str:
+    """Truncate long prompt text for stderr preview (same idea as ``dockerinit``)."""
+    t = text.replace("\r\n", "\n")
+    if len(t) <= max_chars:
+        return t
+    return t[:max_chars] + f"\n... ({len(t)} chars total, truncated)"
+
+
 def _docker_env_quote(value: str) -> str:
     """Double-quote a value for use in a Dockerfile ``ENV`` line."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -375,18 +383,34 @@ def dockerwrite(
     prompt = build_dockerwrite_prompt(root, rroot, feedback=fb)
 
     if verbose:
-        print(paint("1;36", "\n========== dockerwrite (claude) =========="), file=sys.stderr)
+        print(paint("1;36", "\n========== LLM exchange =========="), file=sys.stderr)
+        log_line("[dockerwrite]", paint("90", "backend:"), paint("36", "Claude CLI (`claude -p`, single user prompt)"))
         log_line("[dockerwrite]", paint("90", "project root:"), paint("32", str(root)))
         log_line("[dockerwrite]", paint("90", "repo (cwd):"), paint("32", str(rroot)))
-        log_line("[dockerwrite]", paint("90", "prompt chars:"), paint("36", str(len(prompt))))
+        model_src = (
+            "explicit `model=` → `--model` (overrides CLI default / ANTHROPIC_MODEL)"
+            if model
+            else "omit `model=` → Claude default / `ANTHROPIC_MODEL` / settings"
+        )
         if model:
-            log_line("[dockerwrite]", paint("90", "model (--model):"), paint("36", model))
+            log_line("[dockerwrite]", paint("1;33", "[model]"), paint("32", model))
         else:
             log_line(
                 "[dockerwrite]",
-                paint("90", "model:"),
+                paint("1;33", "[model]"),
                 paint("90", "(default — set `model=` or ANTHROPIC_MODEL)"),
             )
+        print(f"{paint('90', '[model source]')} {model_src}", file=sys.stderr)
+        print(
+            f"{paint('35', '[system]')} (0 chars)\n"
+            f"{paint('90', '(none — `claude -p` does not send a separate system message; instructions are inside the prompt below)')}",
+            file=sys.stderr,
+        )
+        print(
+            f"{paint('35', '[user]')} ({len(prompt)} chars, includes templates + repo context)\n"
+            f"{_preview(prompt, 1200)}",
+            file=sys.stderr,
+        )
         log_line(
             "[dockerwrite]",
             paint("90", "claude flags:"),

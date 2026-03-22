@@ -87,6 +87,11 @@ def dockerbuild(
 
     if verbose:
         print(paint("1;36", "\n========== dockerbuild (`docker build`) =========="), file=sys.stderr)
+        log_line(
+            "[dockerbuild]",
+            paint("90", "note:"),
+            paint("90", "no LLM prompt here — this step only runs the Docker engine"),
+        )
         if project_root is not None:
             log_line(
                 "[dockerbuild]",
