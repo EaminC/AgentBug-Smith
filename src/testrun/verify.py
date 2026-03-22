@@ -123,6 +123,19 @@ def run_f2p_verify(
     rel = test_relpath or f"tests/agentsmith_fail2pass_{n or 'issue'}.py"
     rel = rel.strip().replace("\\", "/")
 
+    host_test = rroot / rel
+    if not host_test.is_file():
+        return (
+            "error",
+            "Test file is not present on the **host** checkout before `docker build`:\n"
+            f"  expected: {host_test}\n"
+            "Run `testgen` first so the file exists, and ensure nothing deletes it before verify.\n"
+            "If the file exists on the host but pytest fails **inside** the container with "
+            "`file or directory not found`, the image layout usually does not match: check "
+            "`WORKDIR` in the Dockerfile vs where sources are `COPY`d, and whether `.dockerignore` "
+            "excludes `tests/` or this file.",
+        )
+
     df = rroot / dockerfile
     wd = image_workdir if image_workdir is not None else _last_workdir_in_dockerfile(df)
     if run_argv is None:
