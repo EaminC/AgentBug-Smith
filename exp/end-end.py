@@ -10,6 +10,9 @@ After a successful image build, ``testgen`` writes a test file (see ``src/testge
 builds the image, runs the test, applies ``linked_prs[].patch``, rebuilds, runs the test again; outcome ``f2p`` means
 fail2pass. Unless the outcome is ``f2p``, the script **resets the repo to ``base_sha``** (if present), feeds the
 verify log back into ``testgen`` as ``feedback``, and repeats (same pattern as the dockerwrite/build loop).
+
+At script start/end, :class:`stats.StatsTool` records a UTC window and aggregates Forge token usage
+(see ``src/stats``, modeled on ``SWEGENT-BENCH/src/stats``).
 """
 import sys
 from pathlib import Path
@@ -22,12 +25,15 @@ from dockerbuild.init import dockerinit  # noqa: E402
 from dockerbuild.write import dockerwrite  # noqa: E402
 from repo import clone_issue_repo, load_issue_workspace, remove_issue_repo  # noqa: E402
 from repo.git_ops import ensure_repo_at_commit, read_linked_pr_base_sha, reset_repo_to_base  # noqa: E402
+from stats import StatsTool  # noqa: E402
 from testgen import testgen  # noqa: E402
 from testrun import run_f2p_verify  # noqa: E402
 
 _ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_441.json"
+_MODEL = "tensorblock/gpt-4.1-mini"
 
-if __name__ == "__main__":
+
+def _run() -> None:
     _ws = load_issue_workspace(_ISSUE_JSON)
     clone_issue_repo(_ws, verbose=True)
     _base = read_linked_pr_base_sha(_ISSUE_JSON)
@@ -39,7 +45,7 @@ if __name__ == "__main__":
     dockerinit(
         _ws.local_repo_path,
         _ws.dockerfile_out,
-        model="tensorblock/gpt-4.1-mini",
+        model=_MODEL,
         verbose=True,
     )
 
@@ -50,7 +56,7 @@ if __name__ == "__main__":
         dockerwrite(
             _ws.local_repo_path,
             verbose=True,
-            model="tensorblock/gpt-4.1-mini",
+            model=_MODEL,
             project_root=_AGENTSMITH_ROOT,
             feedback=_feedback,
         )
@@ -83,7 +89,7 @@ if __name__ == "__main__":
                 issue_json_path=_ISSUE_JSON,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
-                model="tensorblock/gpt-4.1-mini",
+                model=_MODEL,
                 feedback=_f2p_feedback,
             )
             print(_tg_report)
@@ -104,3 +110,12 @@ if __name__ == "__main__":
         print("Skipping testgen / testrun: docker build did not succeed.", file=sys.stderr)
 
     # remove_issue_repo(_ws, verbose=True)
+
+
+if __name__ == "__main__":
+    _usage_stats = StatsTool(model=_MODEL, verbose=True)
+    _usage_stats.start()
+    try:
+        _run()
+    finally:
+        _usage_stats.end()
