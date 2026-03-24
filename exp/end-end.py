@@ -45,8 +45,9 @@ from utils import (  # noqa: E402
     result_run_with_tee,
     write_summary_json,
 )
+from utils.cofix_agent import cofix_agent
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_441.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_121.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -169,6 +170,44 @@ def _run(run_dir: Path) -> None:
     _ctx = load_issue_testgen_context(_ISSUE_JSON)
     _n = _ctx.issue_number or 0
     _test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}.py"
+
+    # Apply cofix agent to generate final fixes for both Dockerfile and test file, if not already f2p
+    if not _f2p_succeeded:
+        print("\n[end-end] Epochs cannot solve the issue. Triggering cofix agent for final repair...")
+
+        # Pass the latest logs/context to cofix
+        _cofix_ok, _cofix_log = cofix_agent(
+            _ws.local_repo_path,
+            dockerfile="env.dockerfile",
+            test_relpath=_test_rel,
+            feedback=_stored_f2p, # Pass the last failure log
+            model=_MODEL,
+            project_root=_AGENTSMITH_ROOT,
+            verbose=True
+        )
+
+        if _cofix_ok:
+            print("[end-end] cofix applied repairs. Re-verifying F2P...")
+            _outcome, _f2p_report = run_f2p_verify(
+                _ws.local_repo_path,
+                issue_json_path=_ISSUE_JSON,
+                dockerfile="env.dockerfile",
+                verbose=True,
+                project_root=_AGENTSMITH_ROOT,
+            )
+            append_text(
+                _f2p_log,
+                f"stage=cofix_verify outcome={_outcome}",
+                _f2p_report,
+            )
+            if _outcome == "f2p":
+                _f2p_succeeded = True
+                print("[end-end] cofix successfully achieved F2P!")
+            else:
+                print("[end-end] cofix did not achieve F2P. Final state recorded in logs and summary.")
+        else:
+            print(f"[end-end] cofix agent failed with error: {_cofix_log}")
+
     write_summary_json(
         run_dir / "summary.json",
         issue_json_path=_ISSUE_JSON,

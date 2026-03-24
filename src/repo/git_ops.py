@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import stat
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -215,6 +216,11 @@ def clone_issue_repo(ws: IssueWorkspace, *, verbose: bool = False) -> Path:
     return dest
 
 
+def remove_readonly(func, path, excinfo):
+    """Clear the read-only bit and re-attempt the removal."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
 def remove_issue_repo(
     ws: IssueWorkspace,
     *,
@@ -247,7 +253,7 @@ def remove_issue_repo(
         print(paint("1;36", "\n========== remove repo =========="), file=sys.stderr)
         log_line("[repo]", paint("31", "removing"), paint("32", str(path)))
         print(paint("34", "---------- shutil.rmtree ----------"), file=sys.stderr)
-    shutil.rmtree(path)
+    shutil.rmtree(path, onerror=remove_readonly)
     if verbose:
         print(paint("32", "[repo] removed"), file=sys.stderr)
         print(paint("1;36", "==================================\n"), file=sys.stderr)
