@@ -67,6 +67,7 @@ def dockerbuild(
     verbose: bool = False,
     platform: str = "linux/amd64",
     build_timeout: int = 600,
+    nocache: bool = False,
     max_network_retries: int = 3,
 ) -> Tuple[bool, str]:
     """
@@ -141,8 +142,12 @@ def dockerbuild(
         str(dockerfile_path),
         "-t",
         image_name,
-        str(rroot),
     ]
+
+    if nocache:
+        cmd.append("--no-cache")  # Force Docker to ignore cached layers
+
+    cmd.append(str(rroot))
 
     if verbose:
         log_line("[dockerbuild]", paint("90", "image tag (-t):"), paint("36", image_name))

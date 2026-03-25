@@ -25,6 +25,7 @@ generated test file when present.
 """
 import sys
 from pathlib import Path
+import subprocess
 
 _AGENTSMITH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENTSMITH_ROOT / "src"))
@@ -47,7 +48,7 @@ from utils import (  # noqa: E402
 )
 from utils.cofix_agent import cofix_agent
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_121.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_4229.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -83,6 +84,7 @@ def _run(run_dir: Path) -> None:
     for _epoch in range(1, _cfg.max_outer_epochs + 1):
         if _epoch > 1 and _base:
             _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
+            subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
             if not _rs_ok:
                 print(_rs_err, file=sys.stderr)
                 break
@@ -110,6 +112,7 @@ def _run(run_dir: Path) -> None:
                 dockerfile="env.dockerfile",
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
+                nocache=True
             )
             append_text(
                 _docker_log,
@@ -130,6 +133,7 @@ def _run(run_dir: Path) -> None:
         for _f2p_round in range(1, _cfg.max_f2p_rounds + 1):
             if _f2p_round > 1 and _base:
                 _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
+                subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
                 if not _rs_ok:
                     print(_rs_err, file=sys.stderr)
                     break
@@ -150,6 +154,7 @@ def _run(run_dir: Path) -> None:
                 dockerfile="env.dockerfile",
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
+                nocache=True
             )
             append_text(
                 _f2p_log,

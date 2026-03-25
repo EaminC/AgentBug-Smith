@@ -102,6 +102,7 @@ def run_f2p_verify(
     image_workdir: Optional[str] = None,
     platform: str = "linux/amd64",
     verbose: bool = False,
+    nocache: bool = False,
 ) -> Tuple[str, str]:
     """
     1. ``docker build`` (buggy tree + generated test).
@@ -161,6 +162,7 @@ def run_f2p_verify(
         project_root=root,
         verbose=verbose,
         platform=platform,
+        nocache=nocache,
     )
     if not ok_b:
         return "error", "Docker build (before patch) failed:\n" + log_b[-12_000:]
@@ -181,6 +183,7 @@ def run_f2p_verify(
         project_root=root,
         verbose=verbose,
         platform=platform,
+        nocache=nocache,
     )
     if not ok_a:
         return "error", "Docker build (after patch) failed:\n" + log_a[-12_000:]
