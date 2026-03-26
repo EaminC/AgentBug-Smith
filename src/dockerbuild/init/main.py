@@ -190,6 +190,26 @@ def ask_ai(
     return result
 
 
+def find_project_root(repo_root: Path) -> str:
+    """
+    Recursively finds the directory containing Python metadata (pyproject.toml, etc.).
+    Returns the relative path string (e.g., 'src/agentscope' or '.').
+    """
+    markers = ["pyproject.toml", "setup.py", "requirements.txt"]
+    for marker in markers:
+        # rglob handles the recursive search across all subdirectories
+        found = list(repo_root.rglob(marker))
+        if found:
+            # Get the parent directory of the first marker found
+            target_dir = found[0].parent
+            try:
+                # Return the path relative to the repository root
+                return str(target_dir.relative_to(repo_root)).replace("\\", "/")
+            except ValueError:
+                return "."
+    return "."
+
+
 def generate_dockerfile_from_repo(
     repo_root: Path | str,
     dockerfile_out: Path | str,
@@ -214,6 +234,10 @@ def generate_dockerfile_from_repo(
     out = Path(dockerfile_out).resolve()
     paths = init_paths or default_dockerbuild_init_paths()
 
+    rel_project_root = find_project_root(repo)
+    if verbose:
+        _log_verbose("[dockerinit]", f"detected metadata root: {_paint('36', rel_project_root)}", color="1;33")
+        
     if verbose:
         _log_verbose("[dockerinit]", f"repo: {_paint('32', str(repo))}", color="1;33")
         _log_verbose("[dockerinit]", f"output: {_paint('32', str(out))}", color="1;33")
@@ -225,6 +249,9 @@ def generate_dockerfile_from_repo(
     if verbose:
         _log_verbose("[dockerinit]", f"context files: {_paint('36', str(len(files)))}", color="1;33")
     file_entries = read_files(repo, files)
+    
+    root_context = f"\nCRITICAL: The Python project metadata was found in: ./{rel_project_root}\n"
+    prompts["user_prefix"] = root_context + prompts["user_prefix"]
 
     resolved_test_paths: List[str] = list(test_paths) if test_paths else []
     if not resolved_test_paths:

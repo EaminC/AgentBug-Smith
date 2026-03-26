@@ -125,7 +125,14 @@ def git_apply_patch(repo_root: Path | str, patch_text: str) -> Tuple[bool, str]:
         tmp_path = tmp.name
     try:
         r = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", tmp_path],
+            [
+                "git", "apply", 
+                "--whitespace=nowarn", 
+                "--3way", 
+                "--ignore-space-change", 
+                "--ignore-whitespace", 
+                tmp_path
+            ],
             cwd=str(rr),
             capture_output=True,
             text=True,
@@ -210,6 +217,10 @@ def clone_issue_repo(ws: IssueWorkspace, *, verbose: bool = False) -> Path:
         cwd=str(ws.project_root),
         env=env,
     )
+    # Force LF line endings and disable autocrlf to prevent patch failures
+    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=str(dest), check=True)
+    subprocess.run(["git", "rm", "--cached", "-r", "."], cwd=str(dest), check=True)
+    subprocess.run(["git", "reset", "--hard"], cwd=str(dest), check=True)
     if verbose:
         print(paint("32", "[repo] clone finished"), file=sys.stderr)
         print(paint("1;36", "================================\n"), file=sys.stderr)

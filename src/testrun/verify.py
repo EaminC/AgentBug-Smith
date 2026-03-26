@@ -12,6 +12,7 @@ Outcome codes (aligned with ``f2p.py`` semantics, shortened for callers):
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,9 +24,10 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from dockerbuild.build import dockerbuild  # noqa: E402
-from repo.git_ops import git_apply_patch  # noqa: E402
+from repo.git_ops import git_apply_patch, read_linked_pr_base_sha  # noqa: E402
 from repo.term import log_line, paint  # noqa: E402
 from testgen import load_issue_testgen_context  # noqa: E402
+from dockerbuild.init.main import find_project_root
 
 
 def _docker_image_tag(repo_root: Path) -> str:
@@ -138,9 +140,12 @@ def run_f2p_verify(
         )
 
     df = rroot / dockerfile
-    wd = image_workdir if image_workdir is not None else _last_workdir_in_dockerfile(df)
+    rel_project_root = find_project_root(rroot)
+    # wd = image_workdir if image_workdir is not None else _last_workdir_in_dockerfile(df)
+    wd = image_workdir if image_workdir is not None else f"/app/{rel_project_root}".replace("//", "/")
     if run_argv is None:
-        run_argv = ["python", "-m", "pytest", "-q", rel]
+        test_path_from_wd = os.path.relpath(rroot / rel, rroot / rel_project_root)
+        run_argv = ["python", "-m", "pytest", "-q", test_path_from_wd]
 
     image_tag = _docker_image_tag(rroot)
     lines: List[str] = []
@@ -155,6 +160,17 @@ def run_f2p_verify(
         log_line("[testrun]", paint("90", "repo:"), paint("32", str(rroot)))
         log_line("[testrun]", paint("90", "test file:"), paint("36", rel))
 
+    _v("--- Ensuring pristine buggy state ---")
+    from repo.git_ops import reset_repo_to_base
+    
+    base_sha = read_linked_pr_base_sha(issue_json_path)
+    if base_sha:
+        ok, err = reset_repo_to_base(rroot, base_sha)
+        if not ok:
+            return "error", f"Failed to reset to buggy base: {err}"
+        # Critical: Clean untracked files that git reset ignores
+        subprocess.run(["git", "clean", "-fd", "-e", dockerfile, "-e", rel], cwd=str(rroot))
+        
     _v("--- Phase A: docker build (before patch) ---")
     ok_b, log_b = dockerbuild(
         rroot,

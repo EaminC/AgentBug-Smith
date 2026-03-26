@@ -350,7 +350,7 @@ class GitHubIssueCrawler:
     
     def _load_agent_criteria(self) -> str:
         """Load agent issue criteria"""
-        criteria_path = os.path.join(os.path.dirname(__file__), "..\\..\\prompt\\issue\\agent_issue.md")
+        criteria_path = Path(__file__).parent.parent.parent / "prompt" / "issue" / "agent_issue.md"
         try:
             with open(criteria_path, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -371,7 +371,7 @@ class GitHubIssueCrawler:
         # Delete if already exists
         if self.local_repo_path.exists():
             print(f"Removing existing cached repository: {self.local_repo_path}")
-            shutil.rmtree(self.local_repo_path, onexc=_remove_readonly)
+            shutil.rmtree(self.local_repo_path)
         
         # Clone repository
         clone_url = f"https://github.com/{self.repo}.git"
@@ -402,7 +402,7 @@ class GitHubIssueCrawler:
             print(f"\nCleaning up cached repository: {self.local_repo_path}")
             print("(Results in data/hooked_issue/ are preserved)")
             try:
-                shutil.rmtree(self.local_repo_path, onexc=_remove_readonly)
+                shutil.rmtree(self.local_repo_path)
                 print("✓ Cleanup complete")
             except Exception as e:
                 print(f"✗ Cleanup failed: {e}")

@@ -1,13 +1,12 @@
 ### Context
-You are an expert debugging assistant. Your goal is to fix a failing Fail-to-Pass (F2P) test setup for an LLM-agent issue reproduction.
+You are an expert debugging assistant for an automated software engineering pipeline. Your goal is to repair a failing Fail-to-Pass (F2P) setup where an AI agent's bug reproduction has failed due to environment or test-scripting errors.
 
 We have:
-1. A Dockerfile (`env.dockerfile`) that sets up the environment.
-2. A Python test file that is supposed to fail on the base code and pass after a PR patch is applied.
-3. Feedback from the last execution attempt, showing why it failed.
+1. A Dockerfile (`env.dockerfile`) that sets up the execution environment.
+2. A Python test file intended to trigger a bug in the buggy code and pass after a patch.
+3. Feedback from the last execution showing why the setup failed (e.g., ModuleNotFoundError, Syntax/Type Errors, or Logic Mismatches).
 
 ### Current Dockerfile Content:
-```dockerfile
 {dockerfile_content}
 
 ### Current Test File Content:
@@ -17,17 +16,28 @@ We have:
 {feedback}
 
 ### Task
-Analyze the failure feedback. Common issues include:
-- Missing system dependencies or Python packages in the Dockerfile.
-- Incorrect environment variables or paths in the Dockerfile.
-- Logic errors in the test file (e.g., the test doesn't actually trigger the bug).
-- The test environment in Docker doesn't match the assumptions of the test script.
+Analyze the feedback and apply precise fixes to the Dockerfile or Test File to achieve a valid F2P result.
 
-### Constraints
-- Keep changes minimal; only fix what is necessary to achieve F2P.
-- Ensure the test is robust and handles the specific issue described in the feedback.
-- Do not include any explanations outside of the code blocks unless necessary for clarity.
-- DO NOT use Poetry unless a poetry.lock file is present; use standard pip.
-- You MUST explicitly run 'pip install pytest' in the Dockerfile.
-- Ensure the Dockerfile copies the 'tests/' directory into the container.
-- If building the package fails, use 'pip install .' instead of editable installs.
+### CRITICAL: Async & Execution Handling
+Many agent frameworks utilize asynchronous coroutines for model interaction and tool execution. 
+- **Coroutine Validation:** If the framework returns a coroutine (async function call), ensure it is explicitly awaited before attempting to iterate over it or check its attributes.
+- **Async Iteration:** For streaming outputs, always use the pattern: `gen = await agent_call()` followed by `async for item in gen:`.
+
+### CRITICAL: Environment Robustness (Self-Healing)
+The Dockerfile must be resilient to different repository structures and dependency managers:
+1. **Metadata Detection:** Use shell logic (`if [ -f file ]; then ...`) to check for `pyproject.toml`, `setup.py`, or `requirements.txt` before executing install commands.
+2. **Editable Installation:** Use `pip install -e .` whenever possible. This ensures that git patches applied to the source code during Phase C are immediately recognized by the Python interpreter without a rebuild.
+3. **Core Test Utilities:** Explicitly install `pytest`, `pytest-asyncio`, and `pytest-mock`. These are often required for agent tests but missing from base images.
+4. **Compilation Tools:** If the feedback indicates failed C-extensions or library builds, ensure `gcc`, `python3-dev`, and relevant headers are installed via `apt-get`.
+
+### CRITICAL: API & Authentication Handling
+Failures often occur because the test script uses placeholder API keys or hardcoded strings that mismatch the Docker environment.
+1. **Dynamic Key Retrieval:** Model initializations in the test script MUST use environment variables (e.g., `os.getenv('OPENAI_API_KEY')`) rather than hardcoded strings like "key" or placeholder hashes.
+2. **Graceful Error Handling:** If a model call fails with an Authentication Error (401), the test should provide a clear error message. However, for F2P to work, the environment MUST be configured with the keys provided in the Dockerfile's ENV instructions.
+3. **Variable Alignment:** Ensure the key names used in the Python script (e.g., `api_key=os.environ["FORGE_API_KEY"]`) match the names injected in the `env.dockerfile` (e.g., `ENV FORGE_API_KEY="..."`).
+
+### Constraints (Refined)
+- **Minimalism:** Only fix the specific error identified in the feedback (e.g., if it's a 401 error, fix the key retrieval logic).
+- **Environment Parity:** Verify that any ENV variable defined in the Dockerfile is actually accessible to the Python test process.
+- **Standalone Tests:** Ensure the test script is standalone and utilizes standard assertions for process exit codes.
+- **Output:** Provide the full, updated `env.dockerfile` and the full, updated Python test file.
