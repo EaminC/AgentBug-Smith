@@ -47,8 +47,10 @@ from utils import (  # noqa: E402
     write_summary_json,
 )
 from utils.cofix_agent import cofix_agent
+import time
+from datetime import timedelta
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_4229.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_411.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -165,6 +167,9 @@ def _run(run_dir: Path) -> None:
             if _outcome == "f2p":
                 _f2p_succeeded = True
                 break
+            elif _outcome == "error":
+                print("Error detected. Re-initializing Dockerfile...")
+                dockerinit(_ws.local_repo_path, _ws.dockerfile_out, model=_MODEL, verbose=True)
             _f2p_feedback = f"Round {_f2p_round} verify outcome: {_outcome}\n\n{_f2p_report}"
 
         _stored_f2p = _f2p_feedback
@@ -185,7 +190,7 @@ def _run(run_dir: Path) -> None:
             _ws.local_repo_path,
             dockerfile="env.dockerfile",
             test_relpath=_test_rel,
-            feedback=_stored_f2p, # Pass the last failure log
+            feedback=_stored_f2p,
             model=_MODEL,
             project_root=_AGENTSMITH_ROOT,
             verbose=True
@@ -199,17 +204,21 @@ def _run(run_dir: Path) -> None:
                 dockerfile="env.dockerfile",
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
+                nocache=True
             )
             append_text(
                 _f2p_log,
                 f"stage=cofix_verify outcome={_outcome}",
                 _f2p_report,
             )
+            print(_f2p_report)
             if _outcome == "f2p":
                 _f2p_succeeded = True
                 print("[end-end] cofix successfully achieved F2P!")
+                print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
             else:
                 print("[end-end] cofix did not achieve F2P. Final state recorded in logs and summary.")
+                print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
         else:
             print(f"[end-end] cofix agent failed with error: {_cofix_log}")
 
@@ -232,6 +241,7 @@ def _run(run_dir: Path) -> None:
 
 
 if __name__ == "__main__":
+    start_time = time.time()
     with result_run_with_tee(_AGENTSMITH_ROOT, _ISSUE_JSON, banner="[end-end] result dir:") as _run_dir:
         _usage_stats = StatsTool(
             model=_MODEL,
@@ -243,3 +253,10 @@ if __name__ == "__main__":
             _run(_run_dir)
         finally:
             _usage_stats.end()
+            end_time = time.time()
+            duration = end_time - start_time
+            formatted_duration = str(timedelta(seconds=int(duration)))
+            print("-" * 30)
+            print(f"Pipeline Execution Complete.")
+            print(f"Total Duration: {formatted_duration} ({duration:.2f} seconds)")
+            print("-" * 30)
