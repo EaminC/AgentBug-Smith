@@ -104,8 +104,12 @@ def ensure_repo_at_commit(
 
 
 def normalize_patch_text(patch_text: str) -> str:
-    """CRLF → LF; ensure trailing newline (truncated JSON patches often break ``git apply``)."""
-    t = patch_text.replace("\r\n", "\n")
+    """
+    Cleans patches by removing non-breaking spaces, normalizing line endings, 
+    and ensuring the diff format is standard.
+    """
+    t = patch_text.replace('\u00a0', ' ') # Standardize spaces
+    t = t.replace("\r\n", "\n")           # Standardize newlines
     if not t.endswith("\n"):
         t += "\n"
     return t
@@ -115,6 +119,7 @@ def git_apply_patch(repo_root: Path | str, patch_text: str) -> Tuple[bool, str]:
     """Apply a unified diff with ``git apply --whitespace=nowarn``."""
     normalized = normalize_patch_text(patch_text)
     rr = Path(repo_root).resolve()
+
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".patch",
@@ -123,14 +128,16 @@ def git_apply_patch(repo_root: Path | str, patch_text: str) -> Tuple[bool, str]:
     ) as tmp:
         tmp.write(normalized)
         tmp_path = tmp.name
+
     try:
         r = subprocess.run(
             [
                 "git", "apply", 
                 "--whitespace=nowarn", 
-                "--3way", 
-                "--ignore-space-change", 
-                "--ignore-whitespace", 
+                "--recount",
+                "--ignore-space-change",
+                "--ignore-whitespace",
+                "--3way",
                 tmp_path
             ],
             cwd=str(rr),
@@ -274,3 +281,40 @@ def default_issue_json(project_root: Optional[Path] = None) -> Path:
     """Example path (may not exist): ``<root>/data/issue_13.json``."""
     root = (project_root or PROJECT_ROOT).resolve()
     return root / "data" / "issue_13.json"
+
+# def verify_base_and_patch(repo_root: Path | str, base_sha: str, patch_text: str) -> Tuple[bool, str]:
+#     """
+#     Checks if the base_sha exists and if the patch can apply to it.
+#     Returns (True, "") if valid, or (False, error_msg).
+#     """
+#     rr = Path(repo_root).resolve()
+
+#     subprocess.run(
+#         ["git", "checkout", "--quiet", base_sha],
+#         cwd=str(rr),
+#         check=True
+#     )
+    
+#     # 1. Does the commit exist locally?
+#     check_sha = subprocess.run(["git", "cat-file", "-t", base_sha], cwd=str(rr), capture_output=True)
+#     if check_sha.returncode != 0:
+#         return False, f"base_sha {base_sha[:8]} not found in git history."
+
+#     # 2. Does the patch actually fit this tree? (--check doesn't modify files)
+#     with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as tmp:
+#         normalized_patch = patch_text.replace("\r\n", "\n").rstrip() + "\n"
+#         tmp.write(normalized_patch)
+#         tmp.flush()
+#         tmp_path = tmp.name
+        
+#     try:
+#         r = subprocess.run(
+#             ["git", "apply", "--check", "--recount",
+#             "--ignore-space-change", "--ignore-whitespace", tmp_path],
+#             cwd=str(rr), capture_output=True, text=True
+#         )
+#         if r.returncode != 0:
+#             return False, f"Patch integrity check failed: {r.stderr or r.stdout}"
+#         return True, ""
+#     finally:
+#         os.unlink(tmp_path)

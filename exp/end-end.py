@@ -35,6 +35,7 @@ from dockerbuild.init import dockerinit  # noqa: E402
 from dockerbuild.write import dockerwrite  # noqa: E402
 from repo import clone_issue_repo, load_issue_workspace, remove_issue_repo  # noqa: E402
 from repo.git_ops import ensure_repo_at_commit, read_linked_pr_base_sha, reset_repo_to_base  # noqa: E402
+from repo.inspect import get_file_tree  # noqa: E402
 from stats import StatsTool  # noqa: E402
 from testgen import load_issue_testgen_context, testgen  # noqa: E402
 from testrun import run_f2p_verify  # noqa: E402
@@ -50,7 +51,7 @@ from utils.cofix_agent import cofix_agent
 import time
 from datetime import timedelta
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_411.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_6302.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -102,12 +103,15 @@ def _run(run_dir: Path) -> None:
         _feedback = _fb_outer_docker
         _build_ok = False
         for _round in range(1, _cfg.max_docker_rounds + 1):
+            repo_structure = get_file_tree(_ws.local_repo_path, n=3)
+            context_structure = f"\n### Current Repository Structure (Depth=3):\n{repo_structure}\n"
+            current_feedback = context_structure + (_feedback or "")
             dockerwrite(
                 _ws.local_repo_path,
                 verbose=True,
                 model=_MODEL,
                 project_root=_AGENTSMITH_ROOT,
-                feedback=_feedback,
+                feedback=current_feedback,
             )
             _build_ok, _log = dockerbuild(
                 _ws.local_repo_path,
@@ -139,13 +143,17 @@ def _run(run_dir: Path) -> None:
                 if not _rs_ok:
                     print(_rs_err, file=sys.stderr)
                     break
+
+            repo_structure = get_file_tree(_ws.local_repo_path, n=3)
+            context_structure = f"\n### Current Repository Structure (Depth=3):\n{repo_structure}\n"
+            current_f2p_feedback = context_structure + (_f2p_feedback or "")
             _tg_ok, _tg_report = testgen(
                 _ws.local_repo_path,
                 issue_json_path=_ISSUE_JSON,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
                 model=_MODEL,
-                feedback=_f2p_feedback,
+                feedback=current_f2p_feedback,
             )
             print(_tg_report)
             if not _tg_ok:

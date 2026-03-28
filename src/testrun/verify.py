@@ -24,7 +24,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from dockerbuild.build import dockerbuild  # noqa: E402
-from repo.git_ops import git_apply_patch, read_linked_pr_base_sha  # noqa: E402
+from repo.git_ops import git_apply_patch, read_linked_pr_base_sha, verify_base_and_patch  # noqa: E402
 from repo.term import log_line, paint  # noqa: E402
 from testgen import load_issue_testgen_context  # noqa: E402
 from dockerbuild.init.main import find_project_root
@@ -169,7 +169,17 @@ def run_f2p_verify(
         if not ok:
             return "error", f"Failed to reset to buggy base: {err}"
         # Critical: Clean untracked files that git reset ignores
-        subprocess.run(["git", "clean", "-fd", "-e", dockerfile, "-e", rel], cwd=str(rroot))
+        # subprocess.run(["git", "reset", "--hard", base_sha], cwd=str(rroot), check=True)
+        # subprocess.run(["git", "clean", "-fdx"], cwd=str(rroot), check=True)
+
+    # _v("--- base_sha and patch integrity check ---")
+    # if base_sha:
+    #     valid, error_msg = verify_base_and_patch(rroot, base_sha, ctx.patch)
+    #     if not valid:
+    #         return "error", f"base_sha and patch Integrity Failed: {error_msg}"
+    # else:
+    #     # Check whether the patch applies cleanly to the current HEAD even though no base_sha exist
+    #     pass
         
     _v("--- Phase A: docker build (before patch) ---")
     ok_b, log_b = dockerbuild(
