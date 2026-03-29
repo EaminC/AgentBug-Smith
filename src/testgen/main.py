@@ -268,6 +268,7 @@ def testgen(
     verbose: bool = False,
     out_test_relpath: Optional[str] = None,
     feedback: Optional[str] = None,
+    language: str = "Python",
 ) -> Tuple[bool, str]:
     """
     Call the LLM with issue context (body, ``existing_test_paths``, in-patch file contents, patch)
@@ -280,15 +281,25 @@ def testgen(
     rroot = Path(repo_root).resolve()
     ctx = load_issue_testgen_context(issue_json_path)
 
+    ext_map = {
+        "TypeScript": ".ts", 
+        "JavaScript": ".js", 
+        "Java": ".java", 
+        "Rust": ".rs", 
+        "Go": ".go", 
+        "Python": ".py"
+    }
+    ext = ext_map.get(language, ".py")
+
     n = ctx.issue_number or 0
-    rel = out_test_relpath or f"tests/agentsmith_fail2pass_{n or 'issue'}.py"
+    rel = out_test_relpath or f"tests/agentsmith_fail2pass_{n or 'issue'}{ext}"
     rel = rel.strip().replace("\\", "/")
 
     system_path = _default_prompt_paths(root) / "system.txt"
     system = (
-        system_path.read_text(encoding="utf-8")
+        system_path.read_text(encoding="utf-8").format(language=language)
         if system_path.is_file()
-        else "You output only a valid Python test file, no markdown."
+        else f"You output only a valid {language} test file, no markdown."
     )
     user = build_testgen_user_prompt(ctx, rroot, rel, feedback=feedback)
 
@@ -296,6 +307,7 @@ def testgen(
         log_line("[testgen]", paint("90", "repo:"), paint("32", str(rroot)))
         log_line("[testgen]", paint("90", "issue json:"), paint("32", str(ctx.issue_json_path)))
         log_line("[testgen]", paint("90", "out test file:"), paint("36", rel))
+        log_line("[testgen]", paint("90", "language:"), paint("35", language))
 
     raw = ask_testgen_llm(system, user, model=model, verbose=verbose)
     code_body = _strip_code_fence(raw)

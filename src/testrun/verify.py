@@ -24,10 +24,11 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from dockerbuild.build import dockerbuild  # noqa: E402
-from repo.git_ops import git_apply_patch, read_linked_pr_base_sha, verify_base_and_patch  # noqa: E402
+from repo.git_ops import git_apply_patch, read_linked_pr_base_sha  # noqa: E402
 from repo.term import log_line, paint  # noqa: E402
 from testgen import load_issue_testgen_context  # noqa: E402
 from dockerbuild.init.main import find_project_root
+from utils.lang_detect import detect_project_language
 
 
 def _docker_image_tag(repo_root: Path) -> str:
@@ -122,8 +123,10 @@ def run_f2p_verify(
     if not ctx.patch.strip():
         return "error", "No `linked_prs[].patch` in issue JSON; cannot verify fail2pass."
 
+    lang_info = detect_project_language(rroot)
+
     n = ctx.issue_number or 0
-    rel = test_relpath or f"tests/agentsmith_fail2pass_{n or 'issue'}.py"
+    rel = test_relpath or f"tests/agentsmith_fail2pass_{n or 'issue'}{lang_info['ext']}"
     rel = rel.strip().replace("\\", "/")
 
     host_test = rroot / rel
@@ -133,10 +136,10 @@ def run_f2p_verify(
             "Test file is not present on the **host** checkout before `docker build`:\n"
             f"  expected: {host_test}\n"
             "Run `testgen` first so the file exists, and ensure nothing deletes it before verify.\n"
-            "If the file exists on the host but pytest fails **inside** the container with "
-            "`file or directory not found`, the image layout usually does not match: check "
-            "`WORKDIR` in the Dockerfile vs where sources are `COPY`d, and whether `.dockerignore` "
-            "excludes `tests/` or this file.",
+            f"If the file exists on the host but the test runner fails **inside** the container with "
+            f"`file or directory not found`, the image layout usually does not match: check "
+            f"`WORKDIR` in the Dockerfile vs where sources are `COPY`d, and whether `.dockerignore` "
+            f"excludes `tests/` or this file.",
         )
 
     df = rroot / dockerfile
@@ -145,7 +148,7 @@ def run_f2p_verify(
     wd = image_workdir if image_workdir is not None else f"/app/{rel_project_root}".replace("//", "/")
     if run_argv is None:
         test_path_from_wd = os.path.relpath(rroot / rel, rroot / rel_project_root)
-        run_argv = ["python", "-m", "pytest", "-q", test_path_from_wd]
+        run_argv = lang_info['runner'].split() + [test_path_from_wd]
 
     image_tag = _docker_image_tag(rroot)
     lines: List[str] = []

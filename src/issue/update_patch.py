@@ -7,7 +7,7 @@ import glob
 from pathlib import Path
 
 # Use the absolute path to your data folder for consistency
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "issue"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 def sanitize_patch(raw_patch: str) -> str:
@@ -53,26 +53,40 @@ def parse_test_paths(patch_text):
 
 def get_pr_metadata(pr_url):
     """
-    Fetches the PR metadata and sanitizes the diff to prevent corruption.
+    Fetches the PR metadata and full diff securely via the GitHub API.
     """
+    # Convert Web URL to API URL
     api_url = pr_url.replace("github.com", "api.github.com/repos").replace("/pull/", "/pulls/")
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    
+    # 1. Headers for getting the JSON metadata (for base_sha)
+    headers_meta = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"token {GITHUB_TOKEN}" if GITHUB_TOKEN else ""
+    }
+    
+    # 2. CRITICAL FIX: Headers for getting the raw DIFF reliably via the API
+    headers_diff = {
+        "Accept": "application/vnd.github.v3.diff",
+        "Authorization": f"token {GITHUB_TOKEN}" if GITHUB_TOKEN else ""
+    }
 
     try:
-        # Get correct base_sha from API
-        meta_resp = requests.get(api_url, headers=headers, timeout=30)
-        pr_data = meta_resp.json()
-        correct_base_sha = pr_data.get('base', {}).get('sha')
+        # Fetch correct base_sha from API
+        meta_resp = requests.get(api_url, headers=headers_meta, timeout=30)
+        correct_base_sha = None
+        if meta_resp.status_code == 200:
+            pr_data = meta_resp.json()
+            correct_base_sha = pr_data.get('base', {}).get('sha')
 
-        # Get raw diff from .diff endpoint
-        diff_url = pr_url.rstrip('/') + ".diff"
-        diff_resp = requests.get(diff_url, timeout=30)
+        # Fetch Full Patch via API (Bypasses web scraping rate limits)
+        diff_resp = requests.get(api_url, headers=headers_diff, timeout=30)
         
         if diff_resp.status_code == 200:
             return sanitize_patch(diff_resp.text), correct_base_sha
-        return None, correct_base_sha
+        else:
+            print(f"   [Error] API Diff returned {diff_resp.status_code}")
+            return None, correct_base_sha
+            
     except Exception as e:
         print(f"   [Error] API call failed: {e}")
         return None, None

@@ -192,10 +192,17 @@ def ask_ai(
 
 def find_project_root(repo_root: Path) -> str:
     """
-    Recursively finds the directory containing Python metadata (pyproject.toml, etc.).
+    Recursively finds the directory containing project metadata.
     Returns the relative path string (e.g., 'src/agentscope' or '.').
     """
-    markers = ["pyproject.toml", "setup.py", "requirements.txt"]
+    # Added markers for JS/TS, Java, Rust, and Go
+    markers = [
+        "pyproject.toml", "setup.py", "requirements.txt", # Python
+        "package.json",                                   # JS/TS
+        "pom.xml", "build.gradle",                        # Java
+        "Cargo.toml",                                     # Rust
+        "go.mod"                                          # Go
+    ]
     for marker in markers:
         # rglob handles the recursive search across all subdirectories
         found = list(repo_root.rglob(marker))
@@ -218,6 +225,7 @@ def generate_dockerfile_from_repo(
     model: Optional[str] = None,
     init_paths: Optional[DockerbuildInitPaths] = None,
     verbose: bool = False,
+    language: str = "Python",
 ) -> Path:
     """
     Scan a local repo, call the LLM, and write the Dockerfile to ``dockerfile_out``.
@@ -237,20 +245,23 @@ def generate_dockerfile_from_repo(
     rel_project_root = find_project_root(repo)
     if verbose:
         _log_verbose("[dockerinit]", f"detected metadata root: {_paint('36', rel_project_root)}", color="1;33")
-        
+        _log_verbose("[dockerinit]", f"language: {_paint('35', language)}", color="1;33")
     if verbose:
         _log_verbose("[dockerinit]", f"repo: {_paint('32', str(repo))}", color="1;33")
         _log_verbose("[dockerinit]", f"output: {_paint('32', str(out))}", color="1;33")
 
     scan = load_scan_config(paths)
     prompts = load_prompt_bundle(paths)
+    prompts["system"] = prompts["system"].replace("{language}", language)
+    prompts["user_prefix"] = prompts["user_prefix"].replace("{language}", language)
+    prompts["user_suffix"] = prompts["user_suffix"].replace("{language}", language)
 
     files = find_target_files(repo, scan)
     if verbose:
         _log_verbose("[dockerinit]", f"context files: {_paint('36', str(len(files)))}", color="1;33")
     file_entries = read_files(repo, files)
     
-    root_context = f"\nCRITICAL: The Python project metadata was found in: ./{rel_project_root}\n"
+    root_context = f"\nCRITICAL: The {language} project metadata was found in: ./{rel_project_root}\n"
     prompts["user_prefix"] = root_context + prompts["user_prefix"]
 
     resolved_test_paths: List[str] = list(test_paths) if test_paths else []
@@ -298,10 +309,11 @@ def run_docker_build_flow(
     repo_root: Path,
     test_paths: Optional[List[str]] = None,
     dockerfile_out: Optional[Path] = None,
+    language: str = "Python",
 ) -> Path:
     """Backward-compatible wrapper: writes to ``dockerfile_out`` or ``repo_root/env.dockerfile``."""
     out = dockerfile_out or (repo_root / "env.dockerfile")
-    return generate_dockerfile_from_repo(repo_root, out, test_paths=test_paths)
+    return generate_dockerfile_from_repo(repo_root, out, test_paths=test_paths, language=language)
 
 
 def main() -> None:

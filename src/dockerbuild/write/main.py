@@ -185,6 +185,7 @@ def build_dockerwrite_prompt(
     project_root: Path,
     repo_root: Path,
     feedback: Optional[str] = None,
+    language: str = "Python",
 ) -> str:
     """
     Assemble the full prompt for ``claude`` (mock / API example sections omitted).
@@ -205,13 +206,20 @@ def build_dockerwrite_prompt(
         except json.JSONDecodeError:
             pass
 
-    instructions = _load_text(pdir / "instructions.txt").strip()
-    task = _load_text(pdir / "task.txt").strip()
+    instructions = _load_text(pdir / "instructions.txt").strip().replace("{language}", language)
+    task = _load_text(pdir / "task.txt").strip().replace("{language}", language)
     model_list = _load_text(cdir / "model-list.json")
     env_pool_raw = _load_text(cdir / "env_pool.json")
     env_pool = _env_pool_merged_with_root_dotenv(root, env_pool_raw)
 
     parts: List[str] = []
+    parts.append("=" * 80)
+    parts.append(f"CRITICAL LANGUAGE INSTRUCTION: {language.upper()}")
+    parts.append("=" * 80)
+    parts.append(f"The target repository primarily uses {language}. You MUST configure the Dockerfile for {language}.")
+    parts.append(f"Use the native package manager for {language} to install dependencies and execute tests.")
+    parts.append("")
+
     parts.append("=" * 80)
     parts.append("IMPORTANT INSTRUCTIONS")
     parts.append("=" * 80)
@@ -350,6 +358,7 @@ def dockerwrite(
     model: Optional[str] = None,
     verbose: bool = False,
     claude_args: Optional[List[str]] = None,
+    language: str = "Python",
 ) -> int:
     """
     Load ``conf/dockerbuild/write`` and ``prompt/dockerbuild/write``, merge ``.env`` into
@@ -380,7 +389,7 @@ def dockerwrite(
 
     fb = feedback if feedback is not None else os.getenv("DOCKERFILE_FEEDBACK")
 
-    prompt = build_dockerwrite_prompt(root, rroot, feedback=fb)
+    prompt = build_dockerwrite_prompt(root, rroot, feedback=fb, language=language)
 
     if verbose:
         print(paint("1;36", "\n========== LLM exchange =========="), file=sys.stderr)

@@ -10,7 +10,13 @@ CRITICAL CONSTRAINTS:
 - ONLY configure environment variables in the Dockerfile
 - DO NOT change any Python/JavaScript/other source files
 
+CRITICAL COPY INSTRUCTION:
+- You MUST copy the entire repository into the container using `COPY . .` (or equivalent). 
+- Do NOT selectively copy directories (e.g., do NOT use `COPY src ./src`). 
+- Automated test scripts are injected externally before the build; if you do not copy the whole directory structure, the tests will be excluded and the pipeline will fail.
+
 BASE IMAGE SELECTION (VERY IMPORTANT):
+- You MUST use an official, lightweight base image appropriate for {language}
 - For Python projects: Use 'python:3.12-slim' or 'python:3.11-slim' (STRONGLY RECOMMENDED)
 - For Node.js projects: Use 'node:20-slim' or 'node:18-slim'
 - For Python+Node.js: Start from 'python:3.12-slim' and install Node.js on top
@@ -18,16 +24,16 @@ BASE IMAGE SELECTION (VERY IMPORTANT):
 - AVOID debian:bullseye-slim or ubuntu (causes dependency issues like gnupg problems)
 - Official language images are pre-configured and more reliable
 
-SMART INSTALLATION LOGIC (For Python project only):
-You must implement a self-healing installation process using shell-level conditional logic. Do not use a simple pip install. Instead, follow this pattern:
-- RUN if [ -f "pyproject.toml" ]; then \
-        pip install -e .[dev] --break-system-packages; \
-    elif [ -f "setup.py" ]; then \
-        pip install -e . --break-system-packages; \
-    elif [ -f "requirements.txt" ]; then \
-        pip install -r requirements.txt --break-system-packages; \
-    fi && \
-    pip install pytest pytest-asyncio pytest-mock dotenv zod requests --break-system-packages
+SMART INSTALLATION LOGIC:
+You must implement a robust installation process using shell-level conditional logic suited for {language}. Do not blindly guess the build tool.
+- Check for the existence of configuration files (e.g., package.json, Cargo.toml, pom.xml, pyproject.toml) before running package manager install commands.
+- Example: `RUN if [ -f "package.json" ]; then npm install; fi`
+- You MUST ensure the standard testing framework for {language} is installed and available in the environment.
+- You MUST install the repository itself into the environment so test scripts can import its modules. You must use the appropriate local installation command for {language}. 
+  * If Python: Execute `RUN pip install -e .` unconditionally. Do NOT wrap it inside an `if [ -f "setup.py" ]` block, because `pip` natively handles modern `pyproject.toml` files as well.
+  * If Node.js/TypeScript: Execute `RUN npm install`, `yarn install`, or `pnpm install` based on the repository's lockfile.
+  * If Rust: Execute `RUN cargo build`.
+  Do NOT skip this step and do NOT suppress errors with `|| true`.
 
 PROJECT TYPE DETECTION:
 - Check for Cargo.toml: This is a Rust project, use cargo build, NOT pip install
@@ -37,15 +43,13 @@ PROJECT TYPE DETECTION:
 
 YOUR TASK:
 When creating/configuring the Dockerfile, you need to:
-1. Choose the appropriate base image (see BASE IMAGE SELECTION above)
+1. Choose the appropriate base image for {language}.
 2. Set the appropriate environment variables to make the repository use Forge API instead of OpenAI API
-3. Install any dependencies required for the standalone reproduction script (standard pip requirements)
-4. Ensure the system can run the standalone Python script directly (e.g., via 'python test_script.py')
-5. Install pytest, pytest-asyncio, aiohttp, pydantic, and pytest-mock if it is python project
+3. Install any dependencies required for the standalone reproduction script using the native {language} package manager.
+4. Ensure the system can run the standalone {language} script directly.
 
 ENVIRONMENT VARIABLES TO SET IN DOCKERFILE:
-The Forge API is OpenAI-compatible, so the application can work with it by setting these
-environment variables in the Dockerfile:
+The Forge API is OpenAI-compatible, so the application can work with it by setting these environment variables in the Dockerfile:
 
 For OpenAI SDK compatibility:
 - OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
@@ -58,11 +62,11 @@ For Anthropic SDK compatibility:
 Additional configuration variables are available in the "ENVIRONMENT VARIABLES REFERENCE" section.
 
 STANDALONE SCRIPT ENVIRONMENT CONFIGURATION:
-The Dockerfile MUST configure the environment to run standalone Python scripts:
-- Ensure Python 3 is installed and available as `python` or `python3`
-- Install standard system dependencies needed for Python execution
-- If the repository has requirements (requirements.txt, etc.), install them so the script can import project modules
-- The script will be run directly (e.g., `python test128.py`), NOT via a test runner (pytest/unittest)
+The Dockerfile MUST configure the environment to run standalone {language} scripts:
+- Ensure the runtime/compiler for {language} is installed and available in the PATH.
+- Install standard system dependencies needed for {language} execution.
+- If the repository has requirements files, install them so the script can import project modules.
+- The script will be run directly via the command line, ensure the container's WORKDIR is correct.
 - Ensure the environment allows standard import of 'sys', 'os', 'json', and 'requests' (if needed)
 
 CRITICAL DOCKERFILE BEST PRACTICES:
@@ -70,7 +74,7 @@ CRITICAL DOCKERFILE BEST PRACTICES:
 1. FILE EXISTENCE CHECKS:
     - ALWAYS check if files exist before COPY: `RUN if [ -f "file.txt" ]; then cp file.txt /app/; fi`
     - ALWAYS check if directories exist before COPY: `RUN if [ -d "tests" ]; then cp -r tests/ /app/tests/; fi`
-    - NEVER assume files exist - use conditional commands
+    - NEVER assume files exist - use conditional commands.
 
 2. PNPM GLOBAL CONFIGURATION:
     - If using `pnpm link --global`, set: `ENV PNPM_HOME=/root/.local/share/pnpm`
@@ -98,19 +102,20 @@ CRITICAL DOCKERFILE BEST PRACTICES:
     - Install Rust toolchain if needed: `RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
 
 7. PATH HANDLING:
-    - Always use forward slashes in paths: `/workspace/tests/test.py`
-    - Never use Windows-style backslashes: `\\workspace\\tests\\test.py`
-    - Normalize paths in RUN commands
+    - Always use forward slashes in paths: `/workspace/tests/test.ext`
+    - Normalize paths in RUN commands.
 
 8. NETWORK ERRORS:
-    - Add retry logic for network operations
-    - Use mirrors for package managers if needed
-    - Consider using --network=host for Docker builds if network issues persist
+    - Add retry logic for network operations if previous feedback indicates timeout failures.
+
+9. MISSING RUNTIME DEPENDENCIES (CRITICAL):
+    - If the "PREVIOUS FAIL2PASS VERIFY" feedback shows a `ModuleNotFoundError`, `ImportError`, or any missing package error during test execution, YOU MUST explicitly install that missing package in the Dockerfile using the native package manager.
+    - Do not assume the repository's setup files will install it.
 
 APPROACH:
 1. Set environment variables in the Dockerfile using ENV directives
-2. Install Python and any project dependencies required by the reproduction script using RUN commands
+2. Install {language} runtimes and project dependencies required by the reproduction script using RUN commands
 3. Install any system packages needed by the repository
 4. These environment variables will override the default API endpoints
 5. The existing code will automatically use Forge API through these environment variables
-6. No code changes needed - only Dockerfile configuration
+6. No code changes needed - only Dockerfile configuration.

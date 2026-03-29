@@ -10,7 +10,8 @@ def cofix_agent(
     feedback: str = "",
     model: str = "gpt-4.1-mini",
     project_root: Path = None,
-    verbose: bool = False
+    verbose: bool = False,
+    language: str = "Python"
 ) -> tuple[bool, str]:
     """
     Refines Dockerfile and Test file using a specialized cofix prompt.
@@ -23,26 +24,25 @@ def cofix_agent(
     if not prompt_path.exists():
         return False, f"Cofix prompt missing at {prompt_path}"
     
-    template = prompt_path.read_text()
+    template = prompt_path.read_text(encoding='utf-8')
 
     # 2. Gather current file contents for context
     df_path = repo_path / dockerfile
     tf_path = repo_path / test_relpath if test_relpath else None
     
-    current_docker = df_path.read_text() if df_path.exists() else "# Not found"
-    current_test = tf_path.read_text() if (tf_path and tf_path.exists()) else "# Not found"
+    current_docker = df_path.read_text(encoding='utf-8') if df_path.exists() else "# Not found"
+    current_test = tf_path.read_text(encoding='utf-8') if (tf_path and tf_path.exists()) else "# Not found"
 
-    # 3. Format prompt and call LLM
-    prompt = template.format(
-        dockerfile_content=current_docker,
-        test_file_content=current_test,
-        feedback=feedback
-    )
+    # 3. Format prompt safely (DO NOT USE .format() because code contains {})
+    prompt = template.replace("{language}", language)
+    prompt = prompt.replace("{dockerfile_content}", current_docker)
+    prompt = prompt.replace("{test_file_content}", current_test)
+    prompt = prompt.replace("{feedback}", feedback)
 
     client = LLMClient()
     system_msg = (
-        "You are a senior DevOps and QA engineer. Analyze the provided feedback "
-        "and return corrected versions of the Dockerfile and Python test file."
+        f"You are a senior {language} DevOps and QA engineer. Analyze the provided feedback "
+        "and return corrected versions of the Dockerfile and test file."
     )
 
     if verbose:
@@ -62,24 +62,44 @@ def cofix_agent(
     except Exception as e:
         return False, f"LLM Error: {str(e)}"
 
-def _apply_repairs(repo_path: Path, docker_rel: str, test_rel: str, response: str, verbose: bool) -> bool:
+def _apply_repairs(
+    repo_path: Path,
+    docker_rel: str,
+    test_rel: str,
+    response: str,
+    verbose: bool
+) -> bool:
     """
     Extracts code blocks from the LLM response and saves them to the repo.
+
+    Features:
+    - Case-insensitive detection of Dockerfile blocks
+    - Supports multiple languages for test files
+    - Handles multiple code blocks (uses the last occurrence)
+    - Writes files using UTF-8 encoding
     """
     applied = False
-    
-    # Extract Dockerfile (looks for ```dockerfile ... ```)
-    docker_match = re.search(r"```dockerfile\n(.*?)\n```", response, re.DOTALL)
-    if docker_match:
-        (repo_path / docker_rel).write_text(docker_match.group(1).strip())
-        applied = True
-        if verbose: print(f"[cofix] Overwrote {docker_rel}")
 
-    # Extract Python Test (looks for ```python ... ```)
-    test_match = re.search(r"```python\n(.*?)\n```", response, re.DOTALL)
-    if test_match and test_rel:
-        (repo_path / test_rel).write_text(test_match.group(1).strip())
+    # Extract Dockerfile blocks
+    docker_pattern = r"```(?:dockerfile)\n(.*?)\n```" 
+    docker_matches = re.findall(docker_pattern, response, re.DOTALL | re.IGNORECASE)
+
+    if docker_matches:
+        docker_content = docker_matches[-1].strip()
+        (repo_path / docker_rel).write_text(docker_content, encoding="utf-8")
         applied = True
-        if verbose: print(f"[cofix] Overwrote {test_rel}")
+        if verbose:
+            print(f"[cofix] Overwrote {docker_rel}")
+
+    # Extract Test file blocks (multiple languages)
+    test_pattern = r"```(?:python|py|javascript|js|typescript|ts|rust|rs)\n(.*?)\n```" 
+    test_matches = re.findall(test_pattern, response, re.DOTALL | re.IGNORECASE)
+
+    if test_matches and test_rel:
+        test_content = test_matches[-1].strip()
+        (repo_path / test_rel).write_text(test_content, encoding="utf-8")
+        applied = True
+        if verbose:
+            print(f"[cofix] Overwrote {test_rel}")
 
     return applied
