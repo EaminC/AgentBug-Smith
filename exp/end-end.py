@@ -48,10 +48,12 @@ from utils import (  # noqa: E402
     write_summary_json,
 )
 from utils.cofix_agent import cofix_agent
+from utils.lang_detect import detect_project_language
 import time
 from datetime import timedelta
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_6302.json"
+
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue" / "issue_56.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -61,6 +63,14 @@ def _run(run_dir: Path) -> None:
     _f2p_log = run_dir / "f2p.txt"
     _ws = load_issue_workspace(_ISSUE_JSON)
     clone_issue_repo(_ws, verbose=True)
+    lang_info = detect_project_language(_ws.local_repo_path)
+    print(f"Detected Language: {lang_info['name']}")
+
+    _ctx = load_issue_testgen_context(_ISSUE_JSON)
+    _n = _ctx.issue_number or 0
+    #_test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}.py"
+    _test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}{lang_info['ext']}"
+
     _base = read_linked_pr_base_sha(_ISSUE_JSON)
     if _base:
         _co_ok, _co_err = ensure_repo_at_commit(_ws.local_repo_path, _base, verbose=True)
@@ -72,6 +82,7 @@ def _run(run_dir: Path) -> None:
         _ws.dockerfile_out,
         model=_MODEL,
         verbose=True,
+        language=lang_info["name"]
     )
 
     if (_cfg.max_f2p_rounds > 1 or _cfg.max_outer_epochs > 1) and not _base:
@@ -112,6 +123,7 @@ def _run(run_dir: Path) -> None:
                 model=_MODEL,
                 project_root=_AGENTSMITH_ROOT,
                 feedback=current_feedback,
+                language=lang_info["name"],
             )
             _build_ok, _log = dockerbuild(
                 _ws.local_repo_path,
@@ -154,17 +166,24 @@ def _run(run_dir: Path) -> None:
                 project_root=_AGENTSMITH_ROOT,
                 model=_MODEL,
                 feedback=current_f2p_feedback,
+                language=lang_info["name"]
             )
             print(_tg_report)
             if not _tg_ok:
                 break
+
+            base_cmd = lang_info['runner'].split()
+            test_cmd = base_cmd + [_test_rel]
             _outcome, _f2p_report = run_f2p_verify(
                 _ws.local_repo_path,
                 issue_json_path=_ISSUE_JSON,
                 dockerfile="env.dockerfile",
+                run_argv=test_cmd,
+                test_relpath=_test_rel,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
-                nocache=True
+                nocache=True,
+                language=lang_info["name"]
             )
             append_text(
                 _f2p_log,
@@ -177,17 +196,13 @@ def _run(run_dir: Path) -> None:
                 break
             elif _outcome == "error":
                 print("Error detected. Re-initializing Dockerfile...")
-                dockerinit(_ws.local_repo_path, _ws.dockerfile_out, model=_MODEL, verbose=True)
+                dockerinit(_ws.local_repo_path, _ws.dockerfile_out, model=_MODEL, verbose=True, language=lang_info["name"])
             _f2p_feedback = f"Round {_f2p_round} verify outcome: {_outcome}\n\n{_f2p_report}"
 
         _stored_f2p = _f2p_feedback
 
         if _f2p_succeeded:
             break
-
-    _ctx = load_issue_testgen_context(_ISSUE_JSON)
-    _n = _ctx.issue_number or 0
-    _test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}.py"
 
     # Apply cofix agent to generate final fixes for both Dockerfile and test file, if not already f2p
     if not _f2p_succeeded:
@@ -201,18 +216,24 @@ def _run(run_dir: Path) -> None:
             feedback=_stored_f2p,
             model=_MODEL,
             project_root=_AGENTSMITH_ROOT,
-            verbose=True
+            verbose=True,
+            language=lang_info["name"]
         )
 
         if _cofix_ok:
             print("[end-end] cofix applied repairs. Re-verifying F2P...")
+            base_cmd = lang_info['runner'].split()
+            test_cmd = base_cmd + [_test_rel]
             _outcome, _f2p_report = run_f2p_verify(
                 _ws.local_repo_path,
                 issue_json_path=_ISSUE_JSON,
                 dockerfile="env.dockerfile",
+                run_argv=test_cmd,
+                test_relpath=_test_rel,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
-                nocache=True
+                nocache=True,
+                language=lang_info["name"]
             )
             append_text(
                 _f2p_log,
