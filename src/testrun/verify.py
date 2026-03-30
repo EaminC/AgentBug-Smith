@@ -105,7 +105,7 @@ def run_f2p_verify(
     image_workdir: Optional[str] = None,
     platform: str = "linux/amd64",
     verbose: bool = False,
-    nocache: bool = False,
+    nocache: bool = False
 ) -> Tuple[str, str]:
     """
     1. ``docker build`` (buggy tree + generated test).

@@ -53,7 +53,7 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue" / "issue_56.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue" / "issue_71.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
 
@@ -182,8 +182,7 @@ def _run(run_dir: Path) -> None:
                 test_relpath=_test_rel,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
-                nocache=True,
-                language=lang_info["name"]
+                nocache=True
             )
             append_text(
                 _f2p_log,
@@ -232,8 +231,7 @@ def _run(run_dir: Path) -> None:
                 test_relpath=_test_rel,
                 verbose=True,
                 project_root=_AGENTSMITH_ROOT,
-                nocache=True,
-                language=lang_info["name"]
+                nocache=True
             )
             append_text(
                 _f2p_log,

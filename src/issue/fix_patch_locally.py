@@ -80,4 +80,35 @@ def fix_issue(issue_file_name: str, repo_url: str, pr_number: int):
     print("Done.")
 
 if __name__ == "__main__":
-    fix_issue("issue_1277.json", "https://github.com/agentscope-ai/agentscope", 1290)
+    if not DATA_DIR.exists():
+        print(f"Error: Directory not found at {DATA_DIR}")
+    else:
+        for issue_file in DATA_DIR.glob("issue_*.json"):
+            try:
+                with open(issue_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception as e:
+                print(f"Skipping {issue_file.name}: Could not read JSON ({e})")
+                continue
+
+            # Dynamically infer the repo URL from the issue URL
+            issue_url = data.get("url", "")
+            if "/issues/" not in issue_url:
+                print(f"Skipping {issue_file.name}: Cannot infer repo URL from '{issue_url}'")
+                continue
+            repo_url = issue_url.split("/issues/")[0]
+
+            # Extract the PR number from the first linked PR
+            linked_prs = data.get("linked_prs", [])
+            if not linked_prs:
+                print(f"Skipping {issue_file.name}: No linked PRs found.")
+                continue
+            
+            pr_number = linked_prs[0].get("number")
+            if not pr_number:
+                print(f"Skipping {issue_file.name}: PR number is missing.")
+                continue
+
+            # Run the fix
+            print("-" * 40)
+            fix_issue(issue_file.name, repo_url, pr_number)
