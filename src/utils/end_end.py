@@ -15,6 +15,7 @@ class EndEndConfig:
     max_outer_epochs: int
     max_docker_rounds: int
     max_f2p_rounds: int
+    max_cofix_rounds: int
 
 
 def load_end_end_config(
@@ -32,6 +33,7 @@ def load_end_end_config(
         max_outer_epochs=int(raw["max_outer_epochs"]),
         max_docker_rounds=int(raw["max_docker_rounds"]),
         max_f2p_rounds=int(raw["max_f2p_rounds"]),
+        max_cofix_rounds=int(raw["max_cofix_rounds"]),
     )
 
 
