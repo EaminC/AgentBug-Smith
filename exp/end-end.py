@@ -207,47 +207,66 @@ def _run(run_dir: Path) -> None:
     if not _f2p_succeeded:
         print("\n[end-end] Epochs cannot solve the issue. Triggering cofix agent for final repair...")
 
-        # Pass the latest logs/context to cofix
-        _cofix_ok, _cofix_log = cofix_agent(
-            _ws.local_repo_path,
-            dockerfile="env.dockerfile",
-            test_relpath=_test_rel,
-            feedback=_stored_f2p,
-            model=_MODEL,
-            project_root=_AGENTSMITH_ROOT,
-            verbose=True,
-            language=lang_info["name"]
-        )
+        for _cofix_round in range(1, _cfg.max_cofix_rounds + 1):
+            print(f"\n--- Cofix Round {_cofix_round} ---")
 
-        if _cofix_ok:
-            print("[end-end] cofix applied repairs. Re-verifying F2P...")
-            base_cmd = lang_info['runner'].split()
-            test_cmd = base_cmd + [_test_rel]
-            _outcome, _f2p_report = run_f2p_verify(
+            # Reset the repo state before generating new files or applying patches
+            if _cofix_round > 1 and _base:
+                _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
+                subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
+                if not _rs_ok:
+                    print(_rs_err, file=sys.stderr)
+                    break
+
+            # Pass the latest logs/context to cofix
+            _cofix_ok, _cofix_log = cofix_agent(
                 _ws.local_repo_path,
-                issue_json_path=_ISSUE_JSON,
                 dockerfile="env.dockerfile",
-                run_argv=test_cmd,
                 test_relpath=_test_rel,
-                verbose=True,
+                feedback=_stored_f2p,
+                model=_MODEL,
                 project_root=_AGENTSMITH_ROOT,
-                nocache=True
+                verbose=True,
+                language=lang_info["name"]
             )
-            append_text(
-                _f2p_log,
-                f"stage=cofix_verify outcome={_outcome}",
-                _f2p_report,
-            )
-            print(_f2p_report)
-            if _outcome == "f2p":
-                _f2p_succeeded = True
-                print("[end-end] cofix successfully achieved F2P!")
-                print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
+
+            if _cofix_ok:
+                print(f"[end-end] cofix applied repairs (Round {_cofix_round}). Re-verifying F2P...")
+                base_cmd = lang_info['runner'].split()
+                test_cmd = base_cmd + [_test_rel]
+                _outcome, _f2p_report = run_f2p_verify(
+                    _ws.local_repo_path,
+                    issue_json_path=_ISSUE_JSON,
+                    dockerfile="env.dockerfile",
+                    run_argv=test_cmd,
+                    test_relpath=_test_rel,
+                    verbose=True,
+                    project_root=_AGENTSMITH_ROOT,
+                    nocache=True
+                )
+                append_text(
+                    _f2p_log,
+                    f"stage=cofix_verify outcome={_outcome}",
+                    _f2p_report,
+                )
+                print(_f2p_report)
+
+                if _outcome == "f2p":
+                    _f2p_succeeded = True
+                    print(f"[end-end] cofix successfully achieved F2P on round {_cofix_round}!")
+                    print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
+                    break
+                else:
+                    print(f"[end-end] cofix did not achieve F2P on round {_cofix_round}.")
+                    # Update feedback so the next cofix round learns from this failure
+                    _stored_f2p = f"Cofix Round {_cofix_round} verify outcome: {_outcome}\n\n{_f2p_report}"
             else:
-                print("[end-end] cofix did not achieve F2P. Final state recorded in logs and summary.")
-                print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
-        else:
-            print(f"[end-end] cofix agent failed with error: {_cofix_log}")
+                print(f"[end-end] cofix agent failed with error: {_cofix_log}")
+                # Feed the agent error back so it can fix its own formatting/syntax mistake
+                _stored_f2p = f"Cofix Round {_cofix_round} agent error: {_cofix_log}"
+        
+        if not _f2p_succeeded:
+            print("[end-end] Cofix rounds exhausted. Final state recorded in logs and summary.")
 
     write_summary_json(
         run_dir / "summary.json",

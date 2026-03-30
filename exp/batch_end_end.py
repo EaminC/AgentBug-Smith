@@ -23,7 +23,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-
+import subprocess
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -132,6 +132,13 @@ def main() -> None:
                 print(f"[batch] error: {e}", file=sys.stderr)
                 continue
             raise
+        finally:
+            # Clean up dangling Docker images/containers to prevent disk exhaustion
+            print("[batch] Running 'docker system prune -f' to clean up artifacts...")
+            try:
+                subprocess.run(["docker", "system", "prune", "-f"], check=False)
+            except Exception as cleanup_err:
+                print(f"[batch] Warning: Docker cleanup failed: {cleanup_err}", file=sys.stderr)
 
     if failed:
         print(f"\n[batch] completed with {len(failed)} failure(s):", file=sys.stderr)
