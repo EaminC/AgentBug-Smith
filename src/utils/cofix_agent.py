@@ -33,11 +33,13 @@ def cofix_agent(
     current_docker = df_path.read_text(encoding='utf-8') if df_path.exists() else "# Not found"
     current_test = tf_path.read_text(encoding='utf-8') if (tf_path and tf_path.exists()) else "# Not found"
 
+    safe_feedback = feedback if feedback is not None else "No feedback provided from the previous run."
+
     # 3. Format prompt safely (DO NOT USE .format() because code contains {})
     prompt = template.replace("{language}", language)
     prompt = prompt.replace("{dockerfile_content}", current_docker)
     prompt = prompt.replace("{test_file_content}", current_test)
-    prompt = prompt.replace("{feedback}", feedback)
+    prompt = prompt.replace("{feedback}", safe_feedback)
 
     client = LLMClient()
     system_msg = (
