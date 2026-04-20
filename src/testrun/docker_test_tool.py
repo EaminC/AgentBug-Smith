@@ -23,7 +23,39 @@ from utils.lang_detect import detect_project_language  # noqa: E402
 
 _PROMPT_DIR = PROJECT_ROOT / "prompt" / "testrun"
 _GET_TEST_PATH_USER_PROMPT = _PROMPT_DIR / "get_test_file_path_user.txt"
+_FILTER_TESTS_FOR_ENV_PROMPT = _PROMPT_DIR / "filter_tests_for_env_user.txt"
 _LANGCHAIN_TEST_DOCKERFILE_TEMPLATE = _PROMPT_DIR / "langchain_test_runner.Dockerfile"
+
+# Substrings: keep lines that indicate docker/build/import/dependency/collection issues (not assertion/runtime test logic).
+_STATIC_LINE_SUBSTRINGS = (
+    "docker build",
+    "Dockerfile",
+    "Docker is not accessible",
+    "ERROR:",
+    "error: failed",
+    "failed to solve",
+    "Cannot connect",
+    "ModuleNotFoundError",
+    "ImportError",
+    "No module named",
+    "SyntaxError",
+    "ERROR collecting",
+    "ImportError while importing",
+    "Could not find",
+    "externally-managed-environment",
+    "PEP 668",
+    "command not found",
+    "not found in",
+    "pytest:",
+    "_______ ERROR",
+    "!!!!!!!!!!!!!!!!!!!",
+    "unrecognized arguments",
+    "exit_code=",
+    "docker run",
+    "dockerfile=",
+    "test=",
+    "cmd=",
+)
 
 
 def _strip_code_fence(text: str) -> str:
@@ -176,6 +208,169 @@ def get_test_file_path(
     return fallback
 
 
+def _build_filter_tests_for_env_prompt(
+    candidates: List[str],
+    max_items: int,
+    dockerfile_hint: str,
+) -> str:
+    cand_text = "\n".join(candidates)
+    if _FILTER_TESTS_FOR_ENV_PROMPT.is_file():
+        template = _FILTER_TESTS_FOR_ENV_PROMPT.read_text(encoding="utf-8")
+        return template.format(
+            max_items=max_items,
+            dockerfile_hint=dockerfile_hint or "(not provided)",
+            candidates=cand_text,
+        )
+    return (
+        "Filter and sort test paths by relevance to Docker/environment validation only.\n"
+        'Return JSON: {"test_paths": ["..."]}\n'
+        f"Max {max_items} items. Candidates:\n" + cand_text
+    )
+
+
+def _merge_to_min_keep(selected: List[str], pool: List[str], min_keep: int) -> List[str]:
+    """Preserve order of ``selected``, then append from ``pool`` until ``min_keep`` unique paths."""
+    if min_keep <= 0:
+        return list(selected)
+    merged: List[str] = []
+    seen: set[str] = set()
+    for rel in selected:
+        if rel in seen:
+            continue
+        merged.append(rel)
+        seen.add(rel)
+    if len(merged) >= min_keep:
+        return merged
+    for rel in pool:
+        if len(merged) >= min_keep:
+            break
+        if rel not in seen:
+            merged.append(rel)
+            seen.add(rel)
+    return merged
+
+
+def filter_tests_for_docker_env(
+    repo_path: Path | str,
+    path_list: List[str],
+    *,
+    dockerfile_path: Optional[Path | str] = None,
+    model: Optional[str] = None,
+    max_items: int = 30,
+    min_keep: int = 5,
+    verbose: bool = False,
+) -> List[str]:
+    """
+    Second-pass LLM: from an existing list of test paths, keep only those most relevant to
+    validating install/deps/container setup, ordered most-relevant first.
+
+    After the LLM (or fallback), paths are padded from the original candidate order until
+    at least ``min_keep`` entries when the candidate list is long enough (default 5).
+    """
+    if not path_list:
+        return []
+
+    repo_root = Path(repo_path).resolve()
+    existing = {p.as_posix() for p in repo_root.rglob("*") if p.is_file()}
+    cleaned: List[str] = []
+    seen_in: set[str] = set()
+    for p in path_list:
+        rel = _normalize_repo_rel_path(str(p))
+        if rel in existing and rel not in seen_in:
+            cleaned.append(rel)
+            seen_in.add(rel)
+    # Fallback: membership in the precomputed `existing` set can rarely mismatch path
+    # normalization on huge trees; verify with an explicit path check.
+    if not cleaned:
+        for p in path_list:
+            rel = _normalize_repo_rel_path(str(p))
+            if rel in seen_in:
+                continue
+            if (repo_root / rel).is_file():
+                cleaned.append(rel)
+                seen_in.add(rel)
+    if not cleaned:
+        return []
+
+    hint = ""
+    if dockerfile_path:
+        dp = Path(dockerfile_path)
+        if not dp.is_absolute():
+            dp = (repo_root / dp).resolve()
+        else:
+            dp = dp.resolve()
+        if dp.is_file():
+            try:
+                hint = dp.read_text(encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                hint = str(dp)
+        else:
+            hint = str(Path(dockerfile_path).as_posix())
+
+    prompt = _build_filter_tests_for_env_prompt(cleaned, max_items, hint)
+    system = (
+        "Output JSON only with key test_paths (array of strings). "
+        "Choose only from the candidate list; order by relevance to environment/Docker validation."
+    )
+    client = LLMClient(model=model)
+    raw = client.simple_chat(prompt, system_prompt=system, temperature=0.0)
+    picked = _json_paths_from_llm(raw)
+
+    allowed = set(cleaned)
+    out: List[str] = []
+    seen = set()
+    for rel in picked:
+        rel = _normalize_repo_rel_path(rel)
+        if rel in allowed and rel in existing and rel not in seen:
+            out.append(rel)
+            seen.add(rel)
+        if len(out) >= max_items:
+            break
+
+    if out:
+        final = out
+    else:
+        if verbose:
+            print(
+                "[docker_test_tool] filter_tests_for_docker_env: Forge empty/invalid; using candidate order.",
+                file=sys.stderr,
+            )
+        final = cleaned[:max_items]
+
+    need = min(min_keep, len(cleaned)) if cleaned else 0
+    final = _merge_to_min_keep(final, cleaned, need)
+    return final[:max_items]
+
+
+def filter_static_dependency_report(report: str) -> str:
+    """
+    Keep only lines that look like docker/build/import/dependency/collection issues.
+    Omits typical runtime test failures (assertions, benchmark success output, etc.).
+    """
+    lines = (report or "").splitlines()
+    kept: List[str] = []
+    for line in lines:
+        if line.startswith(("dockerfile=", "test=", "cmd=", "exit_code=")):
+            kept.append(line)
+            continue
+        # Drop common runtime / assertion failure noise
+        if line.strip().startswith("FAILED ") and "ERROR collecting" not in line:
+            if "ImportError" not in line and "ModuleNotFoundError" not in line:
+                continue
+        if "AssertionError" in line or "E       assert" in line:
+            continue
+        low = line.lower()
+        if "passed" in low and "error" not in low and "failed" not in low:
+            if "passed in" in low or "[100%]" in line or line.strip().startswith("."):
+                continue
+        if any(s in line for s in _STATIC_LINE_SUBSTRINGS):
+            kept.append(line)
+    body = "\n".join(kept).strip()
+    if not body:
+        return "(no dependency/static-only lines in this report)\n"
+    return body + "\n"
+
+
 def _last_workdir_in_dockerfile(dockerfile: Path) -> Optional[str]:
     if not dockerfile.is_file():
         return None
@@ -258,9 +453,13 @@ def docker_test_repo_test(
     platform: str = "linux/amd64",
     timeout: int = 600,
     verbose: bool = False,
+    skip_build: bool = False,
 ) -> Tuple[bool, str]:
     """
     Build docker image with ``dockerfile_path``, then run one test file in container.
+
+    If ``skip_build`` is True, assume the image tag ``test-build-<repo_name>`` already exists
+    (e.g. after a successful prior build in the same run).
 
     Returns ``(passed, report)``.
     """
@@ -277,15 +476,16 @@ def docker_test_repo_test(
     else:
         test_rel = _normalize_repo_rel_path(test_path.as_posix())
 
-    ok, build_log = dockerbuild(
-        repo_root,
-        dockerfile=dockerfile_rel,
-        project_root=PROJECT_ROOT,
-        verbose=verbose,
-        platform=platform,
-    )
-    if not ok:
-        return False, "Docker build failed:\n" + build_log[-12000:]
+    if not skip_build:
+        ok, build_log = dockerbuild(
+            repo_root,
+            dockerfile=dockerfile_rel,
+            project_root=PROJECT_ROOT,
+            verbose=verbose,
+            platform=platform,
+        )
+        if not ok:
+            return False, "Docker build failed:\n" + build_log[-12000:]
 
     image_tag = f"test-build-{repo_root.name.lower()}"
     argv = run_argv or _default_run_argv(repo_root, test_rel)
@@ -321,4 +521,10 @@ def docker_test_repo_test(
     return r.returncode == 0, report
 
 
-__all__ = ["get_test_file_path", "docker_test_repo_test", "ensure_langchain_test_dockerfile"]
+__all__ = [
+    "get_test_file_path",
+    "filter_tests_for_docker_env",
+    "filter_static_dependency_report",
+    "docker_test_repo_test",
+    "ensure_langchain_test_dockerfile",
+]
