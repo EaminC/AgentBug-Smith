@@ -47,4 +47,6 @@ if __name__ == "__main__":
         raise SystemExit(2)
 
     test_docker_result_0 = docker_test_repo_test(repo_path, dockerfile_path, path_list[0])
+    test_docker_result_0 = docker_test_repo_test(repo_path, dockerfile_path, path_list[1])
+    test_docker_result_0 = docker_test_repo_test(repo_path, dockerfile_path, path_list[2])
     print(test_docker_result_0)
