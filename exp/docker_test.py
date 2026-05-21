@@ -12,7 +12,8 @@ Flow: discover candidate tests -> AI ranks/filters for Docker/env relevance (>=5
 """
 
 import sys
-import subprocess
+import shutil
+import tempfile
 from pathlib import Path
 
 _AGENTSMITH_ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,7 @@ def _banner(title: str, *, stream=sys.stderr) -> None:
 
 if __name__ == "__main__":
     repo_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else _DEFAULT_LANGCHAIN_REPO
-    dockerfile_path = Path(sys.argv[2]) if len(sys.argv) > 2 else _DEFAULT_DOCKERFILE_REL
+    dockerfile_path_arg = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(_DEFAULT_DOCKERFILE_REL)
 
     log_line("[docker_test]", paint("1;36", "AgentBug-Smith docker_test"), paint("90", str(_AGENTSMITH_ROOT)))
     print(file=sys.stderr, flush=True)
@@ -62,9 +63,19 @@ if __name__ == "__main__":
         log_line("[docker_test]", paint("32", "Clone finished."), stream=sys.stderr)
         print(file=sys.stderr, flush=True)
 
-    if len(sys.argv) <= 2:
+    temp_dockerfile_dir = None
+    if not dockerfile_path_arg.is_relative_to(repo_path):
+        log_line("[docker_test]", paint("33", "Dockerfile is outside the repo, copying it into a temporary directory."))
+        temp_dockerfile_dir = tempfile.mkdtemp(dir=repo_path)
+        dockerfile_path = Path(temp_dockerfile_dir) / dockerfile_path_arg.name
+        shutil.copy(dockerfile_path_arg, dockerfile_path)
+        log_line("[docker_test]", paint("90", "Copied dockerfile to →"), paint("32", str(dockerfile_path)))
+    else:
+        dockerfile_path = dockerfile_path_arg
+
+    if len(sys.argv) <= 2 and not dockerfile_path.is_absolute():
         _banner("Phase: ensure test Dockerfile template", stream=sys.stderr)
-        dockerfile_path = ensure_langchain_test_dockerfile(repo_path, relpath=str(_DEFAULT_DOCKERFILE_REL))
+        dockerfile_path = ensure_langchain_test_dockerfile(repo_path, relpath=str(dockerfile_path))
         log_line("[docker_test]", paint("90", "dockerfile →"), paint("32", str(dockerfile_path)))
         print(file=sys.stderr, flush=True)
 
@@ -92,6 +103,10 @@ if __name__ == "__main__":
         raw_list,
         dockerfile_path=dockerfile_path,
     )
+    if len(path_list) > 5:
+        log_line("[docker_test]", paint("33", f"Limiting to 5 tests (out of {len(path_list)})."))
+        path_list = path_list[:5]
+
     if not path_list:
         log_line("[docker_test]", paint("31", "No tests left after filter (unexpected)."), stream=sys.stderr)
         raise SystemExit(2)
@@ -109,41 +124,50 @@ if __name__ == "__main__":
     _banner("Phase: docker build (once) + run each test", stream=sys.stderr)
     static_blocks: list[str] = []
     any_fail = False
-    for idx, test_rel in enumerate(path_list):
-        log_line(
-            "[docker_test]",
-            paint("1;33", f"Run {idx + 1}/{len(path_list)}"),
-            paint("32", test_rel),
-            stream=sys.stderr,
-        )
-        if idx == 0:
-            log_line("[docker_test]", paint("90", "  → docker build + run"), stream=sys.stderr)
-        else:
-            log_line("[docker_test]", paint("90", "  → docker run only (reuse image)"), stream=sys.stderr)
+    success_count = 0
+    try:
+        for idx, test_rel in enumerate(path_list):
+            log_line(
+                "[docker_test]",
+                paint("1;33", f"Run {idx + 1}/{len(path_list)}"),
+                paint("32", test_rel),
+                stream=sys.stderr,
+            )
+            if idx == 0:
+                log_line("[docker_test]", paint("90", "  → docker build + run"), stream=sys.stderr)
+            else:
+                log_line("[docker_test]", paint("90", "  → docker run only (reuse image)"), stream=sys.stderr)
 
-        ok, report = docker_test_repo_test(
-            repo_path,
-            dockerfile_path,
-            test_rel,
-            skip_build=(idx > 0),
-        )
-        if not ok:
-            any_fail = True
-        static_only = filter_static_dependency_report(report)
-        block = f"=== {test_rel} (ok={ok}) ===\n{static_only}"
-        static_blocks.append(block)
+            ok, report = docker_test_repo_test(
+                repo_path,
+                dockerfile_path,
+                test_rel,
+                skip_build=(idx > 0),
+            )
+            if not ok:
+                any_fail = True
+            else:
+                success_count += 1
+            static_only = filter_static_dependency_report(report)
+            block = f"=== {test_rel} (ok={ok}) ===\n{static_only}"
+            static_blocks.append(block)
 
-        # Show static/dep snippet immediately (readable, incremental)
-        print(paint("90", "— static / dependency-related lines —"), file=sys.stderr, flush=True)
-        for ln in static_only.splitlines():
-            print(paint("90", "  | "), file=sys.stderr, end="", flush=True)
-            print(ln, file=sys.stderr, flush=True)
-        print(file=sys.stderr, flush=True)
+            # Show static/dep snippet immediately (readable, incremental)
+            print(paint("90", "— static / dependency-related lines —"), file=sys.stderr, flush=True)
+            for ln in static_only.splitlines():
+                print(paint("90", "  | "), file=sys.stderr, end="", flush=True)
+                print(ln, file=sys.stderr, flush=True)
+            print(file=sys.stderr, flush=True)
+    finally:
+        if temp_dockerfile_dir:
+            log_line("[docker_test]", paint("90", f"Cleaning up temporary directory: {temp_dockerfile_dir}"))
+            shutil.rmtree(temp_dockerfile_dir)
 
     _banner("Summary", stream=sys.stderr)
     summary_parts = [
         paint("32" if not any_fail else "33", "Done."),
         paint("90", f"{len(path_list)} test file(s)."),
+        paint("32", f"{success_count} successful runs."),
     ]
     if any_fail:
         summary_parts.append(paint("31", "Some runs failed (see static lines above)."))

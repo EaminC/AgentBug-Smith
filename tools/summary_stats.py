@@ -82,9 +82,10 @@ def main():
     Main entry point. Aggregates and prints total and average duration and cost from all valid run.log files.
     """
     runlog_files = find_summary_files(RESULT_DIR)
+    total_files_found = len(runlog_files)
     total_duration = 0
     total_cost = 0
-    count = 0
+    valid_count = 0
     durations = []  # List of (duration, file)
     costs = []      # List of (cost, file)
     for file in runlog_files:
@@ -92,14 +93,15 @@ def main():
         if duration is not None and cost is not None:
             total_duration += duration
             total_cost += cost
-            count += 1
+            valid_count += 1
             durations.append((duration, file))
             costs.append((cost, file))
-    if count == 0:
+    if valid_count == 0:
         print("No valid run.log files found.")
+        print(f"Total run.log files found: {total_files_found}")
         return
-    avg_duration = total_duration / count
-    avg_cost = total_cost / count
+    avg_duration = total_duration / valid_count
+    avg_cost = total_cost / valid_count
 
     # Find longest/shortest duration
     longest_duration, longest_file = max(durations, key=lambda x: x[0])
@@ -118,7 +120,8 @@ def main():
     p2p_count = count_subfolders(os.path.join(RESULT_DIR, 'p2p'))
     total_built_instances = f2f_count + f2p_count + p2p_count
 
-    print(f"Total files: {count}")
+    print(f"Total run.log files found: {total_files_found}")
+    print(f"Files with valid metrics: {valid_count}")
     print(f"Total built instances: {total_built_instances}")
     print(f"Total duration: {total_duration:.2f} seconds ({format_seconds(total_duration)})")
     print(f"Total cost: ${total_cost:.6f}")

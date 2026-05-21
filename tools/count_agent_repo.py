@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import fnmatch
 
 # Directory containing the JSON files
-ISSUE_AGENT_DIR = os.path.join(os.path.dirname(__file__), '../result_history/result_05132026 (80 issues)')
+ISSUE_AGENT_DIR = os.path.join(os.path.dirname(__file__), '../result')
 
 def extract_agent_repo(url):
     """Extract agentname/repo from a GitHub URL."""

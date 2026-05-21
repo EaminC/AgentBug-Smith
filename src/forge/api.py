@@ -205,7 +205,7 @@ if __name__ == "__main__":
     
     # Test listing models
     models = llm.list_models()
-    print(f"\nAvailable OpenAI models:")
+    print(f"\nAvailable models:")
     for model in models:
-        if model.startswith("OpenAI/"):
+        if model.startswith("tensorblock/"):
             print(f"  - {model}")

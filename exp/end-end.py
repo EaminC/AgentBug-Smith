@@ -26,6 +26,8 @@ generated test file when present.
 import sys
 from pathlib import Path
 import subprocess
+import json
+import shutil
 
 _AGENTSMITH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENTSMITH_ROOT / "src"))
@@ -38,7 +40,14 @@ from repo.git_ops import ensure_repo_at_commit, read_linked_pr_base_sha, reset_r
 from repo.inspect import get_file_tree  # noqa: E402
 from stats import StatsTool  # noqa: E402
 from testgen import load_issue_testgen_context, testgen  # noqa: E402
-from testrun import run_f2p_verify  # noqa: E402
+from testrun import (  # noqa: E402
+    docker_test_repo_test,
+    ensure_langchain_test_dockerfile,
+    filter_static_dependency_report,
+    filter_tests_for_docker_env,
+    get_test_file_path,
+    run_f2p_verify
+)
 from utils import (  # noqa: E402
     append_text,
     finalize_run_artifacts,
@@ -53,8 +62,64 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data" / "issue_71.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issue_agent_35" / "issue_270.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
+
+
+def _run_docker_test(repo_path: Path, dockerfile_path: Path) -> tuple[bool, str | None]:
+    """
+    Run tests using the generated Dockerfile.
+    This function is an adaptation of the logic in docker_test.py.
+    Returns a tuple of (all_tests_succeeded, aggregated_error_report).
+    """
+    print("\n--- Running Docker Tests ---")
+    raw_list = get_test_file_path(repo_path)
+    if not raw_list:
+        print("No candidate test paths found for docker testing.", file=sys.stderr)
+        return True, None  # No tests to run is a success condition for this stage
+
+    print(f"Found {len(raw_list)} candidate test files.")
+    path_list = filter_tests_for_docker_env(
+        repo_path,
+        raw_list,
+        dockerfile_path=dockerfile_path,
+    )
+
+    if not path_list:
+        print("No tests left after filter for docker testing.", file=sys.stderr)
+        return True, None # No tests to run is a success condition for this stage
+
+    print(f"Running {len(path_list)} tests...")
+    success_count = 0
+    any_fail = False
+    error_reports = []
+    for idx, test_rel in enumerate(path_list):
+        print(f"Running test {idx + 1}/{len(path_list)}: {test_rel}")
+        ok, report = docker_test_repo_test(
+            repo_path,
+            dockerfile_path,
+            test_rel,
+            skip_build=(idx > 0),
+        )
+        print(f"Test {test_rel} {'succeeded' if ok else 'failed'}.")
+        if not ok:
+            any_fail = True
+        else:
+            success_count += 1
+        if report:
+            static_only = filter_static_dependency_report(report)
+            print("--- Static / dependency-related lines ---")
+            print(static_only)
+            print("-----------------------------------------")
+            if not ok:
+                error_reports.append(static_only)
+
+    if len(path_list) > 5:
+        all_succeeded = success_count >= 5
+    else:
+        all_succeeded = success_count == len(path_list)
+    print("--- Docker Tests Finished ---\n")
+    return all_succeeded, "\n".join(error_reports) if error_reports else None
 
 
 def _run(run_dir: Path) -> None:
@@ -68,7 +133,6 @@ def _run(run_dir: Path) -> None:
 
     _ctx = load_issue_testgen_context(_ISSUE_JSON)
     _n = _ctx.issue_number or 0
-    #_test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}.py"
     _test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}{lang_info['ext']}"
 
     _base = read_linked_pr_base_sha(_ISSUE_JSON)
@@ -77,6 +141,21 @@ def _run(run_dir: Path) -> None:
         if not _co_ok:
             print(_co_err, file=sys.stderr)
             sys.exit(1)
+            
+    # Load patch test configuration early
+    patch_test_src = None
+    try:
+        with open(_ISSUE_JSON, "r", encoding="utf-8") as f:
+            issue_data = json.load(f)
+        test_paths = (
+            issue_data.get("linked_prs", [{}])[0].get("test_paths_in_patch", []) or 
+            issue_data.get("test_paths_in_patch", [])
+        )
+        if test_paths and len(test_paths) > 0:
+            patch_test_src = test_paths[0]
+    except Exception as e:
+        print(f"[pipeline-warning] Failed looking up in-patch test config: {e}", file=sys.stderr)
+
     dockerinit(
         _ws.local_repo_path,
         _ws.dockerfile_out,
@@ -138,17 +217,27 @@ def _run(run_dir: Path) -> None:
                 _log or "",
             )
             if _build_ok:
-                break
-            _feedback = _log
+                docker_tests_ok, docker_test_errors = _run_docker_test(_ws.local_repo_path, _ws.dockerfile_out)
+                if docker_tests_ok:
+                    print("Docker tests passed.")
+                    break
+                else:
+                    print("Docker tests failed. Feeding back errors to regenerate Dockerfile.")
+                    _feedback = docker_test_errors
+                    _build_ok = False # Set to false to indicate we need to rebuild
+            else:
+                _feedback = _log
 
         _stored_docker = _feedback
 
         if not _build_ok:
             print("Skipping testgen / testrun: docker build did not succeed.", file=sys.stderr)
             continue
+        else:
+            f2p_rounds = _cfg.max_f2p_rounds
 
         _f2p_feedback = _fb_outer_f2p
-        for _f2p_round in range(1, _cfg.max_f2p_rounds + 1):
+        for _f2p_round in range(1, f2p_rounds + 1):
             if _f2p_round > 1 and _base:
                 _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
                 subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
@@ -156,21 +245,34 @@ def _run(run_dir: Path) -> None:
                     print(_rs_err, file=sys.stderr)
                     break
 
-            repo_structure = get_file_tree(_ws.local_repo_path, n=3)
-            context_structure = f"\n### Current Repository Structure (Depth=3):\n{repo_structure}\n"
-            current_f2p_feedback = context_structure + (_f2p_feedback or "")
-            _tg_ok, _tg_report = testgen(
-                _ws.local_repo_path,
-                issue_json_path=_ISSUE_JSON,
-                verbose=True,
-                project_root=_AGENTSMITH_ROOT,
-                model=_MODEL,
-                feedback=current_f2p_feedback,
-                language=lang_info["name"]
-            )
-            print(_tg_report)
-            if not _tg_ok:
-                break
+            has_patch_test = False
+            if patch_test_src:
+                original_test_path = _ws.local_repo_path / patch_test_src
+                target_test_path = _ws.local_repo_path / _test_rel
+                if original_test_path.exists():
+                    target_test_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(original_test_path, target_test_path)
+                    print(f"Restored in-patch test: '{patch_test_src}'")
+                    has_patch_test = True
+
+            if not has_patch_test:
+                repo_structure = get_file_tree(_ws.local_repo_path, n=3)
+                context_structure = f"\n### Current Repository Structure (Depth=3):\n{repo_structure}\n"
+                current_f2p_feedback = context_structure + (_f2p_feedback or "")
+                _tg_ok, _tg_report = testgen(
+                    _ws.local_repo_path,
+                    issue_json_path=_ISSUE_JSON,
+                    verbose=True,
+                    project_root=_AGENTSMITH_ROOT,
+                    model=_MODEL,
+                    feedback=current_f2p_feedback,
+                    language=lang_info["name"]
+                )
+                print(_tg_report)
+                if not _tg_ok:
+                    break
+            else:
+                print("[end-end] In-patch test detected and used. Skipping testgen.")
 
             base_cmd = lang_info['runner'].split()
             test_cmd = base_cmd + [_test_rel]
@@ -218,11 +320,29 @@ def _run(run_dir: Path) -> None:
                     print(_rs_err, file=sys.stderr)
                     break
 
-            # Pass the latest logs/context to cofix
+            has_patch_test = False
+            if patch_test_src:
+                original_test_path = _ws.local_repo_path / patch_test_src
+                target_test_path = _ws.local_repo_path / _test_rel
+                if original_test_path.exists():
+                    target_test_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(original_test_path, target_test_path)
+                    print(f"Restored in-patch test: '{patch_test_src}'")
+                    has_patch_test = True
+
+            # 3. Dynamic Cofix Invocation
+            # If we have an in-patch test, set test_relpath to None so the LLM ONLY rewrites the Dockerfile
+            target_test_relpath = None if has_patch_test else _test_rel
+            
+            if has_patch_test:
+                print("[end-end] In-patch test detected. Cofix agent will run in 'Environment-Only' mode.")
+            else:
+                print("[end-end] No in-patch test found. Cofix agent will run in 'Full-Generation' mode.")
+
             _cofix_ok, _cofix_log = cofix_agent(
                 _ws.local_repo_path,
                 dockerfile="env.dockerfile",
-                test_relpath=_test_rel,
+                test_relpath=target_test_relpath,
                 feedback=_stored_f2p,
                 model=_MODEL,
                 project_root=_AGENTSMITH_ROOT,
@@ -230,6 +350,7 @@ def _run(run_dir: Path) -> None:
                 language=lang_info["name"]
             )
 
+            # 4. Verify F2P on the repaired files
             if _cofix_ok:
                 print(f"[end-end] cofix applied repairs (Round {_cofix_round}). Re-verifying F2P...")
                 base_cmd = lang_info['runner'].split()
@@ -254,15 +375,12 @@ def _run(run_dir: Path) -> None:
                 if _outcome == "f2p":
                     _f2p_succeeded = True
                     print(f"[end-end] cofix successfully achieved F2P on round {_cofix_round}!")
-                    print(f"Round Cofix verify outcome: {_outcome}\n\n{_f2p_report}")
                     break
                 else:
                     print(f"[end-end] cofix did not achieve F2P on round {_cofix_round}.")
-                    # Update feedback so the next cofix round learns from this failure
                     _stored_f2p = f"Cofix Round {_cofix_round} verify outcome: {_outcome}\n\n{_f2p_report}"
             else:
                 print(f"[end-end] cofix agent failed with error: {_cofix_log}")
-                # Feed the agent error back so it can fix its own formatting/syntax mistake
                 _stored_f2p = f"Cofix Round {_cofix_round} agent error: {_cofix_log}"
         
         if not _f2p_succeeded:

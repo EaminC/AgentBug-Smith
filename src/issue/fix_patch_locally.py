@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Define paths assuming this script is run from the project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = PROJECT_ROOT / "data" / "issue"
+DATA_DIR = PROJECT_ROOT / "data" / "issue_agent"
 TEMP_DIR = PROJECT_ROOT / "data" / "temp_patch_fix"
 
 def remove_readonly(func, path, excinfo):

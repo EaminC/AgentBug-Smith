@@ -12,7 +12,7 @@ import json
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUT_DIR = ROOT / "data" / "issue_agent"
+INPUT_DIR = ROOT / "data" / "issue_agent_35"
 OUTPUT_DIR = ROOT
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_FILE = OUTPUT_DIR / "issue_agent_summary.json"

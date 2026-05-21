@@ -35,7 +35,7 @@ def main():
 		"--token", github_token,
 		"--local-clone",
 		"--min-total-lines", "10",
-		"--max-total-lines", "200"
+		"--max-total-lines", "300"
 	]
 	print(f"Running: {' '.join(cmd)}")
 
