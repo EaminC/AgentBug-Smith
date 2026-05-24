@@ -9,13 +9,13 @@ def detect_project_language(repo_root: Path) -> Dict[str, str]:
     """
     repo_root = Path(repo_root).resolve()
 
-    if (repo_root / "package.json").exists():
+    if (repo_root / "Cargo.toml").exists():
+        return {"name": "Rust", "ext": ".rs", "runner": "cargo test --test"}
+
+    elif (repo_root / "package.json").exists():
         if (repo_root / "tsconfig.json").exists():
             return {"name": "TypeScript", "ext": ".ts", "runner": "npx ts-node"}
         return {"name": "JavaScript", "ext": ".js", "runner": "node"}
-        
-    elif (repo_root / "Cargo.toml").exists():
-        return {"name": "Rust", "ext": ".rs", "runner": "cargo test --test"}
         
     elif (repo_root / "pom.xml").exists() or (repo_root / "build.gradle").exists():
         return {"name": "Java", "ext": ".java", "runner": "mvn test -Dtest="}

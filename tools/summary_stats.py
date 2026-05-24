@@ -38,29 +38,33 @@ def extract_metrics(runlog_file):
     """
     duration = None
     cost = None
+    total_tokens = 0
     try:
         with open(runlog_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
+        # Extract all total_tokens occurrences
+        for line in lines:
+            token_match = re.search(r'total_tokens\s*[:=]?\s*([\d,]+)', line, re.IGNORECASE)
+            if token_match:
+                token_str = token_match.group(1).replace(',', '')
+                if token_str.isdigit():
+                    total_tokens += int(token_str)
         for line in reversed(lines):
             if duration is None:
-                # Match: Total Duration: 1:21:14 (4874.55 seconds)
                 dur_match = re.search(r'Total Duration: [^\(]*\(([-\d.]+) seconds\)', line)
                 if dur_match:
                     duration = float(dur_match.group(1))
             if cost is None:
-                # Match: cost: $0.079252
                 cost_match = re.search(r'cost:\s*\$([\d.]+)', line, re.IGNORECASE)
                 if cost_match:
                     cost = float(cost_match.group(1))
             if duration is not None and cost is not None:
                 break
-        if duration is not None and cost is not None:
-            return duration, cost
-        else:
-            return None, None
+        # Always return three values
+        return duration, cost, total_tokens
     except Exception as e:
         print(f"Error reading {runlog_file}: {e}")
-        return None, None
+        return None, None, 0
 
 # Count total built instances in result/f2f, result/f2p, result/p2p
 def count_subfolders(path):
@@ -85,11 +89,13 @@ def main():
     total_files_found = len(runlog_files)
     total_duration = 0
     total_cost = 0
+    total_tokens = 0
     valid_count = 0
     durations = []  # List of (duration, file)
     costs = []      # List of (cost, file)
     for file in runlog_files:
-        duration, cost = extract_metrics(file)
+        duration, cost, tokens = extract_metrics(file)
+        total_tokens += tokens
         if duration is not None and cost is not None:
             total_duration += duration
             total_cost += cost
@@ -125,6 +131,7 @@ def main():
     print(f"Total built instances: {total_built_instances}")
     print(f"Total duration: {total_duration:.2f} seconds ({format_seconds(total_duration)})")
     print(f"Total cost: ${total_cost:.6f}")
+    print(f"Total tokens: {total_tokens}")
     print(f"Average duration: {avg_duration:.2f} seconds ({format_seconds(avg_duration)})")
     print(f"Average cost: ${avg_cost:.6f}")
 

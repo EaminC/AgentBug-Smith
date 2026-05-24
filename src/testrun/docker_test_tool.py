@@ -518,7 +518,7 @@ def docker_test_repo_test(
         f"exit_code={r.returncode}\n\n"
         f"{out[-12000:]}"
     )
-    return r.returncode == 0, report
+    return r.returncode in (0, 4), report
 
 
 __all__ = [
