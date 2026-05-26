@@ -62,9 +62,19 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_50" / "issue_159.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_50" / "issue_2175.json"
 _MODEL = "tensorblock/gpt-4.1-mini"
 
+
+def truncate_middle(text: str | None, max_chars: int = 40000) -> str | None:
+    """Truncates the middle of a string if it exceeds max_chars to avoid OS Argument limits."""
+    if not text or len(text) <= max_chars:
+        return text
+    
+    half = max_chars // 2
+    separator = "\n\n... [LOG TRUNCATED] ...\n\n"
+    
+    return text[:half] + separator + text[-half:]
 
 def _run_docker_test(repo_path: Path, dockerfile_path: Path) -> tuple[bool, str | None]:
     """
@@ -211,6 +221,7 @@ def _run(run_dir: Path) -> None:
                 project_root=_AGENTSMITH_ROOT,
                 nocache=True
             )
+            _log = truncate_middle(_log)
             append_text(
                 _docker_log,
                 f"epoch={_epoch} docker_round={_round} ok={_build_ok}",
@@ -286,6 +297,7 @@ def _run(run_dir: Path) -> None:
                 project_root=_AGENTSMITH_ROOT,
                 nocache=True
             )
+            _f2p_report = truncate_middle(_f2p_report)
             append_text(
                 _f2p_log,
                 f"epoch={_epoch} f2p_round={_f2p_round} outcome={_outcome}",
@@ -302,6 +314,11 @@ def _run(run_dir: Path) -> None:
 
         _stored_f2p = _f2p_feedback
 
+        try:
+            subprocess.run(["docker", "system", "prune", "-f"], check=False)
+        except Exception as cleanup_err:
+            print(f" Warning: Docker cleanup failed: {cleanup_err}", file=sys.stderr)
+        
         if _f2p_succeeded:
             break
 
