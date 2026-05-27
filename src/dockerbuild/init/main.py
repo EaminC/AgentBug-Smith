@@ -180,7 +180,7 @@ def ask_ai(
             f"{_preview(user_prompt, 1200)}"
         )
         print(_paint("34", "---------- calling API ----------"))
-    result = client.chat(messages=messages)
+    result = client.chat(messages=messages, max_tokens=4096)
     if verbose:
         print(_paint("34", "---------- assistant reply ----------"))
         out = result or ""

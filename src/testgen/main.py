@@ -249,7 +249,7 @@ def ask_testgen_llm(
         print(f"{paint('35', '[system]')} ({len(system)} chars, full below)\n{system}", file=sys.stderr)
         print(f"{paint('35', '[user]')} ({len(user)} chars, full below)\n{user}", file=sys.stderr)
         print(paint("34", "---------- calling API ----------"), file=sys.stderr)
-    out = client.chat(messages=messages, temperature=0.3)
+    out = client.chat(messages=messages, temperature=0.3, max_tokens=4096)
     text = (out or "").strip()
     if verbose:
         print(paint("34", "---------- assistant reply ----------"), file=sys.stderr)

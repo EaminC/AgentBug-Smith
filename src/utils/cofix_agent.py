@@ -8,7 +8,7 @@ def cofix_agent(
     dockerfile: str = "env.dockerfile",
     test_relpath: str = None,
     feedback: str = "",
-    model: str = "gpt-4.1-mini",
+    model: str = "tensorblock/claude-haiku-4-5",
     project_root: Path = None,
     verbose: bool = False,
     language: str = "Python"
@@ -54,7 +54,8 @@ def cofix_agent(
         response = client.simple_chat(
             prompt,
             system_prompt=system_msg,
-            temperature=0.2
+            temperature=0.2,
+            max_tokens=4096
         )
         
         # 4. Parse response and overwrite files

@@ -185,7 +185,7 @@ def get_test_file_path(
     prompt = _build_get_test_file_prompt(candidates, max_items)
     system = "Output JSON only. No markdown."
     client = LLMClient(model=model)
-    raw = client.simple_chat(prompt, system_prompt=system, temperature=0.0)
+    raw = client.simple_chat(prompt, system_prompt=system, temperature=0.0, max_tokens=4096)
     picked = _json_paths_from_llm(raw)
 
     existing = {p.as_posix() for p in repo_root.rglob("*") if p.is_file()}
@@ -313,7 +313,7 @@ def filter_tests_for_docker_env(
         "Choose only from the candidate list; order by relevance to environment/Docker validation."
     )
     client = LLMClient(model=model)
-    raw = client.simple_chat(prompt, system_prompt=system, temperature=0.0)
+    raw = client.simple_chat(prompt, system_prompt=system, temperature=0.0, max_tokens=4096)
     picked = _json_paths_from_llm(raw)
 
     allowed = set(cleaned)

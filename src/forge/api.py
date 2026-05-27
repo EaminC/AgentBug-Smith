@@ -151,7 +151,8 @@ class LLMClient:
     def simple_chat(self,
                     user_message: str,
                     system_prompt: Optional[str] = None,
-                    temperature: Optional[float] = None) -> str:
+                    temperature: Optional[float] = None,
+                    max_tokens: Optional[int] = None) -> str:
         """
         Simplified chat interface
         
@@ -173,7 +174,7 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": user_message})
         
-        return self.chat(messages, temperature=temperature)
+        return self.chat(messages, temperature=temperature, max_tokens=max_tokens)
     
     def list_models(self) -> List[str]:
         """
@@ -207,5 +208,5 @@ if __name__ == "__main__":
     models = llm.list_models()
     print(f"\nAvailable models:")
     for model in models:
-        if model.startswith("tensorblock/"):
+        if model.startswith(""):
             print(f"  - {model}")
