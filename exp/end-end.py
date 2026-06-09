@@ -28,9 +28,13 @@ from pathlib import Path
 import subprocess
 import json
 import shutil
+import os
+from dotenv import load_dotenv
 
 _AGENTSMITH_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENTSMITH_ROOT / "src"))
+
+load_dotenv(dotenv_path=_AGENTSMITH_ROOT / ".env")
 
 from dockerbuild.build import dockerbuild  # noqa: E402
 from dockerbuild.init import dockerinit  # noqa: E402
@@ -63,7 +67,7 @@ from datetime import timedelta
 
 
 _ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_50" / "issue_2175.json"
-_MODEL = "tensorblock/gpt-4.1-mini"
+_MODEL = os.getenv("MODEL", "tensorblock/gpt-4.1-mini")
 
 
 def truncate_middle(text: str | None, max_chars: int = 40000) -> str | None:
