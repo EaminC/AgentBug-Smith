@@ -15,6 +15,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SRC = PROJECT_ROOT / "src"
@@ -24,6 +25,107 @@ if str(_SRC) not in sys.path:
 from forge.api import LLMClient  # noqa: E402
 from repo.term import log_line, paint  # noqa: E402
 
+LANGUAGE_MARKERS: Dict[str, List[str]] = {
+    "Python": [
+        "import ",
+        "from ",
+        "def ",
+        "class ",
+        "@pytest",
+    ],
+
+    "JavaScript": [
+        "import ",
+        "const ",
+        "let ",
+        "var ",
+        "describe(",
+        "test(",
+        "it(",
+        "async function",
+        "function ",
+    ],
+
+    "TypeScript": [
+        "import ",
+        "export ",
+        "const ",
+        "let ",
+        "var ",
+        "describe(",
+        "test(",
+        "it(",
+        "interface ",
+        "type ",
+        "async function",
+        "function ",
+    ],
+
+    "Rust": [
+        "use ",
+        "fn ",
+        "#[test]",
+        "mod ",
+        "struct ",
+        "enum ",
+        "impl ",
+    ],
+
+    "Go": [
+        "package ",
+        "import ",
+        "func ",
+    ],
+
+    "Java": [
+        "package ",
+        "import ",
+        "public class ",
+        "class ",
+        "@Test",
+    ],
+}
+
+
+def extract_test_code(text: str, language: str) -> str:
+    """
+    Remove explanations / markdown and keep only actual source code.
+    """
+    t = text.strip()
+
+    # Remove markdown fences
+    if t.startswith("```"):
+        lines = t.splitlines()
+
+        # Remove opening fence
+        lines = lines[1:]
+
+        # Remove trailing fences
+        while lines and lines[-1].strip().startswith("```"):
+            lines.pop()
+
+        t = "\n".join(lines).strip()
+
+    markers = LANGUAGE_MARKERS.get(language, [])
+
+    # Find first probable code line
+    lines = t.splitlines()
+
+    start_idx = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if any(stripped.startswith(marker) for marker in markers):
+            start_idx = i
+            break
+
+    cleaned = "\n".join(lines[start_idx:]).strip()
+
+    # Remove trailing markdown fences again just in case
+    cleaned = re.sub(r"```+\s*$", "", cleaned).strip()
+
+    return cleaned
 
 def _strip_code_fence(text: str) -> str:
     t = text.strip()
@@ -310,7 +412,8 @@ def testgen(
         log_line("[testgen]", paint("90", "language:"), paint("35", language))
 
     raw = ask_testgen_llm(system, user, model=model, verbose=verbose)
-    code_body = _strip_code_fence(raw)
+    code_body = extract_test_code(raw, language)
+    #code_body = _strip_code_fence(raw)
     if not code_body.strip():
         return False, "LLM returned empty test file content."
 

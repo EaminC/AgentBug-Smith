@@ -8,7 +8,7 @@ def cofix_agent(
     dockerfile: str = "env.dockerfile",
     test_relpath: str = None,
     feedback: str = "",
-    model: str = "tensorblock/claude-haiku-4-5",
+    model: str = "tuzi/gpt-4.1-mini",
     project_root: Path = None,
     verbose: bool = False,
     language: str = "Python"
@@ -77,7 +77,7 @@ def _apply_repairs(
 
     Features:
     - Case-insensitive detection of Dockerfile blocks
-    - Supports multiple languages for test files
+    - Supports multiple languages for test files (Python, TypeScript, JavaScript, Rust, Java, Go, C#)
     - Handles multiple code blocks (uses the last occurrence)
     - Writes files using UTF-8 encoding
     """
@@ -95,7 +95,8 @@ def _apply_repairs(
             print(f"[cofix] Overwrote {docker_rel}")
 
     # Extract Test file blocks (multiple languages)
-    test_pattern = r"```(?:python|py|javascript|js|typescript|ts|rust|rs)\n(.*?)\n```" 
+    # Pattern handles: python, py, javascript, js, typescript, ts, tsx, rust, rs, java, etc.
+    test_pattern = r"```(?:python|py|javascript|js|typescript|ts|tsx|rust|rs|java|go|csharp|cs)\n(.*?)\n```" 
     test_matches = re.findall(test_pattern, response, re.DOTALL | re.IGNORECASE)
 
     if test_matches and test_rel:
