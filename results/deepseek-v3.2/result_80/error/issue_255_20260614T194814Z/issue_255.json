@@ -1,0 +1,57 @@
+{
+  "number": 255,
+  "title": "✨ Save API key to account",
+  "url": "https://github.com/reworkd/AgentGPT/issues/255",
+  "state": "closed",
+  "created_at": "2023-04-19T13:50:50Z",
+  "closed_at": "2023-04-22T18:34:04Z",
+  "body": "I can use AgentGPT just fine, but have to enter me API-key from platform.openai every time. I'm unsure exactly when it resets/removes the api-key.",
+  "labels": [
+    "enhancement",
+    "help wanted"
+  ],
+  "linked_prs": [
+    {
+      "number": 317,
+      "state": "closed",
+      "title": "feat: Persist custom settings",
+      "url": "https://github.com/reworkd/AgentGPT/pull/317",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "cff1554f488d75f02ae7acbe5a64f107103da389",
+      "head_sha": "1630a952775f481859ba7a66524040e42f0a8027",
+      "patch": "diff --git a/.eslintrc.json b/.eslintrc.json\nindex b3b1885b..22c553fd 100644\n--- a/.eslintrc.json\n+++ b/.eslintrc.json\n@@ -23,6 +23,7 @@\n     \"@typescript-eslint/no-unsafe-member-access\": \"off\",\n     \"@typescript-eslint/no-unsafe-call\": \"off\",\n     \"@typescript-eslint/no-unsafe-assignment\": \"off\",\n-    \"@typescript-eslint/no-unsafe-argument\": \"off\"\n+    \"@typescript-eslint/no-unsafe-argument\": \"off\",\n+    \"@typescript-eslint/ban-ts-comment\": \"off\"\n   }\n }\ndiff --git a/src/components/SettingsDialog.tsx b/src/components/SettingsDialog.tsx\nindex a8a63600..ca5ebd1f 100644\n--- a/src/components/SettingsDialog.tsx\n+++ b/src/components/SettingsDialog.tsx\n@@ -17,10 +17,7 @@ import type { ModelSettings } from \"../utils/types\";\n export const SettingsDialog: React.FC<{\n   show: boolean;\n   close: () => void;\n-  customSettings: [\n-    ModelSettings,\n-    React.Dispatch<React.SetStateAction<ModelSettings>>\n-  ];\n+  customSettings: [ModelSettings, (settings: ModelSettings) => void];\n }> = ({ show, close, customSettings: [customSettings, setCustomSettings] }) => {\n   const [settings, setSettings] = React.useState<ModelSettings>({\n     ...customSettings,\n@@ -52,10 +49,7 @@ export const SettingsDialog: React.FC<{\n       return;\n     }\n \n-    setCustomSettings((prev) => {\n-      return { ...prev, ...settings };\n-    });\n-\n+    setCustomSettings(settings);\n     close();\n     return;\n   };\ndiff --git a/src/hooks/useSettings.ts b/src/hooks/useSettings.ts\nnew file mode 100644\nindex 00000000..03d7c656\n--- /dev/null\n+++ b/src/hooks/useSettings.ts\n@@ -0,0 +1,60 @@\n+import { useState } from \"react\";\n+import type { ModelSettings } from \"../utils/types\";\n+import {\n+  DEFAULT_MAX_LOOPS_CUSTOM_API_KEY,\n+  DEFAULT_MAX_LOOPS_FREE,\n+  GPT_35_TURBO,\n+} from \"../utils/constants\";\n+\n+const SETTINGS_KEY = \"AGENTGPT_SETTINGS\";\n+const DEFAULT_SETTINGS: ModelSettings = {\n+  customApiKey: undefined,\n+  customModelName: GPT_35_TURBO,\n+  customTemperature: 0.9,\n+  customMaxLoops: DEFAULT_MAX_LOOPS_FREE,\n+  maxTokens: 400,\n+};\n+\n+const loadSettings = () => {\n+  if (typeof window === \"undefined\") {\n+    return DEFAULT_SETTINGS;\n+  }\n+\n+  const data = localStorage.getItem(SETTINGS_KEY);\n+  if (!data) {\n+    return DEFAULT_SETTINGS;\n+  }\n+\n+  try {\n+    const obj = JSON.parse(data) as ModelSettings;\n+    Object.entries(obj).forEach(([key, value]) => {\n+      if (DEFAULT_SETTINGS.hasOwnProperty(key)) {\n+        // @ts-ignore\n+        DEFAULT_SETTINGS[key] = value;\n+      }\n+    });\n+  } catch (error) {}\n+\n+  if (\n+    DEFAULT_SETTINGS.customApiKey &&\n+    DEFAULT_SETTINGS.customMaxLoops === DEFAULT_MAX_LOOPS_FREE\n+  ) {\n+    DEFAULT_SETTINGS.customMaxLoops = DEFAULT_MAX_LOOPS_CUSTOM_API_KEY;\n+  }\n+\n+  return DEFAULT_SETTINGS;\n+};\n+\n+export function useSettings() {\n+  const [settings, setSettings] = useState<ModelSettings>(loadSettings);\n+\n+  const saveSettings = (settings: ModelSettings) => {\n+    setSettings(settings);\n+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));\n+  };\n+\n+  return {\n+    settings,\n+    saveSettings,\n+  };\n+}\ndiff --git a/src/pages/index.tsx b/src/pages/index.tsx\nindex 8ccab920..3da7143d 100644\n--- a/src/pages/index.tsx\n+++ b/src/pages/index.tsx\n@@ -13,27 +13,19 @@ import AutonomousAgent from \"../components/AutonomousAgent\";\n import Expand from \"../components/motions/expand\";\n import HelpDialog from \"../components/HelpDialog\";\n import { SettingsDialog } from \"../components/SettingsDialog\";\n-import { GPT_35_TURBO, DEFAULT_MAX_LOOPS_FREE } from \"../utils/constants\";\n import { TaskWindow } from \"../components/TaskWindow\";\n import { useAuth } from \"../hooks/useAuth\";\n import type { Message } from \"../types/agentTypes\";\n import { useAgent } from \"../hooks/useAgent\";\n import { isEmptyOrBlank } from \"../utils/whitespace\";\n-import type { ModelSettings } from \"../utils/types\";\n+import { useSettings } from \"../hooks/useSettings\";\n \n const Home: NextPage = () => {\n   const { session, status } = useAuth();\n   const [name, setName] = React.useState<string>(\"\");\n   const [goalInput, setGoalInput] = React.useState<string>(\"\");\n   const [agent, setAgent] = React.useState<AutonomousAgent | null>(null);\n-\n-  const customSettings = React.useState<ModelSettings>({\n-    customModelName: GPT_35_TURBO,\n-    customTemperature: 0.9,\n-    customMaxLoops: DEFAULT_MAX_LOOPS_FREE,\n-    maxTokens: 400,\n-  });\n-\n+  const { settings, saveSettings } = useSettings();\n   const [shouldAgentStop, setShouldAgentStop] = React.useState(false);\n   const [messages, setMessages] = React.useState<Message[]>([]);\n   const [showHelpDialog, setShowHelpDialog] = React.useState(false);\n@@ -81,7 +73,7 @@ const Home: NextPage = () => {\n       goalInput.trim(),\n       handleAddMessage,\n       () => setAgent(null),\n-      customSettings[0],\n+      settings,\n       session ?? undefined\n     );\n     setAgent(agent);\n@@ -127,7 +119,7 @@ const Home: NextPage = () => {\n         close={() => setShowHelpDialog(false)}\n       />\n       <SettingsDialog\n-        customSettings={customSettings}\n+        customSettings={[settings, saveSettings]}\n         show={showSettingsDialog}\n         close={() => setShowSettingsDialog(false)}\n       />\n@@ -254,7 +246,7 @@ const Home: NextPage = () => {\n                     <span className=\"ml-2\">Stopping</span>\n                   </>\n                 ) : (\n-                  <span>\"Stop agent\"</span>\n+                  <span>Stop agent</span>\n                 )}\n               </Button>\n             </Expand>\n",
+      "test_paths_in_patch": []
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": [
+    "next/__tests__",
+    "next/__tests__/message-service.test.ts",
+    "next/__tests__/stripe.sh",
+    "next/__tests__/whitespace.test.ts",
+    "next/__tests__/with-retries.test.ts",
+    "platform/reworkd_platform/tests",
+    "platform/reworkd_platform/tests/__init__.py",
+    "platform/reworkd_platform/tests/agent",
+    "platform/reworkd_platform/tests/agent/test_analysis.py",
+    "platform/reworkd_platform/tests/agent/test_crud.py",
+    "platform/reworkd_platform/tests/agent/test_model_factory.py",
+    "platform/reworkd_platform/tests/agent/test_task_output_parser.py",
+    "platform/reworkd_platform/tests/agent/test_tools.py",
+    "platform/reworkd_platform/tests/memory",
+    "platform/reworkd_platform/tests/memory/memory_with_fallback_test.py",
+    "platform/reworkd_platform/tests/test_dependancies.py",
+    "platform/reworkd_platform/tests/test_helpers.py",
+    "platform/reworkd_platform/tests/test_oauth_installers.py",
+    "platform/reworkd_platform/tests/test_reworkd_platform.py",
+    "platform/reworkd_platform/tests/test_s3.py",
+    "platform/reworkd_platform/tests/test_schemas.py",
+    "platform/reworkd_platform/tests/test_security.py",
+    "platform/reworkd_platform/tests/test_settings.py",
+    "platform/reworkd_platform/tests/test_token_service.py"
+  ]
+}
