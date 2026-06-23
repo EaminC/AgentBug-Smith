@@ -10,8 +10,49 @@ You are a Senior DevOps Engineer specialized in creating highly constrained, mul
 7. The Dockerfile must be complete and directly buildable: every referenced path and install step should be justified by repository evidence or clearly marked as an explicit assumption in `#` comments.
 
 --- CRITICAL INSTRUCTIONS FOR {language} PROJECT ---
-1. You MUST ensure the standard testing framework for {language} is installed (e.g., pytest for Python, Jest for JS, JUnit for Java, Cargo for Rust), even if not explicitly listed in requirements or setup files, to support automated regression testing.
+1. You MUST ensure the standard testing framework for {language} is installed. For Python projects, this means you MUST install 'pytest', 'pytest-mock', 'setuptools<=81.0.0', and 'litellm', even if it is not listed in `requirements.txt`. A common cause of failure is a missing test framework.
 2. Ensure the WORKDIR is set to a standard location (e.g., /app).
 3. You MUST explicitly install the necessary testing and execution dependencies using the native package manager for {language} (e.g., pip for Python, npm/yarn for Node, maven for Java).
 4. CRITICAL COPY INSTRUCTION: You MUST copy the entire repository into the container using `COPY . .` (or equivalent for your WORKDIR). Do NOT selectively copy directories like `COPY src ./src`. An external orchestrator will inject automated test scripts into the repository before the final build, and these scripts will be lost if you do not copy the entire directory structure.
-5. CRITICAL INSTALLATION INSTRUCTION: You MUST install the local repository itself into the environment (e.g., `pip install -e .` for Python, `npm install` for Node.js, `cargo build` for Rust). If you only install the testing framework but fail to install the actual project, the tests will fail with 'ModuleNotFoundError' or equivalent.
+5. CRITICAL INSTALLATION INSTRUCTION: You MUST install the local repository itself into the environment (e.g., `pip install -e .` for Python, `npm install` for Node.js, `cargo build` for Rust). If you only install the testing framework but fail to install the actual project, the tests will fail with import errors (e.g., 'ModuleNotFoundError' or 'cannot find module').
+6. To avoid import errors, you MUST combine `RUN` steps for dependency installation. For Python, if `requirements.txt` exists, it should be `RUN pip install -r requirements.txt && pip install -e .`. This ensures all dependencies are installed before the project itself.
+
+Conditional `src/` layout handling (important):
+In many Python repos tests import the code as `src.<pkg>` (for example `import src.agentscope`). When
+the repo is copied into the image AND the project is editable-installed (`pip install -e .`), the same
+source files can be loaded under two module names (e.g. `agentscope` and `src.agentscope`). That duplicate
+loading breaks identity checks, singletons, and registration logic and commonly causes TypeError during
+pytest collection (module/class identity mismatch).
+
+Generator requirement: when emitting Python Dockerfiles, detect whether the repo uses a `src/` layout or
+tests import via `src.`. If so, the generator MUST *not* perform an editable install in the test image. Instead,
+ensure tests import the single source copy by adding `ENV PYTHONPATH=/app` (or equivalent) and only installing
+external dependencies and test tooling. If no `src/` layout is detected, the generator may keep `pip install -e .`.
+
+
+Package-manager selection logic (the generated Dockerfile must implement one branch):
+1. If requirements.txt exists:
+   RUN python -m pip install --upgrade pip wheel && \
+       pip install -r requirements.txt && pip install -e . && \
+       pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout mem0ai
+2. Else if pyproject.toml AND poetry.lock exist:
+   RUN python -m pip install --upgrade pip wheel && \
+       pip install poetry && \
+       poetry config virtualenvs.create false && \
+       poetry install --no-interaction --no-ansi && \
+       pip install -e . && \
+       pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout mem0ai
+3. Else if only pyproject.toml exists (no lockfile):
+   # Assumption: no lockfile; prefer pip editable install for reproducibility
+   RUN python -m pip install --upgrade pip wheel && \
+       pip install -e . && \
+       pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout mem0ai
+Always combine install steps to avoid import-time race conditions.
+
+Mandatory copy & preflight verification for generated Dockerfile:
+- COPY the entire repo: COPY . .
+- Run a preflight import check to fail fast and clearly if core modules are missing:
+  RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
+
+Final image directive (required by test harness):
+  CMD ["/bin/bash"]

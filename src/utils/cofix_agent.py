@@ -8,7 +8,7 @@ def cofix_agent(
     dockerfile: str = "env.dockerfile",
     test_relpath: str = None,
     feedback: str = "",
-    model: str = "tuzi/gpt-4.1-mini",
+    model: str = "tuzi-deepseek-v3.2/deepseek-v3.2",
     project_root: Path = None,
     verbose: bool = False,
     language: str = "Python"

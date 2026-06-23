@@ -18,6 +18,8 @@ ROBUSTNESS PRINCIPLES (WHEN EDITING env.dockerfile):
 5. If a class of step often fails (PEP 668, missing system headers, wrong package manager), add a grounded alternative in the same RUN or an additional RUN that keys off which files exist.
 6. Prefer reusing existing repo conventions visible in the tree (Makefile, lockfile choice, existing scripts) instead of redesigning the workflow.
 7. The final env.dockerfile must be one complete, directly buildable file (full overwrite), with no placeholder paths.
+8. Ecosystem Pre-emption: If the repository name or file content indicates a specific framework (e.g., Dapr, CrewAI, Autogen, LangChain), you MUST explicitly install the core SDKs for that framework. Do not assume they are fully captured in requirements.txt. For Dapr-related projects, always include RUN pip install "dapr>=1.13.0" "dapr-ext-grpc>=1.13.0".
+9. Pre-release fallback: If a project relies on bleeding-edge features (detected by imports of internal _request or alpha/beta modules), attempt installation with the --pre flag: pip install --pre <package>.
 
 CRITICAL COPY INSTRUCTION:
 - You MUST copy the entire repository into the container using `COPY . .` (or equivalent). 
@@ -37,12 +39,48 @@ SMART INSTALLATION LOGIC:
 You must implement a robust installation process using shell-level conditional logic suited for {language}. Do not blindly guess the build tool.
 - Check for the existence of configuration files (e.g., package.json, Cargo.toml, pom.xml, pyproject.toml) before running package manager install commands.
 - Example: `RUN if [ -f "package.json" ]; then npm install; fi`
-- You MUST ensure the standard testing framework for {language} is installed and available in the environment.
+- You MUST ensure the standard testing framework for {language} is installed. For Python projects, this means you MUST install 'pytest', 'pytest-mock', 'pytest-xdist', 'pytest-timeout', 'setuptools<=81.0.0', and 'litellm', even if it is not listed in `requirements.txt`. A common cause of failure is a missing test framework.
 - You MUST install the repository itself into the environment so test scripts can import its modules. You must use the appropriate local installation command for {language}. 
   * If Python: Execute `RUN pip install -e .` unconditionally. Do NOT wrap it inside an `if [ -f "setup.py" ]` block, because `pip` natively handles modern `pyproject.toml` files as well.
   * If Node.js/TypeScript: Execute `RUN npm install`, `yarn install`, or `pnpm install` based on the repository's lockfile.
   * If Rust: Execute `RUN cargo build`.
   Do NOT skip this step and do NOT suppress errors with `|| true`.
+- To avoid import errors, you MUST combine `RUN` steps for dependency installation. For Python, if `requirements.txt` exists, it should be `RUN pip install -r requirements.txt && pip install -e .`. This ensures all dependencies are installed before the project itself.
+
+Conditional `src/` layout handling (summary):
+The full conditional guidance and example Dockerfile snippet are centralized in
+`prompt/dockerbuild/init/system.txt`. Generator implementations should follow that
+guidance: if the repo uses a `src/` layout or tests import via `src.`, skip
+`pip install -e .` in the test image and set `ENV PYTHONPATH=/app`; otherwise an
+editable install is acceptable. This avoids duplicate module-loading identity
+issues that break runtime registrations during pytest collection.
+
+Python branch:
+- Base: python:3.12-slim
+- Early: RUN python -m pip install --upgrade pip wheel
+- Install framework SDKs discovered via repo name (e.g., dapr, langchain, crewai, etc.).
+- If requirements.txt: RUN pip install -r requirements.txt && pip install -e . && pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm mem0ai
+- Else if pyproject.toml + poetry.lock: install poetry then poetry install, then pip install -e . and test deps
+- Else if only pyproject.toml: (Assumption: no lockfile) prefer pip install -e . then test deps
+- Preflight: RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
+- Final CMD must be: CMD ["/bin/bash"]
+
+Node branch:
+- Base: node:20-slim
+- If package-lock.json: RUN npm ci && npm run build || true
+- Else: RUN npm install && npm run build || true
+- Ensure test tooling: RUN npm install --no-save jest mocha || true
+- Preflight: RUN node -e "require('jest'); console.log('preflight ok')" || true
+
+Rust branch:
+- Base: rust:1.75-slim
+- RUN cargo build --release && cargo test --no-run || true
+- Preflight: RUN cargo metadata --no-deps
+
+Universal requirements (must be present):
+- COPY . . must be present to ensure injected tests are available.
+- Set Forge env vars: OPENAI_BASE_URL, OPENAI_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN.
+- Final CMD must be: CMD ["/bin/bash"]
 
 PROJECT TYPE DETECTION:
 - Check for Cargo.toml: This is a Rust project, use cargo build, NOT pip install
@@ -56,6 +94,14 @@ When creating/configuring the Dockerfile, you need to:
 2. Set the appropriate environment variables to make the repository use Forge API instead of OpenAI API
 3. Install any dependencies required for the standalone reproduction script using the native {language} package manager.
 4. Ensure the system can run the standalone {language} script directly.
+
+ENVIRONMENT VARIABLES TO SET IN DOCKERFILE:
+The Forge API is OpenAI-compatible, so the application can work with it by setting these environment variables in the Dockerfile:
+
+For OpenAI SDK compatibility:
+- OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
+- OPENAI_API_KEY=${FORGE_API_KEY}
+- The final `CMD` MUST be `/bin/bash`. This is required for the testing environment. Do NOT use any other command.
 
 ENVIRONMENT VARIABLES TO SET IN DOCKERFILE:
 The Forge API is OpenAI-compatible, so the application can work with it by setting these environment variables in the Dockerfile:

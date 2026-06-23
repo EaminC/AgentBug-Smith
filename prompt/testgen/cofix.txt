@@ -18,28 +18,38 @@ We have:
 ### Task
 Analyze the feedback and apply precise fixes to the Dockerfile and/or Test File to achieve a valid F2P result. 
 
-### CRITICAL: Diagnosing the F2P Feedback
-A successful F2P run requires the test to FAIL before the patch (catching the bug) and PASS after the patch. 
-Look at the exit codes in the feedback (`rc1` = before patch, `rc2` = after patch) to diagnose the issue:
+### CRITICAL: EXTRACT AND USE IN-PATCH TESTS (THE SWE-FACTORY METHOD)
+1. **Prioritize In-Patch Tests:** Rather than writing a test from scratch, look at the code changes, issue description, and especially the modified test files associated with this fix (the "test_paths_in_patch" such as `tests/formatter_dashscope_test.py`).
+2. **Replicate the PR's Unit Tests:** Copy the assertions and test structures directly from the developer's original test patch. These tests are guaranteed to use correct import paths, correct class methods, and run cleanly without hitting network constraints.
+3. **Adapt cleanly to the test runner:** Ensure the copied tests are structured correctly for the test runner (e.g., using `pytest` or `unittest` framework depending on the repository's convention).
 
-1. **Test is Skipping (Exit Code 5):** If the test says "skipped", YOU MUST REMOVE all defensive `try...except` blocks and `skip()` logic from the test file. Let imports crash naturally so the pipeline can heal them.
-2. **Missing Module / ImportError:** You MUST add `RUN pip install -e .` (or `{language}` equivalent like `npm install`) to the END of the Dockerfile. The local repository itself must be installed into the environment.
-3. **File Not Found Error:** The Dockerfile MUST contain `COPY . .` to ensure the dynamically injected test file is mounted into the container. DO NOT use partial copies like `COPY src ./src`.
-4. **False Positive (rc1=0, rc2=0):** If both runs pass, the test is NOT capturing the bug. You must rewrite the test logic to enforce stricter assertions that fail on the buggy implementation.
-5. **False Negative (rc1=1, rc2=1):** If both runs fail, either the environment is broken, or the test is asserting something the patch doesn't actually fix.
+### CRITICAL: NO PLACEHOLDER HALLUCINATIONS
+1. **Never Invent Placeholder Modules:** Under NO circumstances should you write imports for imaginary modules or placeholder names like `from buggy_module import buggy_function`.
+2. **Use Real Import Paths:** You MUST identify and import real packages, modules, and classes from the repository being tested (e.g., `from agentscope.formatter import DashScopeChatFormatter`).
+3. **Validate your imports:** If a package like `litellm` is a third-party dependency, do not guess its API. Only import modules defined in the local repository or standard libraries.
 
 ### CRITICAL: Environment Robustness (Self-Healing)
-1. **Metadata Detection:** Use shell logic (`if [ -f file ]; then ...`) to check for configuration files before executing install commands.
+1. **Safe File Operations in Docker:** Never execute bare `RUN pip install -r requirements.txt`. You MUST wrap it in a shell conditional: 
+   `RUN if [ -f requirements.txt ]; then pip install -r requirements.txt; fi`
 2. **Dynamic Key Retrieval:** Model initializations in the test script MUST use environment variables (e.g., `os.getenv('OPENAI_API_KEY')`).
 3. **Editable Installation (CRITICAL):** You MUST install the local project into the environment using the standard command for {language}.
-  * For Python: Use `RUN pip install -e .` unconditionally. Do NOT wrap it in `if [ -f "setup.py" ]`.
+  * For Python: Use `RUN pip install -e .` unconditionally.
   * For Node.js/TypeScript: Use `RUN npm install` (or yarn/pnpm equivalent).
   * For Rust: Use `RUN cargo build`.
 4. **Framework Async Patterns:** If the {language} agent framework utilizes asynchronous coroutines, ensure they are explicitly awaited.
 
+### CRITICAL: PYTHON MONOREPO & MULTI-PACKAGE LAYOUTS
+If the repository has a multi-package layout (e.g., contains sub-directories under `libs/`, `packages/`, or multiple `pyproject.toml` / `setup.py` files spread across the repository) and triggers an `ImportError` or `ModuleNotFoundError` during test collection:
+
+1. **Install Sub-Packages in Editable Mode Unconditionally:** You MUST chain editable installation commands for ALL key directories containing package code.
+   * *Example Syntax:* `RUN pip install -e libs/langgraph[tests] -e libs/prebuilt -e libs/sdk-py`
+2. **Explicitly Configure PYTHONPATH:** You MUST explicitly define the `PYTHONPATH` environment variable in the Dockerfile, mapping all relevant source package directory paths separated by colons.
+   * *Example Syntax:* `ENV PYTHONPATH=/app/libs/langgraph:/app/libs/prebuilt:/app/libs/sdk-py`
+3. **Verify Cross-Namespace Dependencies:** Do not assume installing a single sub-package exposes the entire repository namespace. Cross-reference the failing import path with the directory structure to locate the missing package source block.
+
 ### CRITICAL: Mocking & API Calls
 1. **Do NOT Mock the Test Subject:** If your F2P test is failing because assertions aren't triggering, check your mocks. If you mock the exact function where the bug lives, the test will never execute the patch. Only mock the underlying network/API client, not the wrapper logic.
-2. **Do NOT Simulate the Bug:** Do not write fake implementations of the buggy or fixed code to force an error. The pipeline physically swaps the underlying files on disk using `git apply` between Phase B and Phase E. Your only job is to test the real imported code.
+2. **Do NOT Simulate the Bug:** Do not write fake implementations of the buggy or fixed code to force an error. Your only job is to test the real imported code.
 
 ### Constraints & Output Format
 - Return the fully corrected Dockerfile wrapped in a ```dockerfile ... ``` block.

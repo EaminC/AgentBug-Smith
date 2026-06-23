@@ -127,15 +127,20 @@ def extract_test_code(text: str, language: str) -> str:
 
     return cleaned
 
-def _strip_code_fence(text: str) -> str:
-    t = text.strip()
-    if not t.startswith("```"):
-        return t
-    lines = t.split("\n")
-    if lines and lines[0].strip().startswith("```"):
+def strip_code_fence(text: str) -> str:
+    text = text.strip()
+
+    lines = text.splitlines()
+
+    if not lines:
+        return ""
+
+    if lines[0].startswith("```"):
         lines = lines[1:]
-    while lines and lines[-1].strip() == "```":
+
+    if lines and lines[-1].strip().startswith("```"):
         lines = lines[:-1]
+
     return "\n".join(lines).strip()
 
 
