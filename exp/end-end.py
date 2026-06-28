@@ -66,7 +66,7 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_50" / "issue_2175.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_50" / "issue_2561.json"
 _MODEL = os.getenv("MODEL", "tensorblock/gpt-4.1-mini")
 
 
@@ -261,7 +261,7 @@ def _run(run_dir: Path) -> None:
                     break
 
             has_patch_test = False
-            if patch_test_src:
+            if patch_test_src and _f2p_round <= 3:
                 original_test_path = _ws.local_repo_path / patch_test_src
                 target_test_path = _ws.local_repo_path / _test_rel
                 if original_test_path.exists():
