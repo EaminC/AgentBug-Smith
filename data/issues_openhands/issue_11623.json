@@ -1,0 +1,32 @@
+{
+  "number": 11623,
+  "title": "[GUI] Queue messages while agent is Connecting",
+  "url": "https://github.com/OpenHands/OpenHands/issues/11623",
+  "state": "closed",
+  "created_at": "2025-11-03T17:53:50Z",
+  "closed_at": "2025-11-12T13:20:10Z",
+  "body": "Similar to OpenHands/OpenHands-CLI#103, users would like to queue messages while the agent is setting up the runtime/workspace.  This seems to only be an issue when the runtime is in a \"Connecting...\" state.\n\n<img width=\"2546\" height=\"410\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/698022f1-d950-4f48-ba70-fa4a491a0830\" />",
+  "labels": [
+    "enhancement",
+    "UI/UX"
+  ],
+  "linked_prs": [
+    {
+      "number": 11687,
+      "state": "closed",
+      "title": "feat: queue chat messages during runtime connection",
+      "url": "https://github.com/OpenHands/OpenHands/pull/11687",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "915c180ba78645d628b422301a68df981b1c6ed3",
+      "head_sha": "23860125d0ca7b6f7b07271b1a9ef944b407830b",
+      "patch": "diff --git a/frontend/src/context/ws-client-provider.tsx b/frontend/src/context/ws-client-provider.tsx\nindex 38f390476fe5..22e8b64be800 100644\n--- a/frontend/src/context/ws-client-provider.tsx\n+++ b/frontend/src/context/ws-client-provider.tsx\n@@ -142,6 +142,7 @@ export function WsClientProvider({\n   const { addEvent, clearEvents } = useEventStore();\n   const queryClient = useQueryClient();\n   const sioRef = React.useRef<Socket | null>(null);\n+  const pendingEventsRef = React.useRef<Record<string, unknown>[]>([]);\n   const [webSocketStatus, setWebSocketStatus] =\n     React.useState<V0_WebSocketStatus>(\"DISCONNECTED\");\n   const lastEventRef = React.useRef<Record<string, unknown> | null>(null);\n@@ -151,17 +152,37 @@ export function WsClientProvider({\n   const { data: conversation, refetch: refetchConversation } =\n     useActiveConversation();\n \n+  function flushPendingEvents(socket: Socket | null = sioRef.current) {\n+    if (!socket || pendingEventsRef.current.length === 0) {\n+      return;\n+    }\n+\n+    pendingEventsRef.current.forEach((queuedEvent) => {\n+      socket.emit(\"oh_user_action\", queuedEvent);\n+    });\n+    pendingEventsRef.current = [];\n+  }\n+\n   function send(event: Record<string, unknown>) {\n-    if (!sioRef.current) {\n-      EventLogger.error(\"WebSocket is not connected.\");\n+    const socket = sioRef.current;\n+\n+    if (!socket) {\n+      EventLogger.error(\"WebSocket is not connected, queuing message...\");\n+      pendingEventsRef.current.push(event);\n       return;\n     }\n-    sioRef.current.emit(\"oh_user_action\", event);\n+\n+    if (pendingEventsRef.current.length > 0) {\n+      flushPendingEvents(socket);\n+    }\n+\n+    socket.emit(\"oh_user_action\", event);\n   }\n \n   function handleConnect() {\n     setWebSocketStatus(\"CONNECTED\");\n     removeErrorMessage();\n+    flushPendingEvents();\n   }\n \n   function handleMessage(event: Record<string, unknown>) {\n@@ -292,6 +313,7 @@ export function WsClientProvider({\n \n     clearEvents();\n     setWebSocketStatus(\"CONNECTING\");\n+    pendingEventsRef.current = [];\n   }, [conversationId]);\n \n   React.useEffect(() => {\n@@ -301,6 +323,12 @@ export function WsClientProvider({\n \n     // Clear error messages when conversation is intentionally stopped\n     if (conversation && conversation.status === \"STOPPED\") {\n+      const existingSocket = sioRef.current;\n+      if (existingSocket) {\n+        existingSocket.disconnect();\n+      }\n+      sioRef.current = null;\n+      pendingEventsRef.current = [];\n       removeErrorMessage();\n       setWebSocketStatus(\"DISCONNECTED\");\n       return () => undefined; // conversation intentionally stopped\n@@ -320,6 +348,10 @@ export function WsClientProvider({\n       !conversation.runtime_status ||\n       conversation.runtime_status === \"STATUS$STOPPED\"\n     ) {\n+      if (sioRef.current) {\n+        sioRef.current.disconnect();\n+      }\n+      sioRef.current = null;\n       return () => undefined; // conversation not ready for WebSocket connection\n     }\n \n@@ -368,6 +400,7 @@ export function WsClientProvider({\n     sio.on(\"disconnect\", handleDisconnect);\n \n     sioRef.current = sio;\n+    flushPendingEvents(sio);\n \n     return () => {\n       sio.off(\"connect\", handleConnect);\n",
+      "test_paths_in_patch": []
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

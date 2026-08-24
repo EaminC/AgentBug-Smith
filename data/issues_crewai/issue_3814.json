@@ -1,0 +1,33 @@
+{
+  "number": 3814,
+  "title": "[BUG] drop_additionnal_params parameter ignored when working with agents",
+  "url": "https://github.com/crewAIInc/crewAI/issues/3814",
+  "state": "closed",
+  "created_at": "2025-10-30T10:47:12Z",
+  "closed_at": "2025-11-26T08:58:09Z",
+  "body": "### Description\n\nWhen using reasoning models, I need to drop the `stop` param from the LLM like so:\n\n```python\nllm = LLM(\n    model=\"azure/o4-mini\",\n    additional_drop_params=[\"stop\"], # This line removes the stop param\n)\n```\n\nThis works when instantiating and LLM class and calling it directly with `llm.call(\"your message\")` \n\n---\n\n**But when using the reasoning model is used in an agent, this param is ignored :**\n\n```python\nfrom crewai import LLM, Agent\n\nllm = LLM(\n    model=\"azure/o4-mini\",\n    additional_drop_params=[\"stop\"],\n)\n\nagent = Agent(\n    role=\"Test Agent\",\n    goal=\"Test the LLM response format functionality.\",\n    backstory=\"An AI developer testing LLM integrations.\",\n    llm=llm,\n)\n\nresult = agent.kickoff(\"hello\")\n\nprint(result)\n`````\n\nI get this error :\n```\nazure.core.exceptions.HttpResponseError: (unsupported_parameter) Unsupported parameter: 'stop' is not supported with this model.\nCode: unsupported_parameter\nMessage: Unsupported parameter: 'stop' is not supported with this model.\n```\n\n\n### Steps to Reproduce\n\n1. Create a LLM object with an OpenAI reasoning model\n2. Add the `additional_drop_params=[\"stop\"]` parameter\n3. Create an Agent using this LLM instance\n4. Try calling it\n\n### Expected behavior\n\nThe `additional_drop_param` should apply in an agent setup \n\n### Screenshots/Code snippets\n\n```python\nfrom crewai import LLM, Agent\n\nllm = LLM(\n    model=\"azure/o4-mini\",\n    additional_drop_params=[\"stop\"],\n)\n\nagent = Agent(\n    role=\"Test Agent\",\n    goal=\"Test the LLM response format functionality.\",\n    backstory=\"An AI developer testing LLM integrations.\",\n    llm=llm,\n)\n\n\nresult = agent.kickoff(\"hello\")\n```\n\n### Operating System\n\nUbuntu 20.04\n\n### Python Version\n\n3.12\n\n### crewAI Version\n\n1.2.1\n\n### crewAI Tools Version\n\nN.A\n\n### Virtual Environment\n\nVenv\n\n### Evidence\n\nazure.core.exceptions.HttpResponseError: (unsupported_parameter) Unsupported parameter: 'stop' is not supported with this model.\nCode: unsupported_parameter\nMessage: Unsupported parameter: 'stop' is not supported with this model.\n\n### Possible Solution\n\nNone\n\n### Additional context\n\nN.A",
+  "labels": [
+    "bug"
+  ],
+  "linked_prs": [
+    {
+      "number": 3920,
+      "state": "closed",
+      "title": "Adding drop parameters in ChatCompletionsClient ",
+      "url": "https://github.com/crewAIInc/crewAI/pull/3920",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "4ae8c36815053bf6fd219cb2c1d9141c4a4b6c03",
+      "head_sha": "33d37ac6ec677c893d1041cefefd5bd43cdc5fbd",
+      "patch": "diff --git a/lib/crewai/src/crewai/llms/providers/azure/completion.py b/lib/crewai/src/crewai/llms/providers/azure/completion.py\nindex 17306d8a28..e79bb72f27 100644\n--- a/lib/crewai/src/crewai/llms/providers/azure/completion.py\n+++ b/lib/crewai/src/crewai/llms/providers/azure/completion.py\n@@ -310,6 +310,14 @@ def _prepare_completion_params(\n             params[\"tools\"] = self._convert_tools_for_interference(tools)\n             params[\"tool_choice\"] = \"auto\"\n \n+        additional_params = self.additional_params\n+        additional_drop_params = additional_params.get('additional_drop_params')\n+        drop_params = additional_params.get('drop_params')\n+\n+        if drop_params and isinstance(additional_drop_params, list):\n+            for drop_param in additional_drop_params:\n+                params.pop(drop_param, None)\n+\n         return params\n \n     def _convert_tools_for_interference(\ndiff --git a/lib/crewai/tests/llms/azure/test_azure.py b/lib/crewai/tests/llms/azure/test_azure.py\nindex dbb41170da..ec881363d6 100644\n--- a/lib/crewai/tests/llms/azure/test_azure.py\n+++ b/lib/crewai/tests/llms/azure/test_azure.py\n@@ -381,6 +381,7 @@ def test_azure_raises_error_when_endpoint_missing():\n         with pytest.raises(ValueError, match=\"Azure endpoint is required\"):\n             AzureCompletion(model=\"gpt-4\", api_key=\"test-key\")\n \n+\n def test_azure_raises_error_when_api_key_missing():\n     \"\"\"Test that AzureCompletion raises ValueError when API key is missing\"\"\"\n     from crewai.llms.providers.azure.completion import AzureCompletion\n@@ -389,6 +390,8 @@ def test_azure_raises_error_when_api_key_missing():\n     with patch.dict(os.environ, {}, clear=True):\n         with pytest.raises(ValueError, match=\"Azure API key is required\"):\n             AzureCompletion(model=\"gpt-4\", endpoint=\"https://test.openai.azure.com\")\n+\n+\n def test_azure_endpoint_configuration():\n     \"\"\"\n     Test that Azure endpoint configuration works with multiple environment variable names\n@@ -1086,3 +1089,27 @@ def test_azure_mistral_and_other_models():\n             )\n             assert \"model\" in params\n             assert params[\"model\"] == model_name\n+\n+\n+def test_azure_completion_params_preparation_with_drop_params():\n+    \"\"\"\n+    Test that completion parameters are properly prepared with drop paramaeters attribute respected\n+    \"\"\"\n+    with patch.dict(os.environ, {\n+        \"AZURE_API_KEY\": \"test-key\",\n+        \"AZURE_ENDPOINT\": \"https://models.inference.ai.azure.com\"\n+    }):\n+        llm = LLM(\n+            model=\"azure/o4-mini\",\n+            drop_params=True,\n+            additional_drop_params=[\"stop\"],\n+            max_tokens=1000\n+        )\n+\n+        from crewai.llms.providers.azure.completion import AzureCompletion\n+        assert isinstance(llm, AzureCompletion)\n+\n+        messages = [{\"role\": \"user\", \"content\": \"Hello\"}]\n+        params = llm._prepare_completion_params(messages)\n+\n+        assert params.get('stop') == None\n\\ No newline at end of file\n",
+      "test_paths_in_patch": [
+        "lib/crewai/tests/llms/azure/test_azure.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

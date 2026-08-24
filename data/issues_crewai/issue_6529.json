@@ -1,0 +1,31 @@
+{
+  "number": 6529,
+  "title": "after_llm_call hook prevents agents from executing tools",
+  "url": "https://github.com/crewAIInc/crewAI/issues/6529",
+  "state": "closed",
+  "created_at": "2026-07-13T18:10:12Z",
+  "closed_at": "2026-07-14T13:49:23Z",
+  "body": "### Description\n\nWhen an `after_llm_call` hook is registered, an agent that would otherwise call a tool stops executing that tool. The agent finishes as if the model's tool call were the final answer. Removing the hook restores normal tool execution.\n\n### Reproduction\n\nRequires an OpenAI API key (uses a real LLM call).\n\n```python\nfrom crewai import Agent\nfrom crewai.hooks import after_llm_call\nfrom crewai.tools import tool\n\nexecuted = []\n\n\n@tool(\"calculate_sum\")\ndef calculate_sum(a: int, b: int) -> int:\n    \"\"\"Return the sum of two integers a and b.\"\"\"\n    executed.append((a, b))\n    return a + b\n\n\n@after_llm_call\ndef observe(context):\n    return None  # observe only, no modification\n\n\nagent = Agent(\n    role=\"Math Assistant\",\n    goal=\"Perform calculations using tools\",\n    backstory=\"You always use the calculate_sum tool for addition.\",\n    tools=[calculate_sum],\n    verbose=True,\n)\n\nresult = agent.kickoff(\n    messages=\"What is 5 + 3? Use the calculate_sum tool, then report the number.\"\n)\nprint(\"tool executed:\", bool(executed))\n```\n\nTo see the contrast, comment out the `@after_llm_call def observe(...)` hook and run again.\n\n### Expected\n\n`tool executed: True` — the `calculate_sum` tool runs, exactly as it does when no hook is registered.\n\n### Actual\n\n`tool executed: False` — with the `after_llm_call` hook registered, the tool is never executed and the agent returns the model's raw tool call as its result. Removing the hook makes the tool execute normally.\n",
+  "labels": [],
+  "linked_prs": [
+    {
+      "number": 6531,
+      "state": "closed",
+      "title": "fix: after_llm_call hooks no longer break native tool execution",
+      "url": "https://github.com/crewAIInc/crewAI/pull/6531",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "5f4ac9f407209644b5f54881a56082114c88b785",
+      "head_sha": "12356b41e894e8e4cb114d6edd6ceee1106d1121",
+      "patch": "diff --git a/lib/crewai/src/crewai/utilities/agent_utils.py b/lib/crewai/src/crewai/utilities/agent_utils.py\nindex d2090b0a09..8a5fd9a071 100644\n--- a/lib/crewai/src/crewai/utilities/agent_utils.py\n+++ b/lib/crewai/src/crewai/utilities/agent_utils.py\n@@ -1751,6 +1751,12 @@ def _setup_after_llm_call_hooks(\n     if executor_context and executor_context.after_llm_call_hooks:\n         from crewai.hooks.llm_hooks import LLMCallHookContext\n \n+        # Don't stringify structured tool-call payloads: the executor would\n+        # treat the result as a final answer and skip tool execution (#6529).\n+        # Hooks still run on the follow-up textual response.\n+        if not isinstance(answer, (str, BaseModel)):\n+            return answer\n+\n         original_messages = executor_context.messages\n \n         if isinstance(answer, BaseModel):\ndiff --git a/lib/crewai/tests/hooks/test_llm_hooks.py b/lib/crewai/tests/hooks/test_llm_hooks.py\nindex cacba6371d..7b8add6974 100644\n--- a/lib/crewai/tests/hooks/test_llm_hooks.py\n+++ b/lib/crewai/tests/hooks/test_llm_hooks.py\n@@ -272,6 +272,40 @@ def hook2(context):\n \n         assert result == \"Original [hook1] [hook2]\"\n \n+    def test_after_hooks_do_not_clobber_native_tool_call_responses(\n+        self, mock_executor\n+    ):\n+        \"\"\"A registered after hook must not break native tool execution.\n+\n+        Regression for crewAIInc/crewAI#6529: `_setup_after_llm_call_hooks`\n+        stringified structured tool-call payloads, so the executor treated the\n+        raw tool call as the final answer and never executed the tool. Non-str,\n+        non-BaseModel responses now pass through untouched; hooks still fire on\n+        textual responses.\n+        \"\"\"\n+        from crewai.utilities.agent_utils import _setup_after_llm_call_hooks\n+\n+        observed = []\n+\n+        def observer(context):\n+            observed.append(context.response)\n+            return None\n+\n+        register_after_llm_call_hook(observer)\n+        mock_executor.after_llm_call_hooks = get_after_llm_call_hooks()\n+\n+        tool_calls = [Mock()]  # structured native tool-call payload\n+        result = _setup_after_llm_call_hooks(\n+            mock_executor, tool_calls, printer=Mock(), verbose=False\n+        )\n+        assert result is tool_calls\n+\n+        text = _setup_after_llm_call_hooks(\n+            mock_executor, \"final answer\", printer=Mock(), verbose=False\n+        )\n+        assert text == \"final answer\"\n+        assert observed == [\"final answer\"]\n+\n     def test_unregister_before_hook(self):\n         \"\"\"Test that before hooks can be unregistered.\"\"\"\n         def test_hook(context):\n",
+      "test_paths_in_patch": [
+        "lib/crewai/tests/hooks/test_llm_hooks.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

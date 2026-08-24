@@ -1,0 +1,33 @@
+{
+  "number": 5469,
+  "title": "[BUG] skills problem",
+  "url": "https://github.com/crewAIInc/crewAI/issues/5469",
+  "state": "closed",
+  "created_at": "2026-04-15T15:58:03Z",
+  "closed_at": "2026-04-23T11:58:14Z",
+  "body": "### Description\n\nhi my friend , why activate all skills data in dir, i think first step is to find only METADATA .  AND I see all skills INSTRUCTIONS in llm prompt , is this a problem?\ndef set_skills\n```\n        for item in items:\n            if isinstance(item, Path):\n                discovered = discover_skills(item, source=self)\n                for skill in discovered:\n                    if skill.name not in seen:\n                        seen.add(skill.name)\n                        resolved.append(activate_skill(skill, source=self))\n```\n\n### Steps to Reproduce\n\ndiscovered_skills = discover_skills(SKILLS_ROOT)\nagent = Agent(\n    role=\"旅行顾问\",\n    goal=\"根据用户需求提供专业的旅行建议\",\n    backstory=(\n        \"你是一位经验丰富的旅行顾问，熟悉全球各地的景点、文化与注意事项。\"\n        \"你善于倾听用户需求，并给出个性化的旅行方案。\"\n    ),\n    skills=discovered_skills,\n    verbose=True,\n)\nmessages = [\n    {\"role\": \"user\", \"content\": \"我想去日本旅游，大概有 10 天时间，应该去哪些城市？}\n]\nresult = agent.kickoff(messages)\n\n### Expected behavior\n\n first step is to find only METADATA \n\n### Screenshots/Code snippets\n\ndiscovered_skills = discover_skills(SKILLS_ROOT)\nagent = Agent(\n    role=\"旅行顾问\",\n    goal=\"根据用户需求提供专业的旅行建议\",\n    backstory=(\n        \"你是一位经验丰富的旅行顾问，熟悉全球各地的景点、文化与注意事项。\"\n        \"你善于倾听用户需求，并给出个性化的旅行方案。\"\n    ),\n    skills=discovered_skills,\n    verbose=True,\n)\nmessages = [\n    {\"role\": \"user\", \"content\": \"我想去日本旅游，大概有 10 天时间，应该去哪些城市？}\n]\nresult = agent.kickoff(messages)\n\n### Operating System\n\nUbuntu 20.04\n\n### Python Version\n\n3.10\n\n### crewAI Version\n\n1.14.1\n\n### crewAI Tools Version\n\n1.14.1\n\n### Virtual Environment\n\nVenv\n\n### Evidence\n\nskills problem\n\n### Possible Solution\n\nskills problem\n\n### Additional context\n\nskills problem",
+  "labels": [
+    "bug"
+  ],
+  "linked_prs": [
+    {
+      "number": 5581,
+      "state": "closed",
+      "title": "fix: preserve metadata-only agent skills",
+      "url": "https://github.com/crewAIInc/crewAI/pull/5581",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "69461076df442d9e660b99d24e9c19ad59578301",
+      "head_sha": "b7d4b54f03b0c201da2d3ea0a8dbe4f2650035c2",
+      "patch": "diff --git a/lib/crewai/src/crewai/agent/core.py b/lib/crewai/src/crewai/agent/core.py\nindex a2df8c2b97..113adbea84 100644\n--- a/lib/crewai/src/crewai/agent/core.py\n+++ b/lib/crewai/src/crewai/agent/core.py\n@@ -394,15 +394,17 @@ def set_skills(\n         self,\n         resolved_crew_skills: list[SkillModel] | None = None,\n     ) -> None:\n-        \"\"\"Resolve skill paths and activate skills to INSTRUCTIONS level.\n+        \"\"\"Resolve skill paths while preserving explicit disclosure levels.\n \n-        Path entries trigger discovery and activation. Pre-loaded Skill objects\n-        below INSTRUCTIONS level are activated. Crew-level skills are merged in\n-        with event emission so observability is consistent regardless of origin.\n+        Path entries trigger discovery and activation because directory-based\n+        skills opt into eager loading. Pre-loaded Skill objects keep their\n+        current disclosure level so callers can attach METADATA-only skills and\n+        progressively activate them later. Crew-level skills are merged in with\n+        event emission so observability is consistent regardless of origin.\n \n         Args:\n-            resolved_crew_skills: Pre-resolved crew skills (already discovered\n-                and activated). When provided, avoids redundant discovery per agent.\n+            resolved_crew_skills: Pre-resolved crew skills. When provided,\n+                avoids redundant discovery per agent.\n         \"\"\"\n         from crewai.crew import Crew\n \n@@ -443,8 +445,7 @@ def set_skills(\n             elif isinstance(item, SkillModel):\n                 if item.name not in seen:\n                     seen.add(item.name)\n-                    activated = activate_skill(item, source=self)\n-                    if activated is item and item.disclosure_level >= INSTRUCTIONS:\n+                    if item.disclosure_level >= INSTRUCTIONS:\n                         crewai_event_bus.emit(\n                             self,\n                             event=SkillActivatedEvent(\n@@ -454,7 +455,7 @@ def set_skills(\n                                 disclosure_level=item.disclosure_level,\n                             ),\n                         )\n-                    resolved.append(activated)\n+                    resolved.append(item)\n \n         self.skills = resolved if resolved else None\n \ndiff --git a/lib/crewai/tests/skills/test_integration.py b/lib/crewai/tests/skills/test_integration.py\nindex 23004d79e1..c13054e311 100644\n--- a/lib/crewai/tests/skills/test_integration.py\n+++ b/lib/crewai/tests/skills/test_integration.py\n@@ -4,6 +4,8 @@\n \n import pytest\n \n+from crewai import Agent\n+from crewai.agent.utils import append_skill_context\n from crewai.skills.loader import activate_skill, discover_skills, format_skill_context\n from crewai.skills.models import INSTRUCTIONS, METADATA\n \n@@ -76,3 +78,23 @@ def test_multiple_search_paths(self, tmp_path: Path) -> None:\n             all_skills.extend(discover_skills(search_path))\n         names = {s.name for s in all_skills}\n         assert names == {\"skill-a\", \"skill-b\"}\n+\n+    def test_agent_preserves_metadata_for_discovered_skills(self, tmp_path: Path) -> None:\n+        _create_skill_dir(tmp_path, \"travel\", body=\"Use this skill for travel planning.\")\n+        discovered = discover_skills(tmp_path)\n+\n+        agent = Agent(\n+            role=\"Travel Advisor\",\n+            goal=\"Provide personalized travel suggestions.\",\n+            backstory=\"An experienced travel consultant.\",\n+            skills=discovered,\n+        )\n+\n+        assert agent.skills is not None\n+        assert agent.skills[0].disclosure_level == METADATA\n+        assert agent.skills[0].instructions is None\n+\n+        prompt = append_skill_context(agent, \"Plan a 10-day Japan itinerary.\")\n+        assert \"## Skill: travel\" in prompt\n+        assert \"Skill travel\" in prompt\n+        assert \"Use this skill for travel planning.\" not in prompt\n",
+      "test_paths_in_patch": [
+        "lib/crewai/tests/skills/test_integration.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

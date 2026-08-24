@@ -1,0 +1,31 @@
+{
+  "number": 6065,
+  "title": "[BUG] human_input=True on Task raises AttributeError: 'AgentExecutor' object has no attribute 'ask_for_human_input' with default experimental executor",
+  "url": "https://github.com/crewAIInc/crewAI/issues/6065",
+  "state": "closed",
+  "created_at": "2026-06-07T23:25:54Z",
+  "closed_at": "2026-06-09T00:55:20Z",
+  "body": "### Description\n\n  When human_input=True is set on a Task, the crew execution fails with:\n\n  \"An unknown error occurred. Please check the details below.\n  Error details: 'AgentExecutor' object has no attribute 'ask_for_human_input'\"\n\n  This happens because the new default executor (crewai.experimental.AgentExecutor) does not expose ask_for_human_input as a direct instance attribute — it stores the flag inside self.state.ask_for_human_input — but the\n  ExecutorContext protocol and SyncHumanInputProvider.handle_feedback both expect it as a direct attribute on the executor object.\n\n\n### Steps to Reproduce\n\nfrom crewai import Agent, Task, Crew, LLM\n\n  llm = LLM(model=\"ollama/llama3\", base_url=\"http://localhost:11434\")\n\n  agent = Agent(\n      role=\"Researcher\",\n      goal=\"Find information\",\n      backstory=\"You are a researcher.\",\n      llm=llm,\n      verbose=True,\n  )\n\n  task = Task(\n      description=\"Research topic X.\",\n      expected_output=\"A summary of topic X.\",\n      human_input=True,   # <-- triggers the bug\n      agent=agent,\n  )\n\n  crew = Crew(agents=[agent], tasks=[task], verbose=True)\n  crew.kickoff()\n\n### Expected behavior\n\nAfter the agent completes the task, execution pauses and prompts the user for feedback, as documented for human_input=True.\n\n### Screenshots/Code snippets\n\nExecution fails with AttributeError: 'AgentExecutor' object has no attribute 'ask_for_human_input' wrapped inside the generic \"An unknown error occurred\" message.\n\n### Operating System\n\nWindows 11\n\n### Python Version\n\n3.12\n\n### crewAI Version\n\ncrewai: 1.14.6\n\n### crewAI Tools Version\n\ncrewai-tools: 1.14.6\n\n### Virtual Environment\n\nVenv\n\n### Evidence\n\n  When human_input=True is set on a Task, the crew execution fails with:\n\n  \"An unknown error occurred. Please check the details below.\n  Error details: 'AgentExecutor' object has no attribute 'ask_for_human_input'\"\n\nNote: unfortunately I am reporting this bug after my current API usage session limit was exhausted.\nAs soon as I have my session limit restored, I will provide screenshots or more detailed evidence.\n\n### Possible Solution\n\nRoot cause\n\n  The ExecutorContext protocol (crewai/core/providers/human_input.py:26) declares ask_for_human_input: bool as a required direct attribute:\n\n  class ExecutorContext(Protocol):\n      ask_for_human_input: bool   # line 26\n      ...\n\n  SyncHumanInputProvider._handle_regular_feedback reads and writes this attribute directly on the executor passed as context:\n\n  while context.ask_for_human_input:          # direct read\n      ...\n      context.ask_for_human_input = False     # direct write\n\n  The deprecated CrewAgentExecutor satisfies this — ask_for_human_input is a top-level Pydantic field:\n  # crewai/agents/crew_agent_executor.py:129\n  ask_for_human_input: bool = Field(default=False)\n\n  The new default AgentExecutor (crewai/experimental/agent_executor.py) does not. The field is defined on AgentExecutorState (the Flow state class), not on the executor itself:\n  # AgentExecutorState (line 132) — NOT on AgentExecutor\n  ask_for_human_input: bool = Field(default=False)\n\n  The executor's invoke() correctly uses self.state.ask_for_human_input, but then passes self to _handle_human_feedback as an ExecutorContext, where the direct attribute access fails:\n\n  # experimental/agent_executor.py:3025\n  return provider.handle_feedback(formatted_answer, cast(\"ExecutorContext\", self))\n  # ↑ self.ask_for_human_input does not exist — only self.state.ask_for_human_input does\n\n  ---\n  Proposed fix\n\n  Add a property to AgentExecutor (crewai/experimental/agent_executor.py) that delegates ask_for_human_input to the state, making it satisfy the ExecutorContext protocol:\n\n  @property\n  def ask_for_human_input(self) -> bool:\n      return self.state.ask_for_human_input\n\n  @ask_for_human_input.setter\n  def ask_for_human_input(self, value: bool) -> None:\n      self.state.ask_for_human_input = value\n\n  ---\n \n\n### Additional context\n\n Workaround\n\n  Explicitly set executor_class=CrewAgentExecutor on each agent (note: this class is deprecated and will generate a warning):\n\n  from crewai.agents.crew_agent_executor import CrewAgentExecutor\n\n  agent = Agent(\n      ...\n      executor_class=CrewAgentExecutor,\n  )",
+  "labels": [
+    "bug"
+  ],
+  "linked_prs": [
+    {
+      "number": 6080,
+      "state": "closed",
+      "title": "fix: expose ask_for_human_input on experimental AgentExecutor (#6065)",
+      "url": "https://github.com/crewAIInc/crewAI/pull/6080",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "1b14e162e9dead60533a4e3298030c3b5e0ac90d",
+      "head_sha": "dc4e9e100e70359e21c6b420011d919d5cec4541",
+      "patch": "diff --git a/lib/crewai/src/crewai/experimental/agent_executor.py b/lib/crewai/src/crewai/experimental/agent_executor.py\nindex 3cc9cdd7be..5628ac3c07 100644\n--- a/lib/crewai/src/crewai/experimental/agent_executor.py\n+++ b/lib/crewai/src/crewai/experimental/agent_executor.py\n@@ -279,6 +279,16 @@ def messages(self, value: list[LLMMessage]) -> None:\n         \"\"\"Set state messages.\"\"\"\n         self._state.messages = value\n \n+    @property\n+    def ask_for_human_input(self) -> bool:\n+        \"\"\"Compatibility property - returns state ask_for_human_input.\"\"\"\n+        return self._state.ask_for_human_input  # type: ignore[no-any-return]\n+\n+    @ask_for_human_input.setter\n+    def ask_for_human_input(self, value: bool) -> None:\n+        \"\"\"Set state ask_for_human_input.\"\"\"\n+        self._state.ask_for_human_input = value\n+\n     @start()\n     def generate_plan(self) -> None:\n         \"\"\"Generate execution plan if planning is enabled.\n",
+      "test_paths_in_patch": []
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}
