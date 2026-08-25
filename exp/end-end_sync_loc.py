@@ -66,7 +66,7 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues" / "issue_2805.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues_strandagents" / "issue_1077.json"
 _MODEL = os.getenv("MODEL", "tensorblock/gpt-4.1-mini")
 
 
@@ -79,6 +79,17 @@ def truncate_middle(text: str | None, max_chars: int = 40000) -> str | None:
     separator = "\n\n... [LOG TRUNCATED] ...\n\n"
     
     return text[:half] + separator + text[-half:]
+
+def ensure_init_py(*test_file_paths: Path) -> None:
+    """
+    Ensures an __init__.py file exists in the directory of each provided test file path.
+    """
+    for test_path in test_file_paths:
+        if test_path and test_path.parent.exists():
+            init_file = test_path.parent / "__init__.py"
+            if not init_file.exists():
+                init_file.touch()
+                print(f"[end-end] Created missing __init__.py in: {test_path.parent}")
 
 def _run_docker_test(repo_path: Path, dockerfile_path: Path) -> tuple[bool, str | None]:
     """
@@ -136,6 +147,57 @@ def _run_docker_test(repo_path: Path, dockerfile_path: Path) -> tuple[bool, str 
     return all_succeeded, "\n".join(error_reports) if error_reports else None
 
 
+def resolve_target_test_dir(repo_path: Path, issue_json_path: Path) -> Path:
+    """
+    Dynamically determines the best 'tests' directory relative to repo_path.
+    Always returns a clean relative Path pointing to the directory itself
+    (e.g., Path("libs/langgraph/tests") or Path("tests")).
+    """
+    # 1. Attempt Patch-Aware Detection
+    try:
+        with open(issue_json_path, "r", encoding="utf-8") as f:
+            issue_data = json.load(f)
+        prs = issue_data.get("linked_prs", [])
+        if prs and "patch" in prs[0]:
+            patch_text = prs[0]["patch"]
+            for line in patch_text.splitlines():
+                if line.startswith("diff --git a/"):
+                    # Extract the relative path after "a/"
+                    rel_path = line.split(" a/", 1)[-1].split(" b/", 1)[0]
+                    parts = Path(rel_path).parts
+                    # Check for common monorepo/subpackage prefixes
+                    if len(parts) >= 2 and parts[0] in ("libs", "packages", "subprojects", "projects", "src"):
+                        candidate_dir = repo_path / parts[0] / parts[1] / "tests"
+                        if candidate_dir.exists() and candidate_dir.is_dir():
+                            return candidate_dir.relative_to(repo_path)
+    except Exception as e:
+        print(f"[pipeline-warning] Patch inspection for test dir failed: {e}", file=sys.stderr)
+
+    # 2. Fallback: Scan filesystem for candidate 'tests' folders
+    candidate_test_dirs = []
+    for root, dirs, _ in os.walk(repo_path):
+        # Ignore hidden directories and virtual environments
+        dirs[:] = [
+            d for d in dirs 
+            if not d.startswith(".") and d not in ("venv", ".venv", "node_modules", "site-packages", "build", "dist")
+        ]
+        if "tests" in dirs:
+            test_dir = Path(root) / "tests"
+            rel_dir = test_dir.relative_to(repo_path)
+            if len(rel_dir.parts) <= 3:  # Prevent deeply nested fixture folders
+                candidate_test_dirs.append(rel_dir)
+
+    if not candidate_test_dirs:
+        return Path("tests")
+
+    # Prefer sub-package tests (e.g., libs/langgraph/tests) over root tests
+    subpkg_dirs = [d for d in candidate_test_dirs if len(d.parts) > 1]
+    if subpkg_dirs:
+        return sorted(subpkg_dirs)[0]
+
+    return candidate_test_dirs[0]
+
+
 def _run(run_dir: Path) -> None:
     _cfg = load_end_end_config(_AGENTSMITH_ROOT)
     _docker_log = run_dir / "dockerbuild.txt"
@@ -148,6 +210,8 @@ def _run(run_dir: Path) -> None:
     _ctx = load_issue_testgen_context(_ISSUE_JSON)
     _n = _ctx.issue_number or 0
     _test_rel = f"tests/agentsmith_fail2pass_{_n or 'issue'}{lang_info['ext']}"
+    _test_rel2 = f"agentsmith_fail2pass_{_n or 'issue'}{lang_info['ext']}"
+    target_test_dir = resolve_target_test_dir(_ws.local_repo_path, _ISSUE_JSON)
 
     _base = read_linked_pr_base_sha(_ISSUE_JSON)
     if _base:
@@ -253,22 +317,51 @@ def _run(run_dir: Path) -> None:
 
         _f2p_feedback = _fb_outer_f2p
         for _f2p_round in range(1, f2p_rounds + 1):
+            root_test_path = _ws.local_repo_path / _test_rel
+            pkg_test_path = _ws.local_repo_path / target_test_dir / _test_rel2
+            pkg_test_rel = str(target_test_dir / _test_rel2)
+
             if _f2p_round > 1 and _base:
                 _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
-                subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
+                subprocess.run(
+                    [
+                        "git", "clean", "-fd",
+                        "-e", "env.dockerfile",
+                        "-e", _test_rel,
+                        "-e", pkg_test_rel,
+                    ],
+                    cwd=str(_ws.local_repo_path),
+                )
                 if not _rs_ok:
                     print(_rs_err, file=sys.stderr)
                     break
 
             has_patch_test = False
-            if patch_test_src and _f2p_round <= 2:
+            if patch_test_src and _f2p_round <= 3:
                 original_test_path = _ws.local_repo_path / patch_test_src
-                target_test_path = _ws.local_repo_path / _test_rel
+                # target_test_path = _ws.local_repo_path / _test_rel
+                # target_test_dir = _ws.local_repo_path / target_test_dir / _test_rel2
                 if original_test_path.exists():
-                    target_test_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(original_test_path, target_test_path)
-                    print(f"Restored in-patch test: '{patch_test_src}'")
+                    # Copy in-patch test to BOTH root tests/ and package tests/
+                    root_test_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(original_test_path, root_test_path)
+
+                    # ONLY copy to package tests/ if it is a different directory
+                    if pkg_test_path.resolve() != root_test_path.resolve():
+                        pkg_test_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(original_test_path, pkg_test_path)
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"Restored in-patch test to both locations:\n - {root_test_path}\n - {pkg_test_path}")
+                    else:
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"Restored in-patch test to root location:\n - {root_test_path}")
+
                     has_patch_test = True
+                else:
+                    print(
+                        f"[end-end] WARNING: In-patch test configured as '{patch_test_src}', but file was not found on disk.",
+                        file=sys.stderr,
+                    )
 
             if not has_patch_test:
                 repo_structure = get_file_tree(_ws.local_repo_path, n=3)
@@ -286,6 +379,18 @@ def _run(run_dir: Path) -> None:
                 print(_tg_report)
                 if not _tg_ok:
                     break
+
+                # --- DUAL-LOCATION SYNC AFTER TESTGEN ---
+                # If testgen wrote to root tests/, mirror it to the dynamic package tests/ folder
+                if root_test_path.exists():
+                    if pkg_test_path.resolve() != root_test_path.resolve():
+                        pkg_test_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(root_test_path, pkg_test_path)
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"[end-end] Mirrored generated test script to package directory:\n - {pkg_test_path}")
+                else:
+                    print(f"[end-end] ERROR: testgen finished but {root_test_path} is missing!", file=sys.stderr)
+                # ----------------------------------------
             else:
                 print("[end-end] In-patch test detected and used. Skipping testgen.")
 
@@ -333,10 +438,23 @@ def _run(run_dir: Path) -> None:
         for _cofix_round in range(1, _cfg.max_cofix_rounds + 1):
             print(f"\n--- Cofix Round {_cofix_round} ---")
 
+            # Define clean, immutable paths for both test locations
+            root_test_path = _ws.local_repo_path / _test_rel
+            pkg_test_path = _ws.local_repo_path / target_test_dir / _test_rel2
+            pkg_test_rel = str(target_test_dir / _test_rel2)
+
             # Reset the repo state before generating new files or applying patches
             if _cofix_round > 1 and _base:
                 _rs_ok, _rs_err = reset_repo_to_base(_ws.local_repo_path, _base)
-                subprocess.run(["git", "clean", "-fd", "-e", "env.dockerfile"], cwd=str(_ws.local_repo_path))
+                subprocess.run(
+                    [
+                        "git", "clean", "-fd",
+                        "-e", "env.dockerfile",
+                        "-e", _test_rel,
+                        "-e", pkg_test_rel,
+                    ],
+                    cwd=str(_ws.local_repo_path),
+                )
                 if not _rs_ok:
                     print(_rs_err, file=sys.stderr)
                     break
@@ -344,11 +462,21 @@ def _run(run_dir: Path) -> None:
             has_patch_test = False
             if patch_test_src:
                 original_test_path = _ws.local_repo_path / patch_test_src
-                target_test_path = _ws.local_repo_path / _test_rel
                 if original_test_path.exists():
-                    target_test_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(original_test_path, target_test_path)
-                    print(f"Restored in-patch test: '{patch_test_src}'")
+                    # Copy to root tests/ location
+                    root_test_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(original_test_path, root_test_path)
+
+                    # Copy to package tests/ location ONLY if it is a distinct directory
+                    if pkg_test_path.resolve() != root_test_path.resolve():
+                        pkg_test_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(original_test_path, pkg_test_path)
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"Restored in-patch test to both locations:\n - {root_test_path}\n - {pkg_test_path}")
+                    else:
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"Restored in-patch test to root location:\n - {root_test_path}")
+
                     has_patch_test = True
 
             # 3. Dynamic Cofix Invocation
@@ -374,6 +502,19 @@ def _run(run_dir: Path) -> None:
             # 4. Verify F2P on the repaired files
             if _cofix_ok:
                 print(f"[end-end] cofix applied repairs (Round {_cofix_round}). Re-verifying F2P...")
+
+                # --- DUAL-LOCATION SYNC AFTER COFIX REPAIRS ---
+                # If cofix_agent repaired/generated a root test script, mirror it to package tests/
+                if root_test_path.exists():
+                    if pkg_test_path.resolve() != root_test_path.resolve():
+                        pkg_test_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(root_test_path, pkg_test_path)
+                        ensure_init_py(root_test_path, pkg_test_path)
+                        print(f"[end-end] Mirrored cofix-repaired test script to package directory:\n - {pkg_test_path}")
+                else:
+                    print(f"[end-end] WARNING: cofix succeeded but {root_test_path} is missing!", file=sys.stderr)
+                # ----------------------------------------------
+
                 base_cmd = lang_info['runner'].split()
                 test_cmd = base_cmd + [_test_rel]
                 _outcome, _f2p_report = run_f2p_verify(
