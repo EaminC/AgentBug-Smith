@@ -13,7 +13,7 @@ import os
 import json
 import re
 
-RESULT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'result'))
+RESULT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'results/kimi-k2.5/result_25'))
 RUN_LOG_FILENAME = 'run.log'
 STAT_JSON_FILENAME = 'agentsmith_stat.json'
 

@@ -9,7 +9,16 @@ def detect_project_language(repo_root: Path) -> Dict[str, str]:
     """
     repo_root = Path(repo_root).resolve()
 
-    if (repo_root / "Cargo.toml").exists():
+    # Check for Python first
+    if (
+        (repo_root / "pyproject.toml").exists()
+        or (repo_root / "requirements.txt").exists()
+        or (repo_root / "setup.py").exists()
+        or (repo_root / "Pipfile").exists()
+    ):
+        return {"name": "Python", "ext": ".py", "runner": "python -m pytest -q"}
+
+    elif (repo_root / "Cargo.toml").exists():
         return {"name": "Rust", "ext": ".rs", "runner": "cargo test --test"}
 
     elif (repo_root / "package.json").exists():
@@ -23,5 +32,5 @@ def detect_project_language(repo_root: Path) -> Dict[str, str]:
     elif (repo_root / "go.mod").exists():
         return {"name": "Go", "ext": ".go", "runner": "go test"}
         
-    # Default to Python if pyproject.toml, requirements.txt, or nothing is found
+    # Default fallback to Python
     return {"name": "Python", "ext": ".py", "runner": "python -m pytest -q"}
