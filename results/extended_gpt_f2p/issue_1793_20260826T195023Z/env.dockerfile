@@ -3,7 +3,7 @@ FROM python:3.12-slim
 # --- AgentSmith inject .env from project root (dockerwrite) ---
 ENV FORGE_API_KEY="forge-key"
 ENV FORGE_BASE_URL="https://api.forge.tensorblock.co/v1"
-ENV MODEL="tuzi-deepseek-v3.2/gpt-4.1-mini"
+ENV MODEL="tuzi-gpt-4.1-mini/gpt-4.1-mini"
 ENV AI_TEMPERATURE="0.7"
 ENV ANTHROPIC_BASE_URL="https://api.forge.tensorblock.co/v1"
 ENV ANTHROPIC_AUTH_TOKEN="forge-key"
@@ -16,11 +16,6 @@ ENV GITHUB_TOKEN="ghp_key"
 # --- end inject ---
 
 WORKDIR /app
-
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
-ENV OPENAI_API_KEY=forge-key
-ENV ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co/v1
-ENV ANTHROPIC_AUTH_TOKEN=forge-key
 
 COPY . .
 

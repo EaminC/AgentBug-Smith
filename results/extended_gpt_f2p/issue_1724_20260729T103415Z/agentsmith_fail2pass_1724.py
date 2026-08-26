@@ -5,7 +5,7 @@ import os
 import tempfile
 from unittest.async_case import IsolatedAsyncioTestCase
 
-from utils import AnyString
+from tests.utils import AnyString
 
 from agentscope.skill import SkillLoaderBase, Skill
 from agentscope.tool import Toolkit, ToolChunk, ToolResponse, ToolGroup

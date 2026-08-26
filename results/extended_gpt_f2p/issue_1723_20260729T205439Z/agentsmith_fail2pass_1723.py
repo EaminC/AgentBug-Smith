@@ -8,7 +8,7 @@ from agentscope.agent import Agent, ContextConfig
 from agentscope.state import AgentState
 from agentscope.message import UserMsg, AssistantMsg, ToolCallBlock
 from agentscope.tool import Toolkit
-from utils import MockModel
+from tests.utils import MockModel
 
 
 class TestReadCacheEvictionOnCompression(unittest.IsolatedAsyncioTestCase):

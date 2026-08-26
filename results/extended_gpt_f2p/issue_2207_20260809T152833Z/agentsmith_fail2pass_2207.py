@@ -9,7 +9,7 @@ from agentscope.event import ReplyEndEvent
 from agentscope.message import UserMsg
 from agentscope.model import ChatResponse
 from agentscope.tool import Toolkit
-from utils import MockModel
+from tests.utils import MockModel
 
 
 @pytest.mark.asyncio

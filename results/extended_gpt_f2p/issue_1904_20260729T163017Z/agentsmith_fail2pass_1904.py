@@ -2,7 +2,7 @@ import unittest
 
 from agentscope.agent import Agent
 from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
-from utils import MockModel
+from tests.utils import MockModel
 
 
 class TestAgentConfigIsolation(unittest.TestCase):

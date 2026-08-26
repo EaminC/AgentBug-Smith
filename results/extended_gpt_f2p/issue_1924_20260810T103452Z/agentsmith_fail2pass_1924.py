@@ -5,7 +5,7 @@ from agentscope.agent import Agent, ContextConfig
 from agentscope.message import UserMsg, AssistantMsg, HintBlock, Msg
 from agentscope.model import StructuredResponse
 from agentscope.tool import Toolkit
-from utils import MockModel
+from tests.utils import MockModel
 
 
 class RecordingStructuredMockModel(MockModel):

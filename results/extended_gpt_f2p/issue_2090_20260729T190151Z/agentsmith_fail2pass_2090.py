@@ -15,7 +15,7 @@ from agentscope.message import (
 )
 from agentscope.tool import Toolkit
 from tests.utils import MockModel
-from utils import AnyString
+from tests.utils import AnyString
 
 
 class TestMultiToolContextCompression(IsolatedAsyncioTestCase):

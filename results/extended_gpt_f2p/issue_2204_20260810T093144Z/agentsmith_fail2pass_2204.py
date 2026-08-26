@@ -12,7 +12,7 @@ class AgentMaxItersReActTest(IsolatedAsyncioTestCase):
     """Test that max_iters counts one reasoning-acting round once."""
 
     def _make_mock_model(self):
-        from utils import MockModel
+        from tests.utils import MockModel
 
         return MockModel()
 

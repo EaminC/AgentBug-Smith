@@ -5,7 +5,7 @@ from unittest.async_case import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 from typing import Any, AsyncGenerator, Callable, Union
 
-from utils import MockModel
+from tests.utils import MockModel
 from pydantic import BaseModel
 from agentscope.event import AgentEvent
 from agentscope.agent import Agent, ContextConfig

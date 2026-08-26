@@ -1,7 +1,5 @@
 from unittest.async_case import IsolatedAsyncioTestCase
 
-from utils import AnyString
-
 from agentscope.message import ThinkingBlock, TextBlock, UserMsg
 from agentscope.model import ChatResponse
 from agentscope.agent import Agent
@@ -16,7 +14,7 @@ class ThinkingOnlyResponseTest(IsolatedAsyncioTestCase):
         """Set up an agent with a mock model that can simulate thinking-only responses."""
         # Use the built-in MockModel from utils if available, else fallback to Agent's model
         # We want to simulate multiple LLM responses: first thinking-only, then text.
-        from utils import MockModel
+        from tests.utils import MockModel
 
         self.model = MockModel()
         self.agent = Agent(

@@ -5,7 +5,7 @@ from unittest.async_case import IsolatedAsyncioTestCase
 from agentscope.message import ToolCallBlock
 from agentscope.state import AgentState
 from agentscope.tool import FunctionTool, Toolkit
-from utils import AnyString
+from tests.utils import AnyString
 
 
 class TestFunctionToolPlainStringReturn(IsolatedAsyncioTestCase):

@@ -2,7 +2,7 @@ from typing import Any
 from unittest.async_case import IsolatedAsyncioTestCase
 
 from pydantic import BaseModel
-from utils import AnyString, MockModel
+from tests.utils import AnyString, MockModel
 
 from agentscope.agent import Agent, InjectionConfig, ReActConfig
 from agentscope.model import ChatResponse

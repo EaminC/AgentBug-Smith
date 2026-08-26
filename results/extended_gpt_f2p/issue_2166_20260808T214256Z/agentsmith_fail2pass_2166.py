@@ -15,7 +15,7 @@ import asyncio
 from typing import Any, AsyncGenerator
 from unittest.async_case import IsolatedAsyncioTestCase
 
-from utils import AnyString, MockModel
+from tests.utils import AnyString, MockModel
 
 from agentscope.agent import Agent, InjectionConfig
 from agentscope.event import (

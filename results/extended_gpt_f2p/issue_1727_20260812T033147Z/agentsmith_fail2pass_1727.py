@@ -98,7 +98,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
     async def test_no_hint_when_under_budget(self) -> None:
         """When token usage stays below the budget, no hint is injected."""
         model = Agent._model_class = None  # reset model class to avoid interference
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(
@@ -131,7 +131,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
         Uses token_budget=0 so the budget condition fires on the very first
         reasoning call (0 used >= 0 max).
         """
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(
@@ -162,7 +162,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
 
         Uses token_budget=0 so the override fires on the first reasoning call.
         """
-        from utils import MockModel
+        from tests.utils import MockModel
 
         received_tool_choices: list = []
 
@@ -211,7 +211,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
         """
         toolkit = Toolkit(tools=[DummyTool()])
 
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(
@@ -275,7 +275,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
         """
         toolkit = Toolkit(tools=[DummyTool()])
 
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(
@@ -337,7 +337,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
 
     async def test_middle_context_cleared_after_reply(self) -> None:
         """middle_context entry for the reply is removed after reply ends."""
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(
@@ -377,7 +377,7 @@ class TestReplyBudgetControlMiddleware(IsolatedAsyncioTestCase):
         tool_input = "{}"
         toolkit = Toolkit(tools=[ConfirmRequiredTool()])
 
-        from utils import MockModel
+        from tests.utils import MockModel
 
         model = MockModel()
         model.set_responses(

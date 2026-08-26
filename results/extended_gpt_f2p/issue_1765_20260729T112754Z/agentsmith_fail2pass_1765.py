@@ -15,7 +15,7 @@ import unittest
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from utils import AnyString
+from tests.utils import AnyString
 
 from agentscope.message import (
     TextBlock,
