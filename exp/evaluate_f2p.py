@@ -45,8 +45,38 @@ import json
 import shutil
 import subprocess
 import argparse
+import tomllib
 from pathlib import Path
 from datetime import datetime, timezone
+
+
+def get_normalized_package_name(workspace_repo: Path) -> str | None:
+    """
+    Extracts package name from pyproject.toml or setup.py and normalizes it
+    according to PEP 503 / setuptools-scm conventions (uppercase, hyphens to underscores).
+    """
+    pyproject_path = workspace_repo / "pyproject.toml"
+    if pyproject_path.exists():
+        try:
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+            raw_name = data.get("project", {}).get("name") or data.get("tool", {}).get("poetry", {}).get("name")
+            if raw_name:
+                return re.sub(r"[-_.]+", "_", raw_name).upper()
+        except Exception:
+            pass
+
+    setup_py_path = workspace_repo / "setup.py"
+    if setup_py_path.exists():
+        try:
+            content = setup_py_path.read_text(encoding="utf-8")
+            match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                return re.sub(r"[-_.]+", "_", match.group(1)).upper()
+        except Exception:
+            pass
+
+    return None
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -61,12 +91,18 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subp
     )
 
 
-def inject_real_env_keys(dockerfile_path: Path, output_dockerfile_path: Path) -> None:
+def inject_real_env_keys(
+    dockerfile_path: Path, 
+    output_dockerfile_path: Path, 
+    workspace_repo: Path | None = None
+) -> None:
     """Replaces placeholder API keys in env.dockerfile with host environment variables."""
     content = dockerfile_path.read_text(encoding="utf-8")
 
     key_mappings = {
+        "FORGE_API_KEY": os.getenv("FORGE_API_KEY", "forge_key"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "openai_key"),
+        "OPENAI_KEY": os.getenv("OPENAI_KEY", "openai_key"),
         "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL", "openai_base_url"),
         "TAVILY_API_KEY": os.getenv("TAVILY_API_KEY", "tvlv_key"),
         "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", "github_key"),
@@ -75,16 +111,45 @@ def inject_real_env_keys(dockerfile_path: Path, output_dockerfile_path: Path) ->
         "MODEL": os.getenv("MODEL", "gpt-4.1-mini"),
     }
 
+    injected_flags = [
+        "\n# --- Universal Build & Dynamic Versioning Overrides ---",
+        'ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.0.1.dev0"',
+        'ENV POETRY_DYNAMIC_VERSIONING_BYPASS="0.0.1.dev0"',
+        'ENV HATCH_VCS_RECORD_FILE="/tmp/_version.py"',
+        "RUN git config --global --add safe.directory '*' || true",
+    ]
+
+    # Dynamically resolve target repository name if available
+    if workspace_repo and workspace_repo.exists():
+        pkg_name = get_normalized_package_name(workspace_repo)
+        if pkg_name:
+            injected_flags.append(f'ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_{pkg_name}="0.0.1.dev0"')
+
+    injected_flags.append("# -----------------------------------------------------\n")
+    
     lines = []
+    from_found = False
+
     for line in content.splitlines():
+        # Replace dummy env values
         replaced = False
         for env_var, real_val in key_mappings.items():
-            if line.strip().startswith(f"ENV {env_var}="):
+            if line.strip().startswith(f"ENV {env_var}=") or line.strip().startswith(f'ENV "{env_var}"='):
                 lines.append(f'ENV {env_var}="{real_val}"')
                 replaced = True
                 break
+        
         if not replaced:
             lines.append(line)
+
+        # Inject right after the first FROM instruction
+        if not from_found and line.strip().upper().startswith("FROM "):
+            lines.extend(injected_flags)
+            from_found = True
+
+    # Fallback if no FROM was detected for any reason
+    if not from_found:
+        lines = injected_flags + lines
 
     output_dockerfile_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -262,7 +327,11 @@ def evaluate_single_artifact(
         # STEP 2: BUILD DOCKER ENVIRONMENT
         print(f"[2/5] Building Docker environment '{image_tag}'...")
         sanitized_dockerfile = eval_output_dir / "env.dockerfile"
-        inject_real_env_keys(dockerfile_path, sanitized_dockerfile)
+        inject_real_env_keys(
+            dockerfile_path=dockerfile_path,
+            output_dockerfile_path=sanitized_dockerfile,
+            workspace_repo=workspace_repo
+        )
 
         try:
             run_cmd([
