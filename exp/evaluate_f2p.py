@@ -233,20 +233,44 @@ def apply_patch_to_workspace(
     if not patch_content.strip():
         return False, "Patch content is empty."
 
+    # Normalize non-breaking spaces (\u00a0, \u200b) and line endings (\r\n -> \n)
+    normalized_patch = (
+        patch_content.replace("\u00a0", " ")
+                     .replace("\u200b", "")
+                     .replace("\r\n", "\n")
+    )
+
     # Write patch to a temporary file in workspace and apply via git apply
     temp_patch_path = workspace_repo / "temp_eval_patch.diff"
-    temp_patch_path.write_text(patch_content, encoding="utf-8")
+    temp_patch_path.write_text(normalized_patch, encoding="utf-8")
 
-    apply_proc = run_cmd(["git", "apply", "--whitespace=nowarn", str(temp_patch_path.name)], cwd=workspace_repo, check=False)
-    
-    # Cleanup temp diff file
+    apply_proc = run_cmd(
+        ["git", "apply", "--ignore-space-change", "--ignore-whitespace", "--whitespace=nowarn", str(temp_patch_path.name)],
+        cwd=workspace_repo,
+        check=False
+    )
+
+    if apply_proc.returncode != 0:
+        # Fallback 1: 3-way merge apply
+        apply_proc = run_cmd(
+            ["git", "apply", "-3", "--ignore-space-change", "--ignore-whitespace", "--whitespace=nowarn", str(temp_patch_path.name)],
+            cwd=workspace_repo,
+            check=False
+        )
+
+    if apply_proc.returncode != 0:
+        # Fallback 2: GNU patch utility with fuzz allowance
+        apply_proc = run_cmd(
+            ["patch", "-p1", "--ignore-whitespace", "-f", "-i", str(temp_patch_path.name)],
+            cwd=workspace_repo,
+            check=False
+        )
+
+    # Clean up temp file
     temp_patch_path.unlink(missing_ok=True)
 
     if apply_proc.returncode != 0:
-        # Fallback to 3-way merge apply if standard apply fails
-        fallback_proc = run_cmd(["git", "apply", "-3", "--whitespace=nowarn", str(temp_patch_path.name)], cwd=workspace_repo, check=False)
-        if fallback_proc.returncode != 0:
-            return False, f"Git apply failed:\n{apply_proc.stderr or apply_proc.stdout}"
+        return False, f"Git apply failed:\n{apply_proc.stderr or apply_proc.stdout}"
 
     return True, "Patch successfully applied."
 
