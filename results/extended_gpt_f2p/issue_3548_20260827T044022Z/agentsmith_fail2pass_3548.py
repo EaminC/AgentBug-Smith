@@ -1,10 +1,45 @@
+import sys
+import importlib.util
+from pathlib import Path
 import pytest
+from unittest.mock import MagicMock
 
+# 1. Ensure /app/strands-py/src takes precedence for library imports
+src_paths = [
+    Path("/app/strands-py/src"),
+    Path("/app/src"),
+    Path(__file__).resolve().parents[2] / "src",
+]
+for p in src_paths:
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+# 2. Dynamically load MockedModelProvider from fixture file directly
+fixture_candidates = [
+    Path("/app/tests/fixtures/mocked_model_provider.py"),
+    Path("/app/strands-py/tests/fixtures/mocked_model_provider.py"),
+    Path(__file__).resolve().parent / "fixtures" / "mocked_model_provider.py",
+]
+
+MockedModelProvider = None
+for fix_path in fixture_candidates:
+    if fix_path.exists():
+        spec = importlib.util.spec_from_file_location("mocked_model_provider", fix_path)
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            MockedModelProvider = getattr(mod, "MockedModelProvider", None)
+            if MockedModelProvider:
+                break
+
+if not MockedModelProvider:
+    raise ImportError("Could not locate or load fixture 'mocked_model_provider.py'")
+
+# 3. Import Strands modules
 from strands import Agent
 from strands.tools import tool
 from strands.vended_interventions.hitl import HumanInTheLoop
 from strands.vended_interventions.hitl.classifier import ClassifierResult
-from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 
 def tool_use_message(name: str, tool_use_id: str = "tool-1", tool_input: dict | None = None) -> dict:
@@ -22,8 +57,6 @@ class TestClassifierMode:
     """Tests for the classifier option that enables LLM-driven risk classification."""
 
     def test_classifier_true_interrupts_when_risky(self):
-        from unittest.mock import MagicMock
-
         executed = []
 
         @tool(name="delete_file")
@@ -52,8 +85,6 @@ class TestClassifierMode:
         assert "destructive operation" in result.interrupts[0].reason
 
     def test_classifier_allows_tool_when_not_risky(self):
-        from unittest.mock import MagicMock
-
         executed = []
 
         @tool(name="read_file")
@@ -81,8 +112,6 @@ class TestClassifierMode:
         assert executed == [True]
 
     def test_allowed_tools_bypasses_classifier(self):
-        from unittest.mock import MagicMock
-
         executed = []
 
         @tool(name="read_file")
@@ -138,8 +167,6 @@ class TestClassifierMode:
         assert executed == []
 
     def test_classifier_reason_appears_in_prompt(self):
-        from unittest.mock import MagicMock
-
         prompts = []
 
         @tool(name="send_email")
@@ -166,12 +193,11 @@ class TestClassifierMode:
 
         agent("Send email")
 
+        assert len(prompts) > 0
         assert "external communication" in prompts[0]
         assert "send_email" in prompts[0]
 
     def test_async_custom_classifier(self):
-        import asyncio
-
         executed = []
 
         @tool(name="deploy")
@@ -249,9 +275,8 @@ class TestClassifierMode:
         assert executed == []
 
     def test_classifier_not_called_on_resume(self):
-
-        executed = []
         call_count = []
+        executed = []
 
         @tool(name="my_tool")
         def my_tool() -> str:
@@ -277,8 +302,18 @@ class TestClassifierMode:
         result = agent([{"interruptResponse": {"interruptId": interrupt_id, "response": "y"}}])
         assert result.stop_reason == "end_turn"
         assert executed == [True]
-        # Classifier was only called once (not again on resume)
         assert len(call_count) == 1
+
+    def test_wildcard_with_classifier_warns(self, caplog):
+        import logging
+
+        def my_classifier(event, **kwargs):
+            return ClassifierResult(requires_human_in_the_loop=True)
+
+        with caplog.at_level(logging.WARNING):
+            HumanInTheLoop(allowed_tools=["*"], classifier=my_classifier)
+
+        assert "classifier has no effect" in caplog.text
 
 
 class TestPublicExports:
