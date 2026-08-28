@@ -26,4 +26,3 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 
 CMD ["/bin/bash"]
-# branch: python/pyproject.toml
