@@ -9,37 +9,38 @@ ENV GITHUB_TOKEN="ghp_key"
 ENV TAVILY_API_KEY="tvly-key"
 ENV ANTHROPIC_BASE_URL="https://api.forge.tensorblock.co/v1"
 ENV ANTHROPIC_AUTH_TOKEN="forge-key"
-ENV ANTHROPIC_MODEL="tensorblock/gpt-4.1-mini"
-ENV ANTHROPIC_SMALL_FAST_MODEL="tensorblock/gpt-4.1-mini"
 ENV OPENAI_API_KEY="forge-key"
 ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 # --- end inject ---
 
-# Set environment variables for Forge API compatibility
-ENV FORGE_API_KEY="forge-key"
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key
-
 WORKDIR /app
-
-# Install git for proper test module imports and build essentials
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy entire repository
 COPY . .
 
-# Install dependencies if requirements.txt exists, then editable install and test deps
-RUN python -m pip install --upgrade pip setuptools wheel && \
-    if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi && \
-    pip install -e . && \
-    pip install pytest pytest-mock pytest-xdist pytest-timeout litellm "setuptools<=81.0.0"
+# Install system dependencies needed for Python packages and git
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+       gcc \
+       python3-dev \
+       libffi-dev \
+       libssl-dev \
+       git \
+       && rm -rf /var/lib/apt/lists/*
 
-# Verify the build environment
+# Upgrade pip, setuptools, wheel and install dependencies including tests and project
+RUN python -m pip install --upgrade pip setuptools wheel; \
+    if [ -f requirements.txt ]; then \
+        pip install -r requirements.txt; \
+    fi; \
+    pip install -e .; \
+    pip install pytest pytest-mock pytest-asyncio pytest-cov anyio pytest-xdist pytest-timeout "setuptools<=81.0.0" litellm gitpython rich prompt_toolkit backoff pillow streamlit networkx pathspec playwright configargparse diskcache pypandoc grep-ast beautifulsoup4 tree-sitter-languages diff-match-patch
+
+# Ensure python can import from /app root directory
+ENV PYTHONPATH=/app
+
+# Verify pytest and package install succeeded
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 
 CMD ["/bin/bash"]

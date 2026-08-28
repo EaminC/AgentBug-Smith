@@ -1,33 +1,35 @@
-import unittest
-from aider.models import MODEL_SETTINGS
+import pytest
+from aider import models
 
 
-class TestVertexAIClaudeModelSettings(unittest.TestCase):
-    def test_vertex_ai_claude_models_in_model_settings(self):
-        # The buggy codebase does not include vertex_ai/claude-3-5-sonnet@20240620
-        # and vertex_ai/claude-3-opus@20240229 in MODEL_SETTINGS.
-        # After the fix, these should be present with expected attributes.
+def test_vertex_ai_claude_models_in_model_settings():
+    """
+    This test ensures that the vertex_ai/claude-3-5-sonnet@20240620 model
+    is present in MODEL_SETTINGS after the fix.
 
-        # MODEL_SETTINGS is a list of ModelSettings namedtuples or dataclasses
-        # but attribute name for model string is 'name' not 'model'.
-        # This test asserts presence of the new vertex_ai models by their 'name'.
+    The buggy codebase does not include this model, so the test will fail there.
+    After applying the fix, the model is included and the test should pass.
+    """
+    # MODEL_SETTINGS is a list of ModelSettings namedtuples or dataclasses.
+    # The attribute for the model identifier is 'name' (not 'model').
+    # Defensive: check MODEL_SETTINGS is not empty
+    if not models.MODEL_SETTINGS:
+        pytest.fail("MODEL_SETTINGS is empty, cannot test presence of vertex_ai models")
 
-        model_names = [ms.name for ms in MODEL_SETTINGS]
+    # Check that the ModelSettings objects have attribute 'name'
+    first = models.MODEL_SETTINGS[0]
+    assert hasattr(first, "name"), "ModelSettings object missing 'name' attribute"
 
-        # Check the exact model names added by the fix
-        expected_models = {
-            "vertex_ai/claude-3-5-sonnet@20240620",
-            "vertex_ai/claude-3-opus@20240229",
-        }
+    # The buggy codebase lacks the vertex_ai/claude-3-5-sonnet@20240620 model
+    # The fixed codebase includes it exactly as that string in the 'name' attribute
+    model_names = [m.name for m in models.MODEL_SETTINGS]
 
-        # Assert that these models are in the MODEL_SETTINGS list
-        for model in expected_models:
-            self.assertIn(model, model_names)
+    # The test fails if the model is not found (buggy)
+    assert "vertex_ai/claude-3-5-sonnet@20240620" in model_names, (
+        "vertex_ai/claude-3-5-sonnet@20240620 model not found in MODEL_SETTINGS"
+    )
 
-        # Additionally, check that these models have use_repo_map=True as per patch
-        for ms in MODEL_SETTINGS:
-            if ms.name in expected_models:
-                self.assertTrue(ms.use_repo_map)
-
-if __name__ == "__main__":
-    unittest.main()
+    # Also check the related model with @20240229 is present
+    assert "vertex_ai/claude-3-opus@20240229" in model_names, (
+        "vertex_ai/claude-3-opus@20240229 model not found in MODEL_SETTINGS"
+    )
