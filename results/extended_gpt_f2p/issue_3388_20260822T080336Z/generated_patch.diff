@@ -1,0 +1,59 @@
+diff --git a/strands-ts/src/models/openai/responses-adapter.ts b/strands-ts/src/models/openai/responses-adapter.ts
+index f994a4dad..74f1e1b18 100644
+--- a/strands-ts/src/models/openai/responses-adapter.ts
++++ b/strands-ts/src/models/openai/responses-adapter.ts
+@@ -137,6 +137,7 @@ export function formatResponsesRequest(
+  * - Tool results → separate `{ type: 'function_call_output', ... }` items
+  */
+ function formatResponsesMessages(messages: Message[]): ResponseInputItem[] {
++function formatToolResultOutput(resultBlock: ToolResultBlock): string | ResponseFunctionCallOutputItem[] {
+   const input: ResponseInputItem[] = []
+ 
+   for (const message of messages) {
+@@ -214,15 +215,23 @@ function formatResponsesMessages(messages: Message[]): ResponseInputItem[] {
+       }
+     }
+ 
+-    // Cast is needed because assistant messages here use `output_text` content
+-    // blocks, which the SDK's input types model as `ResponseOutputMessage` —
+-    // a response-shaped type that requires `id`/`status`/`annotations`. The API
+-    // accepts these fields as omitted on input, but the SDK types don't reflect that.
++    // Fix for assistant message content serialization:
+     if (contentItems.length > 0) {
+-      input.push({
+-        role,
+-        content: contentItems,
+-      } as unknown as ResponseInputItem)
++      if (role === 'assistant') {
++        const combinedText = contentItems
++          .filter(item => item.type === "output_text" && typeof item.text === 'string')
++          .map(item => item.text)
++          .join("\n")
++        input.push({
++          role,
++          content: combinedText,
++        } as ResponseInputItem)
++      } else {
++        input.push({
++          role,
++          content: contentItems,
++        } as unknown as ResponseInputItem)
++      }
+     }
+ 
+     input.push(...toolCallItems)
+@@ -231,14 +240,6 @@ function formatResponsesMessages(messages: Message[]): ResponseInputItem[] {
+ 
+   return input
+ }
+-
+-/**
+- * Builds a Responses API `function_call_output.output` value from a SDK
+- * `toolResultBlock`. Returns a plain string for text-only results (joined with
+- * newlines) or the content-item array shape when the result carries image or
+- * document data.
+- */
+-function formatToolResultOutput(resultBlock: ToolResultBlock): string | ResponseFunctionCallOutputItem[] {
+   const parts: ResponseFunctionCallOutputItem[] = []
+   const texts: string[] = []
+   let hasMedia = false
