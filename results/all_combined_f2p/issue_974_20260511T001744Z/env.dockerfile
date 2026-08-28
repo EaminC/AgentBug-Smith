@@ -36,23 +36,12 @@ RUN set -eux; \
     pip install pytest pytest-mock pytest-asyncio pytest-cov anyio moto "setuptools<=81.0.0" litellm
 
 # Environment variables for Forge API compatibility
-ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1" \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL="https://api.forge.tensorblock.co" \
-    ANTHROPIC_AUTH_TOKEN=forge-key \
-    FORGE_API_KEY="forge-key" \
-    FORGE_BASE_URL="https://api.forge.tensorblock.co/v1" \
-    MODEL="tensorblock/gpt-4.1-mini" \
-    AI_TEMPERATURE="0.7" \
+ENV AI_TEMPERATURE="0.7" \
     AI_MAX_TOKENS="1000" \
     AI_TOP_P="1" \
     AI_FREQUENCY_PENALTY="0" \
     AI_PRESENCE_PENALTY="0" \
-    AI_STOP_SEQUENCES="" \
-    GITHUB_TOKEN="ghp_key" \
-    TAVILY_API_KEY="tvly-key" \
-    ANTHROPIC_MODEL="tensorblock/gpt-4.1-mini" \
-    ANTHROPIC_SMALL_FAST_MODEL="tensorblock/gpt-4.1-mini"
+    AI_STOP_SEQUENCES="" 
 
 # Preflight check that essential packages are installed
 RUN python -c 'import pkg_resources, pytest, moto; print("preflight ok")'

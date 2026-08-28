@@ -17,16 +17,21 @@ ENV GITHUB_TOKEN="ghp_key"
 
 WORKDIR /app
 
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy entire repository
 COPY . .
 
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
-ENV OPENAI_API_KEY=forge-key
-ENV ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co
-ENV ANTHROPIC_AUTH_TOKEN=forge-key
-
+# Upgrade pip and install in editable mode
 RUN python -m pip install --upgrade pip setuptools wheel && \
-    pip install . && \
+    pip install -e . && \
     pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout mem0ai
+
+# Set PYTHONPATH to prioritize /app/src
+ENV PYTHONPATH="/app/src:/app:$PYTHONPATH"
 
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 

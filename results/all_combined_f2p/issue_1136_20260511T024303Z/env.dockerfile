@@ -32,6 +32,8 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install -e . && \
     pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm
 
+ENV PYTHONPATH=/app
+
 # Preflight check
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 

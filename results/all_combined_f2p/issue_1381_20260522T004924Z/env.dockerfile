@@ -40,12 +40,6 @@ RUN if [ -f "requirements.txt" ]; then \
 # Preflight check
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 
-# Set Forge API environment variables for OpenAI and Anthropic SDK compatibility
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key
-
 # Set PYTHONPATH explicitly to include /app for local imports
 ENV PYTHONPATH=/app
 

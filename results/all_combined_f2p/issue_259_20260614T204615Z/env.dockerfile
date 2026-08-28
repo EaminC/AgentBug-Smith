@@ -18,10 +18,6 @@ ENV GITHUB_TOKEN="ghp_key"
 WORKDIR /app
 
 # Set environment variables for Forge
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
-ENV OPENAI_API_KEY=forge-key
-ENV ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co
-ENV ANTHROPIC_AUTH_TOKEN=forge-key
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -42,7 +38,7 @@ COPY . .
 # Then install pytest and related testing dependencies
 RUN pip install -r requirements.txt && \
     pip install -e . && \
-    pip install pytest pytest-mock pytest-asyncio pytest-cov pytest-vcr anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout
+    pip install pytest pytest-mock pytest-asyncio pytest-cov pytest-vcr anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout lancedb
 
 # Verify basic imports work
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'

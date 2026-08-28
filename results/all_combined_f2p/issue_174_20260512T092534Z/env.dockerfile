@@ -17,14 +17,6 @@ ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 
 WORKDIR /app
 
-# Set environment variables for Forge API compatibility
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key \
-    FORGE_API_KEY="forge-key" \
-    FORGE_BASE_URL=https://api.forge.tensorblock.co/v1
-
 COPY . .
 
 RUN python -m pip install --upgrade pip setuptools wheel
@@ -42,5 +34,3 @@ fi
 RUN python -c 'import pkg_resources, pytest, ollama, anthropic; print("preflight ok")'
 
 CMD ["/bin/bash"]
-
-# branch: python/requirements.txt

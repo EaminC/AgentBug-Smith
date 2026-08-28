@@ -1,4 +1,4 @@
-FROM node:20-slim AS test_builder
+FROM python:3.12-slim AS test_builder
 
 # --- AgentSmith inject .env from project root (dockerwrite) ---
 ENV FORGE_API_KEY="forge-key"
@@ -17,30 +17,23 @@ ENV GITHUB_TOKEN="ghp_key"
 
 WORKDIR /app
 
-# Copy entire repository for test injection
+# Install git and build essentials
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy repository
 COPY . .
 
-# Install Node.js dependencies (production + dev)
-# Assumption: package-lock.json is present; use npm ci for exact install
-RUN npm ci --only=production && \
-    npm install --include=dev
+# Upgrade pip and install package with test dependencies
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    if [ -f "requirements.txt" ]; then pip install -r requirements.txt; fi && \
+    pip install -e . && \
+    pip install pytest pytest-mock pytest-asyncio pytest-cov litellm "setuptools<=81.0.0"
 
-# Install the project itself (local package)
-RUN npm install .
+ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# Install testing framework for JavaScript (standard: jest, mocha, etc.)
-# Check if jest is in devDependencies; if not, install it.
-# Also install common test utilities.
-RUN if [ -f package.json ] && grep -q '"jest"' package.json; then \
-      echo "Jest already in devDependencies"; \
-    else \
-      npm install --save-dev jest; \
-    fi && \
-    npm install --save-dev mocha chai sinon nyc
+# Preflight check
+RUN python -c 'import interpreter, pytest; print("preflight ok")'
 
-# Preflight: verify core modules can be imported
-RUN node -e "require('moment'); console.log('moment import OK');" && \
-    node -e "require('moment-timezone'); console.log('moment-timezone import OK');"
-
-# Default command for interactive shell (test harness requirement)
 CMD ["/bin/bash"]

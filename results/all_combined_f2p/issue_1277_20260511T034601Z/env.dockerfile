@@ -22,11 +22,7 @@ WORKDIR /app
 COPY . .
 
 # Environment variables for Forge API compatibility
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key \
-    PYTHONPATH=/app/src
+ENV PYTHONPATH=/app/src
 
 # Upgrade pip, setuptools, wheel and install dependencies in one step
 RUN set -eux; \
@@ -39,7 +35,7 @@ RUN set -eux; \
 # Preflight check
 RUN python -c 'import pkg_resources, pytest, numpy, ray; print("preflight ok")'
 
+ENV PYTHONPATH=/app
+
 # Default to bash shell
 CMD ["/bin/bash"]
-
-# branch: python/requirements.txt

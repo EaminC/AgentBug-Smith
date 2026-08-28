@@ -15,12 +15,6 @@ ENV OPENAI_API_KEY="forge-key"
 ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 # --- end inject ---
 
-# --- Set Forge API environment variables explicitly for runtime compatibility ---
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key
-
 WORKDIR /app
 
 RUN python -m pip install --upgrade pip setuptools wheel
@@ -32,10 +26,8 @@ RUN if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
 # Install the package itself and testing dependencies
 RUN pip install -e . && \
-    pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout
+    pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout tabulate
 
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 
 CMD ["/bin/bash"]
-
-# branch: python/pyproject.toml no requirements.txt

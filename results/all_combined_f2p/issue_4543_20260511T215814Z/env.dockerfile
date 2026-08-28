@@ -40,12 +40,6 @@ RUN if [ -f "requirements.txt" ]; then \
 # Preflight check to verify installation
 RUN python -c 'import pkg_resources, pytest; print("preflight ok")'
 
-# Set Forge API environment variables
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key
-
 CMD ["/bin/bash"]
 
 # branch: python/requirements.txt

@@ -15,12 +15,6 @@ ENV OPENAI_API_KEY="forge-key"
 ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 # --- end inject ---
 
-# Set environment variables for Forge API compatibility with OpenAI and Anthropic SDKs
-ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1" \
-    OPENAI_API_KEY="forge-key" \
-    ANTHROPIC_BASE_URL="https://api.forge.tensorblock.co" \
-    ANTHROPIC_AUTH_TOKEN="forge-key"
-
 WORKDIR /app
 
 # Copy the entire repo into the container for build and tests

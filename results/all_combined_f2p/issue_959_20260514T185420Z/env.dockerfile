@@ -19,11 +19,6 @@ WORKDIR /app
 
 COPY . .
 
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1
-ENV OPENAI_API_KEY=forge-key
-ENV ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co
-ENV ANTHROPIC_AUTH_TOKEN=forge-key
-
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install -e . && \
     pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout

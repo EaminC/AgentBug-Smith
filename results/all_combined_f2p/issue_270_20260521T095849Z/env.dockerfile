@@ -17,12 +17,6 @@ ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 
 WORKDIR /app
 
-# Set Forge environment variables for OpenAI and Anthropic SDK compatibility
-ENV OPENAI_BASE_URL=https://api.forge.tensorblock.co/v1 \
-    OPENAI_API_KEY=forge-key \
-    ANTHROPIC_BASE_URL=https://api.forge.tensorblock.co \
-    ANTHROPIC_AUTH_TOKEN=forge-key
-
 COPY . .
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
