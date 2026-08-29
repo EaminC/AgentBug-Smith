@@ -1,0 +1,63 @@
+# Issue #2163: [BUG] Allow graceful recovery from MaxTokensReachedException without full agent reset
+
+### Checks
+
+- [x] I have updated to the latest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched ./issues and there are no duplicates of my issue
+
+### Strands Version
+
+1.36.0
+
+### Python Version
+
+3.12+
+
+### Operating System
+
+All
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+1. Create an agent with tools
+2. Invoke the agent with input that causes the model to hit the `max_tokens` limit
+3. Catch the `MaxTokensReachedException`
+4. Attempt to invoke the same agent instance again with a new prompt
+
+### Expected Behavior
+
+1. When `max_tokens` is reached, the agent raises an exception (this is fine)
+2. The caller catches the exception and can **continue using the same agent instance** for subsequent calls without reinitializing
+3. The exception message should not say "unrecoverable state" — hitting a token budget is a recoverable, expected condition
+
+### Actual Behavior
+
+The exception declares an "unrecoverable state" at `event_loop.py` line 177:
+
+```
+MaxTokensReachedException: Agent has reached an unrecoverable state due to max_tokens limit.
+```
+
+Depending on the context, the agent may not be reusable after this exception without a full reset. In hosted environments  where the agent loop runs inside a managed runtime, an unrecoverable state means the entire invocation fails with no way to return partial results or gracefully degrade.
+
+### Additional Context
+
+- Related to #1320, which addressed the case where generated content was discarded on `max_tokens`. That issue is closed, but the recoverability concern remains.
+- In the AgentCore Harness context, there are two levels of `maxTokens`: a per-LLM-call cap (`bedrockModelConfig.maxTokens`) and a top-level agent loop budget (`maxTokens`). Both should result in recoverable states.
+- The relevant code path is in `src/strands/event_loop/event_loop.py` lines 167-180 where `stop_reason == "max_tokens"` triggers the exception.
+- Recovery logic exists in `src/strands/event_loop/_recover_message_on_max_tokens_reached.py` but only handles tool use cleanup — it does not help the caller access partial results.
+
+### Possible Solution
+
+1. Make the agent instance reusable after `MaxTokensReachedException` is raised — no internal state should be corrupted
+2. Rename or update the exception message to remove "unrecoverable state" (e.g., "Agent loop stopped: max_tokens limit reached")
+3. Add partial results to the exception object by accepting an optional `Message` dict in `MaxTokensReachedException.__init__` so callers can extract whatever was generated before the limit was hit
+
+### Related Issues
+
+#1320

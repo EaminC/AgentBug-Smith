@@ -1,0 +1,78 @@
+# Issue #1798: [FEATURE] Dont persist agent state if there were no updates to it
+
+### Problem Statement
+
+As a user of strands session manager, I would not like to persist changes to session if the agents state was not updated.
+
+### Proposed Solution
+
+Add a flag to agent state to mark that a change has been made. Then session manager can check if this flag is set, and use it to determine if a change should be pushed
+
+### Use Case
+
+Reduce the number of `update_agent` calls needed to be made by the session manager
+
+---
+
+## Implementation Requirements
+
+Based on clarification discussion and repository analysis:
+
+### Technical Approach
+
+#### 1. Add Dirty Flag to `JSONSerializableDict`
+**File:** `src/strands/types/json_dict.py`
+
+- Add `_dirty: bool` instance attribute, initialized to `False`
+- Set `_dirty = True` when `set()` is called
+- Set `_dirty = True` when `delete()` is called
+- Add `_is_dirty() -> bool` private method to check dirty status
+- Add `_clear_dirty() -> None` private method to reset flag to `False`
+
+> **Note:** Methods are prefixed with `_` to indicate they are internal implementation details for use by the session manager, not part of the public API.
+
+#### 2. Modify `sync_agent()` in `RepositorySessionManager`
+**File:** `src/strands/session/repository_session_manager.py`
+
+- Track the previously synced `_internal_state` for comparison (diffing)
+- Before calling `update_agent()`, check:
+  - `agent.state._is_dirty()` for user-managed state changes
+  - Direct comparison of current vs. previously synced `_internal_state`
+- Only call `update_agent()` if either condition is true
+- Clear dirty flag only **after successful sync** (keep set on failure for retry)
+- Update tracked `_internal_state` after successful sync
+
+### Scope Boundaries
+
+- ✅ **In Scope:** `sync_agent()` for single `Agent` only
+- ❌ **Out of Scope (future follow-up):**
+  - `sync_multi_agent()` optimization
+  - `sync_bidi_agent()` optimization
+  - Force sync option
+  - `conversation_manager_state` dirty tracking (changes infrequently)
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/strands/types/json_dict.py` | Add `_dirty` flag, `_is_dirty()`, `_clear_dirty()` private methods |
+| `src/strands/session/repository_session_manager.py` | Add dirty check logic in `sync_agent()`, track internal state |
+| `tests/strands/types/test_json_dict.py` | Add unit tests for dirty flag behavior |
+| `tests/strands/session/test_repository_session_manager.py` | Add tests for conditional sync behavior |
+
+### Acceptance Criteria
+
+- [ ] `JSONSerializableDict._is_dirty()` returns `False` after initialization
+- [ ] `JSONSerializableDict._is_dirty()` returns `True` after `set()` is called
+- [ ] `JSONSerializableDict._is_dirty()` returns `True` after `delete()` is called
+- [ ] `JSONSerializableDict._clear_dirty()` resets dirty flag to `False`
+- [ ] `sync_agent()` skips `update_agent()` call when state is not dirty and internal state unchanged
+- [ ] `sync_agent()` calls `update_agent()` when `agent.state` is dirty
+- [ ] `sync_agent()` calls `update_agent()` when internal state has changed
+- [ ] Dirty flag remains set if `update_agent()` fails (for retry on next sync)
+- [ ] All existing session manager tests continue to pass
+- [ ] New unit tests cover dirty flag behavior
+
+### Additional Context
+
+This optimization reduces unnecessary I/O operations (file writes, S3 puts, etc.) when the agent processes messages without modifying its state, improving performance especially in high-throughput scenarios.

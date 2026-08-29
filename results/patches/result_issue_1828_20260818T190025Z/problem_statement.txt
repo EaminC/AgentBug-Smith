@@ -1,0 +1,73 @@
+# Issue #1828: [FEATURE] Optimize session manager initialization
+
+### Problem Statement
+
+I would like to optimize the session manager so that it doesnt call `get_agent` if the session does not already exist. This will reduce the number of api calls needed by the underlying session repository.
+
+### Proposed Solution
+
+Add a flag during session manager initialization that skips `get_agent` call during agent init if the session doesnt already exist
+
+### Use Case
+
+reduce number of api calls needed by session manager
+
+---
+
+## Implementation Requirements
+
+Based on repository analysis and clarification discussion:
+
+### Overview
+When a **new session** is created in `RepositorySessionManager.__init__`, we know with certainty that no agents can exist in the session yet. The subsequent `read_agent()` calls in `initialize()`, `initialize_bidi_agent()`, and `initialize_multi_agent()` will always return `None`, making them unnecessary API calls.
+
+This optimization eliminates redundant S3 GetObject calls (for S3-backed sessions) or filesystem I/O operations (for file-backed sessions).
+
+### Technical Approach
+
+**Add `_is_new_session` flag in `RepositorySessionManager`:**
+
+```python
+class RepositorySessionManager(SessionManager):
+    def __init__(self, session_id: str, session_repository: SessionRepository, **kwargs: Any):
+        # ... existing code ...
+        session = session_repository.read_session(session_id)
+        if session is None:
+            self._is_new_session = True  # NEW: Track new session state
+            session = Session(session_id=session_id, session_type=SessionType.AGENT)
+            session_repository.create_session(session)
+        else:
+            self._is_new_session = False  # Session existed, agents may exist
+        # ... rest of init ...
+```
+
+**Update initialization methods to check flag:**
+
+In `initialize()`, `initialize_bidi_agent()`, and `initialize_multi_agent()`:
+- If `self._is_new_session` is `True`, skip the `read_agent()`/`read_multi_agent()` call
+- Directly proceed to create the agent/multi-agent
+- The flag remains `True` for the session's lifetime (agents can't pre-exist in a new session)
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/strands/session/repository_session_manager.py` | Add `_is_new_session` flag and update `initialize()`, `initialize_bidi_agent()`, `initialize_multi_agent()` methods |
+| `tests/strands/session/test_repository_session_manager.py` | Add tests for optimization behavior |
+
+### Acceptance Criteria
+
+- [ ] `RepositorySessionManager.__init__` sets `_is_new_session = True` when creating a new session
+- [ ] `RepositorySessionManager.__init__` sets `_is_new_session = False` when using an existing session
+- [ ] `initialize(agent)` skips `read_agent()` call when `_is_new_session` is `True`
+- [ ] `initialize_bidi_agent(agent)` skips `read_agent()` call when `_is_new_session` is `True`
+- [ ] `initialize_multi_agent(source)` skips `read_multi_agent()` call when `_is_new_session` is `True`
+- [ ] Existing behavior preserved when `_is_new_session` is `False` (session already existed)
+- [ ] Unit tests cover both new and existing session scenarios
+- [ ] All existing tests continue to pass
+
+### Design Notes
+
+- The `_is_new_session` flag remains `True` for the entire lifetime of the session manager instance
+- This is safe because: if the session was newly created, no agents could have pre-existed in the repository
+- The same session manager cannot be attached to agents with the same agent_id (enforced by existing validation)

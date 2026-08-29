@@ -1,0 +1,81 @@
+# Issue #1817: [Bug]: Single invalid MCP config entry crashes entire workspace, blocking all chat
+
+### Prerequisites
+
+- [x] I have searched the existing [issues](https://github.com/agentscope-ai/agentscope/issues) and [discussions](https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.
+- [x] This is a bug, not a usage question. (For questions, please use [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)
+
+### Background / Description
+
+A single invalid MCP entry in a workspace's .mcp file (e.g. is_stateful: false for an STDIO MCP, which raises ValueError in
+MCPClient.model_post_init()) causes LocalWorkspace.initialize() to crash. This makes the entire workspace permanently
+non-functional: chat messages silently fail to receive replies, and the workspace MCP/skill panels return 500 Internal Server
+Error.
+
+The root cause is that MCP deserialization and connection in initialize() have zero error handling, unlike the skill loading code
+in the same method which consistently wraps operations in try/except.
+
+Error Messages
+
+File "src/agentscope/workspace/_local_workspace.py", line 196-199, in initialize
+    self._mcps = [
+        MCPClient.model_validate(m)
+        for m in json.loads(await f.read())
+    ]
+ValueError: STDIO MCP must be stateful (is_stateful=True).
+
+After this crash:
+- is_alive stays False
+- Workspace is never cached
+- Every subsequent request re-triggers the same failure
+- GET /workspace/mcp returns 500 Internal Server Error
+- Chat messages receive {"status": "started"} but no response ever arrives
+
+
+### Error Messages
+
+```shell
+File "src/agentscope/workspace/_local_workspace.py", line 196-199, in initialize
+    self._mcps = [
+        MCPClient.model_validate(m)
+        for m in json.loads(await f.read())
+    ]
+ValueError: STDIO MCP must be stateful (is_stateful=True).
+
+After this crash:
+- is_alive stays False
+- Workspace is never cached
+- Every subsequent request re-triggers the same failure
+- GET /workspace/mcp returns 500 Internal Server Error
+- Chat messages receive {"status": "started"} but no response ever arrives
+```
+
+### Steps to Reproduce
+
+1. Create a .mcp file with an invalid entry:
+
+[
+  {
+    "name": "bad_mcp",
+    "is_stateful": false,
+    "mcp_config": {
+      "type": "stdio_mcp",
+      "command": "echo",
+      "args": ["hello"]
+    }
+  }
+]
+
+2. Initialize a workspace from that directory:
+
+ws = LocalWorkspace(workdir="/path/to/workdir")
+await ws.initialize()  # ValueError raised
+
+3. Observe: the entire workspace is dead, not just the bad MCP entry.
+
+
+### Environment
+
+- AgentScope Version: 2.0.1
+- Python Version: 3.12
+- OS: Windows 11 / WSL2

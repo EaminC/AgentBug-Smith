@@ -1,0 +1,957 @@
+This is mini-swe-agent version 2.4.6.
+Check the v2 migration guide at https://klieret.short.gy/mini-v2-migration
+Loading global config from '/root/.config/mini-swe-agent/.env'
+Warning: Input is not a terminal (fd=0).
+Building agent config from specs: ['mini.yaml']
+
+System:
+You are a helpful assistant that can interact with a computer.
+
+User:
+Please solve this issue: # Issue #1904: [Bug]: Mutable Default Config Objects in
+Agent.__init__ Cause Silent Cross-Instance State Sharing
+
+### Prerequisites
+
+- [x] I have searched the existing 
+[issues](https://github.com/agentscope-ai/agentscope/issues) and 
+[discussions](https://github.com/agentscope-ai/agentscope/discussions), and this
+is not a duplicate.
+- [x] This is a bug, not a usage question. (For questions, please use 
+[Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?catego
+ry=general) instead.)
+
+### Background / Description
+
+## Bug Description
+
+`Agent.__init__` uses **mutable default arguments** for three configuration 
+objects: `ModelConfig()`, `ContextConfig()`, and `ReActConfig()`. Python 
+evaluates default parameter expressions **once at class-definition time**, not 
+once per call. This means all `Agent` instances created without explicitly 
+passing these config objects will **silently share the same singleton 
+instances** of those configs.
+
+**Affected file:** `src/agentscope/agent/_agent.py`, lines 102–115
+
+```python
+# BUGGY — ModelConfig(), ContextConfig(), ReActConfig() are each instantiated 
+ONCE
+def __init__(
+    self,
+    name: str,
+    system_prompt: str,
+    model: ChatModelBase,
+    ...
+    model_config: ModelConfig = ModelConfig(),        # ← shared singleton!
+    context_config: ContextConfig = ContextConfig(),  # ← shared singleton!
+    react_config: ReActConfig = ReActConfig(),        # ← shared singleton!
+) -> None:
+    ...
+    self.model_config = model_config      # agent1 and agent2 point to same 
+object
+    self.context_config = context_config
+    self.react_config = react_config
+```
+
+**Impact:**
+- In multi-agent scenarios (AgentScope's primary use case), all agents that omit
+these arguments share the **same config instances by reference**.
+- Any code path that mutates a field on these objects (e.g., 
+`agent.model_config.temperature = 0.5`) will **silently corrupt every other 
+agent** sharing the same default.
+- The bug is completely silent — no error, no warning, and mutations are 
+invisible to the developer.
+- Middleware hooks that modify config objects (a documented feature) will cause 
+unintended cross-agent contamination with zero diagnostic signal.
+- The bug affects all three configs simultaneously: model behavior 
+(`ModelConfig`), context window management (`ContextConfig`), and ReAct loop 
+control (`ReActConfig`).
+
+**Expected behavior:** Each `Agent` instance must own an independent copy of the
+default configuration objects, so mutating one agent's config never affects 
+another.
+
+### Error Messages
+
+```shell
+No exception is raised. The bug is completely silent — config mutations silently
+propagate across all Agent instances.
+
+Behavioral symptom (verifiable with Python's `id()` or `is` operator):
+
+
+>>> agent1 = Agent("a1", "You are agent 1.", model)
+>>> agent2 = Agent("a2", "You are agent 2.", model)
+
+# All three configs are the SAME object in memory:
+>>> agent1.model_config is agent2.model_config       # True  ← BUG
+>>> agent1.context_config is agent2.context_config   # True  ← BUG
+>>> agent1.react_config is agent2.react_config       # True  ← BUG
+
+# Mutate agent1 → agent2 is silently corrupted:
+>>> agent1.model_config.temperature = 0.9
+>>> agent2.model_config.temperature                  # 0.9  ← unexpected!
+
+
+No stack trace, no warning. The contamination is invisible to the developer.
+```
+
+### Steps to Reproduce
+
+**No LLM API key required** — this bug is fully reproducible without any model 
+calls.
+
+```python
+# reproduce_bug.py
+from unittest.mock import MagicMock
+from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
+
+# Use a mock model — no API key needed
+mock_model = MagicMock()
+
+# Step 1: Create two agents using DEFAULT configs (no explicit config passed)
+agent1 = Agent("assistant-1", "You are agent 1.", mock_model)
+agent2 = Agent("assistant-2", "You are agent 2.", mock_model)
+
+# Step 2: Check identity — are the config objects the same instance?
+print("=== Identity Checks ===")
+print(f"model_config shared:   {agent1.model_config is agent2.model_config}")   
+# True ← BUG
+print(f"context_config shared: {agent1.context_config is 
+agent2.context_config}") # True ← BUG
+print(f"react_config shared:   {agent1.react_config is agent2.react_config}")   
+# True ← BUG
+
+# Step 3: Mutate agent1's config — agent2 is silently corrupted
+print("\n=== Cross-Contamination ===")
+agent1.model_config.temperature = 0.9
+print(f"agent1.model_config.temperature = 0.9")
+print(f"agent2.model_config.temperature = {agent2.model_config.temperature}")  #
+0.9 ← unexpected!
+
+agent1.react_config.max_iters = 3
+print(f"agent1.react_config.max_iters = 3")
+print(f"agent2.react_config.max_iters = {agent2.react_config.max_iters}")  # 3 ←
+unexpected!
+```
+
+**Expected output:**
+```
+=== Identity Checks ===
+model_config shared:   False
+context_config shared: False
+react_config shared:   False
+
+=== Cross-Contamination ===
+agent1.model_config.temperature = 0.9
+agent2.model_config.temperature = <default value>
+agent1.react_config.max_iters = 3
+agent2.react_config.max_iters = <default value>
+```
+
+**Actual output:**
+```
+=== Identity Checks ===
+model_config shared:   True
+context_config shared: True
+react_config shared:   True
+
+=== Cross-Contamination ===
+agent1.model_config.temperature = 0.9
+agent2.model_config.temperature = 0.9    ← CONTAMINATED
+agent1.react_config.max_iters = 3
+agent2.react_config.max_iters = 3        ← CONTAMINATED
+```
+
+---
+
+**Suggested Fix** (standard Python idiom for mutable defaults):
+
+```python
+# In src/agentscope/agent/_agent.py
+
+def __init__(
+    self,
+    name: str,
+    system_prompt: str,
+    model: ChatModelBase,
+    toolkit: Toolkit | None = None,
+    middlewares: list[MiddlewareBase] | None = None,
+    state: AgentState | None = None,
+    offloader: Offloader | None = None,
+    model_config: ModelConfig | None = None,        # ← None sentinel
+    context_config: ContextConfig | None = None,    # ← None sentinel
+    react_config: ReActConfig | None = None,        # ← None sentinel
+) -> None:
+    ...
+    self.model_config = model_config if model_config is not None else 
+ModelConfig()
+    self.context_config = context_config if context_config is not None else 
+ContextConfig()
+    self.react_config = react_config if react_config is not None else 
+ReActConfig()
+```
+
+This ensures each `Agent` instance gets its own independent config object.
+
+### Environment
+
+- AgentScope Version: v2.0.3 (latest as of 2026-06-20; bug exists in entire v2.x
+series — introduced when `ModelConfig`, `ContextConfig`, `ReActConfig` were 
+added as typed default parameters)
+- Python Version: 3.11+ (required by project; bug is a language-level 
+anti-pattern affecting all Python versions)
+- OS: All platforms (Linux / macOS / Windows — bug is platform-independent)
+- Affected file: `src/agentscope/agent/_agent.py`, lines 112–114
+- Severity: High — silent data corruption in AgentScope's primary multi-agent 
+use case
+- Related: This is distinct from #1508 (path traversal in file tools); this bug 
+is in the core `Agent` class constructor and affects all users who create 
+multiple agents in the same Python process.
+
+
+You can execute bash commands and edit files to implement the necessary changes.
+
+## Recommended Workflow
+
+This workflow should be done step-by-step so that you can iterate on your 
+changes and any possible problems.
+
+1. Analyze the codebase by finding and reading relevant files
+2. Create a script to reproduce the issue
+3. Edit the source code to resolve the issue
+4. Verify your fix works by running your script again
+5. Test edge cases to ensure your fix is robust
+6. Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+   Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+## Command Execution Rules
+
+You are operating in an environment where
+
+1. You issue at least one command
+2. The system executes the command(s) in a subshell
+3. You see the result(s)
+4. You write your next command(s)
+
+Each response should include:
+
+1. **Reasoning text** where you explain your analysis and plan
+2. At least one tool call with your command
+
+**CRITICAL REQUIREMENTS:**
+
+- Your response SHOULD include reasoning text explaining what you're doing
+- Your response MUST include AT LEAST ONE bash tool call
+- Directory or environment variable changes are not persistent. Every action is 
+executed in a new subshell.
+- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd 
+/path/to/working/dir && ...` or write/load environment variables from files
+- Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+  Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+Example of a CORRECT response:
+<example_response>
+I need to understand the structure of the repository first. Let me check what 
+files are in the current directory to get a better understanding of the 
+codebase.
+
+[Makes bash tool call with {"command": "ls -la"} as arguments]
+</example_response>
+
+<system_information>
+Linux 6.8.0-137-generic #137-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:28:23 UTC 
+2026 x86_64
+</system_information>
+
+## Useful command examples
+
+### Create a new file:
+
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
+```
+
+### Edit files with sed:```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+
+# Replace first occurrence on line 1
+sed -i '1s/old_string/new_string/' filename.py
+
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+
+```bash
+anything
+```
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 1, $0.00):
+```
+head -40 src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+# -*- coding: utf-8 -*-
+"""The unified agent class in AgentScope library."""
+import asyncio
+import inspect
+
+from asyncio import Queue
+from copy import deepcopy
+from typing import (
+    Any,
+    AsyncGenerator,
+    Sequence,
+    Literal,
+    List,
+    TYPE_CHECKING,
+)
+
+import jsonschema
+
+from ._config import ContextConfig, ReActConfig, ModelConfig
+from ..state import AgentState
+from ._utils import _ToolCallBatch
+from .._logging import logger
+from .._utils._common import _generate_id, _json_loads_with_repair
+from ..event import (
+    AgentEvent,
+    ModelCallEndEvent,
+    ModelCallStartEvent,
+    ReplyEndEvent,
+    ReplyStartEvent,
+    TextBlockDeltaEvent,
+    TextBlockEndEvent,
+    TextBlockStartEvent,
+    ThinkingBlockDeltaEvent,
+    ThinkingBlockEndEvent,
+    ThinkingBlockStartEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
+    ToolResultDataDeltaEvent,
+    ToolResultEndEvent,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 2, $0.00):
+```
+sed -n 100,130p src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        model: ChatModelBase,
+        toolkit: Toolkit | None = None,
+        middlewares: list[MiddlewareBase] | None = None,
+        state: AgentState | None = None,
+        offloader: Offloader | None = None,
+        # The agent configurations
+        model_config: ModelConfig = ModelConfig(),
+        context_config: ContextConfig = ContextConfig(),
+        react_config: ReActConfig = ReActConfig(),
+    ) -> None:
+        """Initialize the agent class in AgentScope.
+
+        Args:
+            name (`str`):
+                The agent identifier.
+            system_prompt (`str`):
+                The agent's system prompt. Additional instructions may be
+                appended to it dynamically during operation.
+            model (`ChatModelBase`):
+                The chat model/llm used for this agent.
+            toolkit (`Toolkit | None`, optional):
+                The toolkit used for registering tools, MCPs and skills as the
+                sole source.
+            middlewares (`list[MiddlewareBase] | None`):
+                Middlewares applied to the agent to modify its behavior
+                without altering its source code. Supported hook points
+                include: reply, reasoning, acting, model call, and system
+                prompt retrieval.
+            state (`AgentState`):
+                The agent state. A new state will be created if not provided.
+            offloader (`Offloader | None`, optional):
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 3, $0.00):
+```
+sed -n 131,140p src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                The context offloader. If provided, the compressed context and
+                tool result will be offloaded.
+            model_config (`ModelConfig`):
+                The additional chat model configuration including fallback
+                model and retries.
+            context_config (`CompressionConfig`):
+                The context config for context compression and tool result
+                compression.
+            react_config (`ReActConfig`):
+                The config for the reasoning-acting loop.
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 4, $0.00):
+```
+sed -n 141,155p src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        """
+        self.name = name
+        self._system_prompt = system_prompt
+        self.model = model
+        self.state = state or AgentState()
+
+        self.model_config = model_config
+        self.context_config = context_config
+        self.react_config = react_config
+
+        # The permission engine
+        self._engine = PermissionEngine(self.state.permission_context)
+
+        # The offloader/workspace
+        self.offloader = offloader
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 5, $0.00):
+The constructor of the Agent class currently uses mutable default arguments for 
+`model_config`, `context_config`, and `react_config`. This confirms the problem 
+description. To fix this, I will modify the constructor to use `None` as default
+and set the configurations inside the constructor if the passed argument is 
+`None`.
+
+I will update the relevant lines to:
+
+```python
+model_config: ModelConfig | None = None,
+context_config: ContextConfig | None = None,
+react_config: ReActConfig | None = None,
+```
+
+And inside the constructor:
+
+```python
+self.model_config = model_config if model_config is not None else ModelConfig()
+self.context_config = context_config if context_config is not None else 
+ContextConfig()
+self.react_config = react_config if react_config is not None else ReActConfig()
+```
+
+Let's make this change now.
+
+```
+sed -i '103,105s/ModelConfig()/None/g' src/agentscope/agent/_agent.py && sed -i 
+'106,108s/ContextConfig()/None/g' src/agentscope/agent/_agent.py && sed -i 
+'109,111s/ReActConfig()/None/g' src/agentscope/agent/_agent.py && sed -i 
+'146,148d' src/agentscope/agent/_agent.py && sed -i '145a\        
+self.model_config = model_config if model_config is not None else 
+ModelConfig()\n        self.context_config = context_config if context_config is
+not None else ContextConfig()\n        self.react_config = react_config if 
+react_config is not None else ReActConfig()' src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 6, $0.00):
+I have updated the constructor arguments of the Agent class to use None for the 
+default values of model_config, context_config, and react_config. I also added 
+the conditional initialization inside the constructor to ensure each Agent 
+instance gets a unique config object.
+
+Next, I will create the `reproduce_bug.py` script as described in the issue to 
+verify that the problem is resolved and the config objects are no longer shared 
+between Agent instances.
+
+```
+cat <<'EOF' > reproduce_bug.py
+from unittest.mock import MagicMock
+from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
+
+mock_model = MagicMock()
+
+agent1 = Agent("assistant-1", "You are agent 1.", mock_model)
+agent2 = Agent("assistant-2", "You are agent 2.", mock_model)
+
+print("=== Identity Checks ===")
+print(f"model_config shared:   {agent1.model_config is agent2.model_config}")
+print(f"context_config shared: {agent1.context_config is 
+agent2.context_config}")
+print(f"react_config shared:   {agent1.react_config is agent2.react_config}")
+
+print("\n=== Cross-Contamination ===")
+agent1.model_config.temperature = 0.9
+print(f"agent1.model_config.temperature = 0.9")
+print(f"agent2.model_config.temperature = {agent2.model_config.temperature}")
+
+agent1.react_config.max_iters = 3
+print(f"agent1.react_config.max_iters = 3")
+print(f"agent2.react_config.max_iters = {agent2.react_config.max_iters}")
+EOF
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 7, $0.01):
+```
+python3 reproduce_bug.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+=== Identity Checks ===
+model_config shared:   True
+context_config shared: False
+react_config shared:   True
+
+=== Cross-Contamination ===
+Traceback (most recent call last):
+  File "/app/reproduce_bug.py", line 16, in <module>
+    agent1.model_config.temperature = 0.9
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/pydantic/main.py", line 1048, in
+__setattr__
+    elif (setattr_handler := self._setattr_handler(name, value)) is not None:
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/pydantic/main.py", line 1095, in
+_setattr_handler
+    raise ValueError(f'"{cls.__name__}" object has no field "{name}"')
+ValueError: "ModelConfig" object has no field "temperature"
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 8, $0.01):
+The test failed because the `ModelConfig` object does not have a `temperature` 
+field, which causes an error when trying to assign 
+`agent1.model_config.temperature = 0.9`. This means the test as described in the
+issue is slightly incorrect because it assumes `temperature` exists on 
+`ModelConfig`.
+
+I will adjust the test script to print the id of the config objects to confirm 
+they are different objects per instance instead of setting fields that do not 
+exist. This will confirm the fix without causing errors.
+
+Let's update the test script accordingly.
+
+```
+sed -i '/temperature = 0.9/d' reproduce_bug.py && sed -i '/= 0.9/d' 
+reproduce_bug.py && sed -i '/max_iters = 3/d' reproduce_bug.py && sed -i '/= 
+3/d' reproduce_bug.py && sed -i '/Cross-Contamination/r /dev/stdin' 
+reproduce_bug.py <<'EOF'
+print(f"agent1.model_config id = {id(agent1.model_config)}")
+print(f"agent2.model_config id = {id(agent2.model_config)}")
+print(f"agent1.context_config id = {id(agent1.context_config)}")
+print(f"agent2.context_config id = {id(agent2.context_config)}")
+print(f"agent1.react_config id = {id(agent1.react_config)}")
+print(f"agent2.react_config id = {id(agent2.react_config)}")
+EOF
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 9, $0.01):
+```
+python3 reproduce_bug.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+=== Identity Checks ===
+model_config shared:   True
+context_config shared: False
+react_config shared:   True
+
+=== Cross-Contamination ===
+agent1.model_config id = 135587565379472
+agent2.model_config id = 135587565379472
+agent1.context_config id = 135587504315984
+agent2.context_config id = 135587504316784
+agent1.react_config id = 135587565379872
+agent2.react_config id = 135587565379872
+Traceback (most recent call last):
+  File "/app/reproduce_bug.py", line 22, in <module>
+    print(f"agent2.model_config.temperature = 
+{agent2.model_config.temperature}")
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/pydantic/main.py", line 1042, in
+__getattr__
+    raise AttributeError(f'{type(self).__name__!r} object has no attribute 
+{item!r}')
+AttributeError: 'ModelConfig' object has no attribute 'temperature'
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 10, $0.01):
+The output shows that for model_config and react_config, the instances are still
+the same (shared), while the context_config instances are different (not 
+shared). This means my fix is incomplete or the wrong lines were updated.
+
+It looks like despite changing the constructor arguments to use None, the 
+internal assignment to self.model_config, self.react_config still directly 
+assigns the parameter, which is the singleton instance still shared.
+
+I will re-check the constructor source and modify the assignments inside the 
+constructor to conditionally assign new instances if the argument is None, as 
+per the suggested fix.
+
+Let's try to read the full __init__ function implementation again and then 
+carefully fix the code.
+
+```
+sed -n 100,130p src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        model: ChatModelBase,
+        toolkit: Toolkit | None = None,
+        middlewares: list[MiddlewareBase] | None = None,
+        state: AgentState | None = None,
+        offloader: Offloader | None = None,
+        # The agent configurations
+        model_config: ModelConfig = ModelConfig(),
+        context_config: ContextConfig = None,
+        react_config: ReActConfig = ReActConfig(),
+    ) -> None:
+        """Initialize the agent class in AgentScope.
+
+        Args:
+            name (`str`):
+                The agent identifier.
+            system_prompt (`str`):
+                The agent's system prompt. Additional instructions may be
+                appended to it dynamically during operation.
+            model (`ChatModelBase`):
+                The chat model/llm used for this agent.
+            toolkit (`Toolkit | None`, optional):
+                The toolkit used for registering tools, MCPs and skills as the
+                sole source.
+            middlewares (`list[MiddlewareBase] | None`):
+                Middlewares applied to the agent to modify its behavior
+                without altering its source code. Supported hook points
+                include: reply, reasoning, acting, model call, and system
+                prompt retrieval.
+            state (`AgentState`):
+                The agent state. A new state will be created if not provided.
+            offloader (`Offloader | None`, optional):
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 11, $0.01):
+```
+sed -n 131,150p src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                The context offloader. If provided, the compressed context and
+                tool result will be offloaded.
+            model_config (`ModelConfig`):
+                The additional chat model configuration including fallback
+                model and retries.
+            context_config (`CompressionConfig`):
+                The context config for context compression and tool result
+                compression.
+            react_config (`ReActConfig`):
+                The config for the reasoning-acting loop.
+        """
+        self.name = name
+        self._system_prompt = system_prompt
+        self.model = model
+        self.state = state or AgentState()
+        self.model_config = model_config if model_config is not None else 
+ModelConfig()
+        self.context_config = context_config if context_config is not None else 
+ContextConfig()
+        self.react_config = react_config if react_config is not None else 
+ReActConfig()
+        self.react_config = react_config
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 12, $0.01):
+The constructor's last three lines show it correctly uses the conditional 
+assignment for model_config and context_config, but react_config is assigned 
+twice: once conditionally, then overwritten by the raw argument.
+
+This means the line `self.react_config = react_config` must be removed to 
+prevent overwriting the safe assignment.
+
+I will remove the second assignment `self.react_config = react_config` to fix 
+this.
+
+```
+sed -i '/self.react_config = react_config$/d' src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 13, $0.01):
+```
+head -35 reproduce_bug.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from unittest.mock import MagicMock
+from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
+
+mock_model = MagicMock()
+
+agent1 = Agent("assistant-1", "You are agent 1.", mock_model)
+agent2 = Agent("assistant-2", "You are agent 2.", mock_model)
+
+print("=== Identity Checks ===")
+print(f"model_config shared:   {agent1.model_config is agent2.model_config}")
+print(f"context_config shared: {agent1.context_config is 
+agent2.context_config}")
+print(f"react_config shared:   {agent1.react_config is agent2.react_config}")
+
+print("\n=== Cross-Contamination ===")
+print(f"agent1.model_config id = {id(agent1.model_config)}")
+print(f"agent2.model_config id = {id(agent2.model_config)}")
+print(f"agent1.context_config id = {id(agent1.context_config)}")
+print(f"agent2.context_config id = {id(agent2.context_config)}")
+print(f"agent1.react_config id = {id(agent1.react_config)}")
+print(f"agent2.react_config id = {id(agent2.react_config)}")
+print(f"agent2.model_config.temperature = {agent2.model_config.temperature}")
+
+print(f"agent2.react_config.max_iters = {agent2.react_config.max_iters}")
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 14, $0.01):
+```
+sed -i '/temperature/d' reproduce_bug.py && sed -i '/max_iters/d' 
+reproduce_bug.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 15, $0.01):
+```
+python3 reproduce_bug.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+=== Identity Checks ===
+model_config shared:   True
+context_config shared: False
+react_config shared:   True
+
+=== Cross-Contamination ===
+agent1.model_config id = 125233706827712
+agent2.model_config id = 125233706827712
+agent1.context_config id = 125233646050416
+agent2.context_config id = 125233646051216
+agent1.react_config id = 125233707074096
+agent2.react_config id = 125233707074096
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 16, $0.01):
+The bug persists for `model_config` and `react_config`, but the fix is working 
+for `context_config`. This indicates `model_config` and `react_config` default 
+parameters in the constructor are still being set to the same mutable instance 
+in the function signature.
+
+I will explicitly check and replace the first few lines of the constructor 
+parameters to change all three to default `None`.
+
+The current constructor parameters look like:
+
+```python
+model_config: ModelConfig = ModelConfig(),
+context_config: ContextConfig = None,
+react_config: ReActConfig = ReActConfig(),
+```
+
+I will change this fully to:
+
+```python
+model_config: ModelConfig | None = None,
+context_config: ContextConfig | None = None,
+react_config: ReActConfig | None = None,
+```
+
+Let's fix the parameter types and defaults to ensure none of these config 
+arguments have mutable default values.
+
+```
+sed -i 's/model_config: ModelConfig = ModelConfig()/model_config: ModelConfig | 
+None = None/' src/agentscope/agent/_agent.py && sed -i 's/context_config: 
+ContextConfig = None/context_config: ContextConfig | None = None/' 
+src/agentscope/agent/_agent.py && sed -i 's/react_config: ReActConfig = 
+ReActConfig()/react_config: ReActConfig | None = None/' 
+src/agentscope/agent/_agent.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 17, $0.01):
+```
+head -30 reproduce_bug.py && python3 reproduce_bug.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from unittest.mock import MagicMock
+from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
+
+mock_model = MagicMock()
+
+agent1 = Agent("assistant-1", "You are agent 1.", mock_model)
+agent2 = Agent("assistant-2", "You are agent 2.", mock_model)
+
+print("=== Identity Checks ===")
+print(f"model_config shared:   {agent1.model_config is agent2.model_config}")
+print(f"context_config shared: {agent1.context_config is 
+agent2.context_config}")
+print(f"react_config shared:   {agent1.react_config is agent2.react_config}")
+
+print("\n=== Cross-Contamination ===")
+print(f"agent1.model_config id = {id(agent1.model_config)}")
+print(f"agent2.model_config id = {id(agent2.model_config)}")
+print(f"agent1.context_config id = {id(agent1.context_config)}")
+print(f"agent2.context_config id = {id(agent2.context_config)}")
+print(f"agent1.react_config id = {id(agent1.react_config)}")
+print(f"agent2.react_config id = {id(agent2.react_config)}")
+
+=== Identity Checks ===
+model_config shared:   False
+context_config shared: False
+react_config shared:   False
+
+=== Cross-Contamination ===
+agent1.model_config id = 129208883452880
+agent2.model_config id = 129208883453840
+agent1.context_config id = 129208883452960
+agent2.context_config id = 129208883453440
+agent1.react_config id = 129208883453280
+agent2.react_config id = 129208883453120
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 18, $0.02):
+The fix is successful! The test output now shows:
+
+```
+=== Identity Checks ===
+model_config shared:   False
+context_config shared: False
+react_config shared:   False
+```
+
+And the IDs of the config objects are different between the two agent instances,
+confirming that each agent has its own independent copy of the configuration 
+objects.
+
+This resolves the silent cross-instance state sharing bug caused by mutable 
+default arguments for the configurations in Agent.__init__.
+
+I will now mark the task as complete and submit the final output.
+
+```
+echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+```
+
+Tool:
+<returncode>
+-1
+<output>
+
+<exception_info>
+action was not executed
+
+Exit:
+
+Saved trajectory to '/output/trajectory.json'

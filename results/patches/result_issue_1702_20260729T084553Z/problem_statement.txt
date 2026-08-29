@@ -1,0 +1,96 @@
+# Issue #1702: [Bug]: FunctionTool fails when the documented plain function tool returns a string
+
+## Describe the bug
+
+The documentation shows that a plain Python function can be wrapped as a tool:
+
+https://docs.agentscope.io/v2/building-blocks/tool#wrap-function-as-tool
+
+In that section, the `get_weather` example returns a plain `str`:
+
+```python
+def get_weather(location: str) -> str:
+    """Get weather information.
+
+    Args:
+        location (`str`):
+            The location to get weather for.
+    """
+    return f"The weather in {location} is sunny."
+```
+
+This suggests that a normal Python function returning `str` can be wrapped and used as a tool.
+
+However, when such a function is wrapped with `FunctionTool`, the tool call fails at runtime. `FunctionTool.__call__()` currently returns the wrapped function result directly, while `Toolkit.call_tool()` only accepts tool results in AgentScope's internal tool result format.
+
+As a result, the documented `get_weather(...) -> str` style function does not work unless users manually return `ToolChunk`.
+
+## To Reproduce
+
+```python
+import asyncio
+import json
+
+from agentscope.message import ToolCallBlock
+from agentscope.state import AgentState
+from agentscope.tool import FunctionTool, Toolkit
+
+
+def get_weather(location: str) -> str:
+    """Get weather information.
+
+    Args:
+        location (`str`):
+            The location to get weather for.
+    """
+    return f"The weather in {location} is sunny."
+
+
+async def main() -> None:
+    toolkit = Toolkit(tools=[FunctionTool(get_weather)])
+
+    tool_call = ToolCallBlock(
+        id="call_get_weather",
+        name="get_weather",
+        input=json.dumps({"location": "Chengdu"}),
+    )
+
+    async for item in toolkit.call_tool(tool_call, AgentState()):
+        print(item)
+
+
+asyncio.run(main())
+```
+
+Run:
+
+```bash
+python reproduce_function_tool_plain_return.py
+```
+
+## Error messages
+
+The call fails because the wrapped function returns `str`:
+
+```text
+DeveloperOrientedException: The tool function must return a ToolChunk object, or an AsyncGenerator/Generator of ToolChunk objects, but got <class 'str'>.
+```
+
+## Expected behavior
+
+The documented function should work when wrapped as a tool:
+
+```python
+def get_weather(location: str) -> str:
+    return f"The weather in {location} is sunny."
+```
+
+It should produce a successful text tool result instead of raising a `DeveloperOrientedException`.
+
+If `FunctionTool` intentionally requires wrapped functions to return `ToolChunk`, then the documentation should state that explicitly and update the `get_weather` example accordingly.
+
+## Environment
+
+- AgentScope Version: 2.0.0, source checkout from `main` at commit `fca8f160`
+- Python Version: 3.11.14
+- OS: macOS 26.5 arm64

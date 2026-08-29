@@ -1,0 +1,102 @@
+# Issue #2000: feat(middleware): expose permission checking through middleware
+
+> [!NOTE]
+> **Scope update**
+>
+> The original proposal included a structured permission-evaluation result, a
+> read-only permission-decision hook, and a dedicated confirmation hook.
+>
+> Based on the discussion below and the maintainer feedback in #2001, this
+> issue is now focused on a single onion-style `on_check_permission`
+> middleware hook. `PermissionEngine.check_permission` remains the sole
+> engine interface, and confirmation input remains observable through
+> `on_reply`.
+>
+> Permission decision-path observability is still considered useful, but is
+> being deferred to a separate issue so its data model can be discussed
+> independently.
+
+## Problem
+
+AgentScope has a built-in `PermissionEngine`, but permission checking is not
+currently exposed as a middleware stage.
+
+`extra_agent_middlewares` is documented as an extension point for concerns
+such as authentication, audit logging, and tenant isolation. However,
+`_execute_tool_call` invokes `PermissionEngine.check_permission` directly
+before `on_acting`:
+
+- ASK and DENY calls return before reaching `on_acting`.
+- ALLOW calls reach `on_acting`, but the permission decision itself is no
+  longer available.
+- Applications cannot compose user-, role-, or tenant-specific authorization
+  around the built-in permission check through a public interface.
+
+This leaves applications without a consistent middleware extension point for
+either observing or extending permission decisions.
+
+## Proposal
+
+Add a standard onion-style middleware hook:
+
+```python
+async def on_check_permission(
+    self,
+    agent: Agent,
+    input_kwargs: dict,
+    next_handler: Callable[..., Awaitable[PermissionDecision]],
+) -> PermissionDecision:
+    ...
+```
+
+The hook runs after tool resolution and input validation, but before Agent
+consumes the permission decision.
+
+`input_kwargs` contains:
+
+- `tool_call`: the validated tool-call metadata;
+- `tool`: the resolved tool instance;
+- `tool_input`: the parsed and validated tool input.
+
+Middleware can:
+
+1. call `next_handler(**input_kwargs)` and observe the returned decision;
+2. post-process or replace the downstream decision;
+3. return a decision without delegating, short-circuiting the remaining
+   permission chain.
+
+The built-in `PermissionEngine.check_permission` remains the innermost handler
+and the sole permission-engine interface. When no permission middleware is
+registered, the existing behavior remains unchanged.
+
+Calls resumed after user confirmation still traverse the middleware chain
+immediately before execution, while the innermost handler returns the
+already-confirmed ALLOW without evaluating the built-in engine again.
+
+The chain receives copies of `tool_call` and `tool_input`, so changes to
+those copies do not alter the eventual tool invocation.
+
+## Use cases
+
+- Audit the final permission decision consumed by Agent.
+- Apply application-owned policies based on user, role, tenant, environment,
+  or budget.
+- Consult an external policy service and replace or short-circuit the built-in
+  result.
+- Keep application authorization active when a user-confirmed tool call
+  resumes.
+
+Middleware that changes or short-circuits permission decisions becomes part of
+the application's trusted authorization boundary.
+
+## Out of scope
+
+- Changing `PermissionEngine` semantics or permission modes.
+- Adding a permission-decision transformation trace.
+- Adding a dedicated confirmation hook; raw confirmation events remain
+  observable through `on_reply`.
+- Changing `PermissionDecision`, AgentEvent, message, storage, or UI schemas.
+
+## Reference
+
+Implemented by #2001.

@@ -1,0 +1,136 @@
+# Issue #1696: [BUG] OpenAIModel tool message content sent as array instead of string breaks OpenAI-compatible endpoints (e.g., Kimi K2.5)
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.26.0
+
+### Python Version
+
+3.13
+
+### Operating System
+
+macOS 15.5
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+1. Create an agent using `OpenAIModel` with an OpenAI-compatible endpoint
+   (e.g., Kimi K2.5 via Bedrock Mantle or Moonshot API directly)
+2. Register a simple tool (e.g., `current_time` from `strands-agents-tools`)
+3. Ask the agent a question that triggers tool use: `"What time is it right now? Please use your tools to answer."`
+4. Observe that the tool executes correctly and returns the correct timestamp
+5. Observe that the model ignores the tool result and hallucinates a different datetime
+
+### Expected Behavior
+
+The model should use the tool result (In this case, the exact current time. e.g., `2026-02-15T09:22:35`) and return the correct datetime in its response.
+
+### Actual Behavior
+
+The model returns a completely different, hallucinated datetime(e.g., `2025-04-26T18:25:31`) despite the tool result containing the correct value.
+
+### Additional Context
+
+### Root Cause Analysis
+
+`OpenAIModel.format_request_tool_message()` sends the tool result `content`
+as an **array** of content blocks:
+
+```python
+# Current behavior (openai.py L207-211)
+return {
+    "role": "tool",
+    "tool_call_id": tool_result["toolUseId"],
+    "content": [cls.format_request_message_content(content) for content in contents],  # array
+}
+```
+
+While OpenAI's API accepts both array and string formats, many
+OpenAI-compatible endpoints (including Kimi K2.5) only correctly process
+the **string** format:
+
+```python
+# Expected by Kimi K2.5 (per official docs)
+{
+    "role": "tool",
+    "tool_call_id": tool_call.id,
+    "name": tool_call_name,
+    "content": json.dumps(tool_result),  # string
+}
+```
+
+Kimi K2.5's official tool calling example
+(https://huggingface.co/moonshotai/Kimi-K2-Instruct#tool-calling)
+uses `json.dumps(tool_result)` (string format) for the `content` field.
+
+When the model receives the array format, it fails to parse the tool result
+and falls back to hallucinating the answer.
+
+### Verified Fix
+
+Subclassing `OpenAIModel` and overriding `format_request_tool_message()` to
+return `content` as a string resolves the issue:
+
+```python
+class KimiCompatibleOpenAIModel(OpenAIModel):
+    @classmethod
+    def format_request_tool_message(cls, tool_result, **kwargs):
+        text_parts = []
+        for content in tool_result["content"]:
+            if "json" in content:
+                text_parts.append(json.dumps(content["json"]))
+            elif "text" in content:
+                text_parts.append(content["text"])
+        return {
+            "role": "tool",
+            "tool_call_id": tool_result["toolUseId"],
+            "content": "\n".join(text_parts),
+        }
+```
+
+### Debug Logs
+
+**Before fix** (array format → hallucinated response):
+```
+formatted request=<{... 'content': [{'text': '2026-02-15T09:22:35', 'type': 'text'}] ...}>
+Output: The current time is 18:25:31 UTC on April 26, 2025.  ← WRONG
+```
+
+**After fix** (string format → correct response):
+```
+formatted request=<{... 'content': '2026-02-15T09:30:54' ...}>
+Output: The current time is 9:30:54 UTC on February 15, 2026.  ← CORRECT
+```
+
+### Additional Context
+
+- `BedrockModel` is not affected because it uses the Bedrock Converse API
+  natively, and AWS Bedrock handles format translation to the model.
+- This likely affects other OpenAI-compatible providers beyond Kimi K2.5
+  (e.g., vLLM, SGLang, Ollama, etc.) that implement the OpenAI API spec
+  with strict string-only content parsing for tool messages.
+
+### Possible Solution
+
+Option A: Change `format_request_tool_message()` to always return `content`
+as a string (most compatible with OpenAI-compatible endpoints).
+
+Option B: Add a configuration option to `OpenAIModel` to switch between
+array and string format for tool message content.
+
+Option C: Add both formats support — use string format by default
+(broader compatibility) with an option to use array format.
+
+### Related Issues
+
+_No response_

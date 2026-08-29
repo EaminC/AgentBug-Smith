@@ -1,0 +1,170 @@
+diff --git a/src/strands/agent/conversation_manager/sliding_window_conversation_manager.py b/src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+index 94446380b..1cce16925 100644
+--- a/src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
++++ b/src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+@@ -145,6 +145,46 @@ class SlidingWindowConversationManager(ConversationManager):
+             **kwargs: Additional keyword arguments for future extensibility.
+         """
+         messages = agent.messages
++        # Try to trim index id when tool result cannot be truncated anymore
++        # If the number of messages is less than the window_size, then we default to 2, otherwise, trim to window size
++        trim_index = 2 if len(messages) <= self.window_size else len(messages) - self.window_size
++        original_trim_index = trim_index
++
++        # Must start with a user message
++        while trim_index < len(messages):
++            if messages[trim_index]["role"] != "user":
++                trim_index += 1
++                continue
++            if (
++                any("toolResult" in content for content in messages[trim_index]["content"]) or (
++                    any("toolUse" in content for content in messages[trim_index]["content"]) and not (
++                        trim_index + 1 < len(messages) and any("toolResult" in content for content in messages[trim_index + 1]["content"])))
++            ):
++                trim_index += 1
++            else:
++                break
++        else:
++            trim_index_found = False
++            for i in range(original_trim_index, len(messages) - 1):
++                if messages[i]['role'] == 'assistant' and any('toolUse' in content for content in messages[i]['content']) \
++                        and messages[i + 1]['role'] == 'user' and any('toolResult' in content for content in messages[i + 1]['content']):
++                    trim_index = i
++                    trim_index_found = True
++                    break
++
++            if not trim_index_found:
++                if e is not None:
++                    raise ContextWindowOverflowException('Unable to trim conversation context!') from e
++                logger.warning(
++                    'window_size=<%s>, message_count=<%s> | unable to trim conversation context, no valid trim point found',
++                    self.window_size,
++                    len(messages),
++                )
++                return
++
++        self.removed_message_count += trim_index
++        messages[:] = messages[trim_index:]
++
+ 
+         if len(messages) <= self.window_size:
+             logger.debug(
+@@ -172,66 +212,59 @@ class SlidingWindowConversationManager(ConversationManager):
+                 logs a warning and returns without modification.
+         """
+         messages = agent.messages
+-
+-        # Try to truncate the tool result first
+-        oldest_message_idx_with_tool_results = self._find_oldest_message_with_tool_results(messages)
+-        if oldest_message_idx_with_tool_results is not None and self.should_truncate_results:
+-            logger.debug(
+-                "message_index=<%s> | found message with tool results at index", oldest_message_idx_with_tool_results
+-            )
+-            results_truncated = self._truncate_tool_results(messages, oldest_message_idx_with_tool_results)
+-            if results_truncated:
+-                logger.debug("message_index=<%s> | tool results truncated", oldest_message_idx_with_tool_results)
+-                return
+-
+         # Try to trim index id when tool result cannot be truncated anymore
+         # If the number of messages is less than the window_size, then we default to 2, otherwise, trim to window size
+         trim_index = 2 if len(messages) <= self.window_size else len(messages) - self.window_size
++        original_trim_index = trim_index
+ 
+-        # Find the next valid trim point that:
+-        # 1. Starts with a user message (required by most model providers)
+-        # 2. Does not start with an orphaned toolResult
+-        # 3. Does not start with a toolUse unless its toolResult immediately follows
++        # Must start with a user message
+         while trim_index < len(messages):
+-            # Must start with a user message
+             if messages[trim_index]["role"] != "user":
+                 trim_index += 1
+                 continue
+-
+             if (
+-                # Oldest message cannot be a toolResult because it needs a toolUse preceding it
+-                any("toolResult" in content for content in messages[trim_index]["content"])
+-                or (
+-                    # Oldest message can be a toolUse only if a toolResult immediately follows it.
+-                    # Note: toolUse content normally appears only in assistant messages, but this
+-                    # check is kept as a defensive safeguard for non-standard message formats.
+-                    any("toolUse" in content for content in messages[trim_index]["content"])
+-                    and not (
+-                        trim_index + 1 < len(messages)
+-                        and any("toolResult" in content for content in messages[trim_index + 1]["content"])
+-                    )
+-                )
++                any("toolResult" in content for content in messages[trim_index]["content"]) or (
++                    any("toolUse" in content for content in messages[trim_index]["content"]) and not (
++                        trim_index + 1 < len(messages) and any("toolResult" in content for content in messages[trim_index + 1]["content"])))
+             ):
+                 trim_index += 1
+             else:
+                 break
+         else:
+-            # If we didn't find a valid trim_index
+-            if e is not None:
+-                raise ContextWindowOverflowException("Unable to trim conversation context!") from e
+-            logger.warning(
+-                "window_size=<%s>, message_count=<%s> | unable to trim conversation context, no valid trim point found",
+-                self.window_size,
+-                len(messages),
+-            )
+-            return
++            trim_index_found = False
++            for i in range(original_trim_index, len(messages) - 1):
++                if messages[i]['role'] == 'assistant' and any('toolUse' in content for content in messages[i]['content']) \
++                        and messages[i + 1]['role'] == 'user' and any('toolResult' in content for content in messages[i + 1]['content']):
++                    trim_index = i
++                    trim_index_found = True
++                    break
++
++            if not trim_index_found:
++                if e is not None:
++                    raise ContextWindowOverflowException('Unable to trim conversation context!') from e
++                logger.warning(
++                    'window_size=<%s>, message_count=<%s> | unable to trim conversation context, no valid trim point found',
++                    self.window_size,
++                    len(messages),
++                )
++                return
+ 
+-        # trim_index represents the number of messages being removed from the agents messages array
+         self.removed_message_count += trim_index
+-
+-        # Overwrite message history
+         messages[:] = messages[trim_index:]
+ 
++
++        # Try to truncate the tool result first
++        oldest_message_idx_with_tool_results = self._find_oldest_message_with_tool_results(messages)
++        if oldest_message_idx_with_tool_results is not None and self.should_truncate_results:
++            logger.debug(
++                "message_index=<%s> | found message with tool results at index", oldest_message_idx_with_tool_results
++            )
++            results_truncated = self._truncate_tool_results(messages, oldest_message_idx_with_tool_results)
++            if results_truncated:
++                logger.debug("message_index=<%s> | tool results truncated", oldest_message_idx_with_tool_results)
++                return
++
++
+     def _truncate_tool_results(self, messages: Messages, msg_idx: int) -> bool:
+         """Truncate tool results and replace image blocks in a message to reduce context size.
+ 
+@@ -300,16 +333,6 @@ class SlidingWindowConversationManager(ConversationManager):
+                     }
+                     new_content.append({"toolResult": updated_tool_result})
+                     changes_made = True
+-                else:
+-                    new_content.append(content)
+-                continue
+-
+-            new_content.append(content)
+-
+-        if changes_made:
+-            message["content"] = new_content
+-
+-        return changes_made
+ 
+     def _find_oldest_message_with_tool_results(self, messages: Messages) -> int | None:
+         """Find the index of the oldest message containing tool results.
