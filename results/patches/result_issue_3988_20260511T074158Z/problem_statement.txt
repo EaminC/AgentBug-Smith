@@ -1,0 +1,207 @@
+# Issue #3988: [BUG] CrewAI Decorators Don't Support Async Methods - Causes "'coroutine' object has no attribute 'name'" Error
+
+### Description
+
+## Summary
+CrewAI's `@agent`, `@task`, and `@crew` decorators do not properly support async methods. When decorating async methods that return coroutines, the decorators fail to unwrap the coroutine, resulting in the error: `'coroutine' object has no attribute 'name'`.
+
+## Environment
+- **OS**: Ubuntu 22.04 (Docker)
+- **Python Version**: 3.13.0
+- **CrewAI Version**: 0.62.2
+- **Framework**: FastAPI + Telegram Bot (aiogram) + AsyncSQLAlchemy 2.0
+
+## Description
+We're building an async-first architecture where CrewAI crews are executed within FastAPI/Telegram handlers. Tool initialization requires async database operations via AsyncSession, so we need async tool creation.
+
+**Problem Flow:**
+1. We decorated agent/task methods with `async def` to support `await self._create_tools()`
+2. The `@agent`, `@task`, `@crew` decorators don't await the async methods
+3. This returns a coroutine object instead of Agent/Task/Crew instances
+4. When CrewAI tries to access `.name` attribute on the coroutine, it fails
+
+### Error Stack
+```
+ERROR | src.agents.tools.base:run_crew_isolated:141 - Crew execution failed | 
+crew_class=FounderCrew run_mode=answer error='coroutine' object has no attribute 'name'
+
+Traceback:
+  File "src/agents/tools/base.py", line 135, in run_crew_isolated
+    result = crew_instance.crew(run_mode).kickoff_async(inputs)
+AttributeError: 'coroutine' object has no attribute 'name'
+```
+
+## Workaround Attempted
+We tried wrapping async `_arun()` calls in a sync `_run()` fallback:
+
+```python
+def _run(self, *args, **kwargs):
+    return run_async(self._arun(*args, **kwargs))  # ❌ Creates new event loop → loop conflicts
+```
+
+This reintroduces "Task got Future attached to a different loop" errors because it spawns a new event loop inside the existing one.
+
+## Root Cause Analysis
+The `@agent`, `@task`, and `@crew` decorators use class method introspection but don't check if the method is a coroutine function. They should either:
+
+1. **Auto-await async methods** (recommended for modern Python):
+```python
+def decorator(method):
+    def wrapper(self):
+        result = method(self)
+        if asyncio.iscoroutine(result):
+            return asyncio.run(result)  # Or: await result in async context
+        return result
+    return wrapper
+```
+
+2. **Explicitly reject async methods** with helpful error:
+```python
+def decorator(method):
+    if asyncio.iscoroutinefunction(method):
+        raise TypeError(
+            f"Method '{method.__name__}' is async but @agent/@task/@crew "
+            "decorators only support sync methods. "
+            "Create tools synchronously or use a different pattern."
+        )
+    return original_decorator(method)
+```
+
+## Questions for CrewAI Team
+1. Are `@agent`, `@task`, `@crew` decorators intentionally limited to sync-only?
+2. Is there a supported pattern for async tool creation in async-first applications?
+3. Would a PR adding async support to decorators be welcome?
+4. Should we await async methods at decoration time or at call time?
+
+## Production Context
+This is a production issue affecting:
+- **Telegram Bot** (aiogram) with async handlers
+- **FastAPI** application with async endpoints  
+- **AsyncSQLAlchemy** database operations
+- **PostgreSQL** via asyncpg driver
+
+We need async-safe tool execution to avoid event loop conflicts and zombie database connections.
+
+## Proposed Solution
+Add async method detection and auto-await to the decorators:
+
+```python
+# In crewai/decorators.py or similar
+import asyncio
+from functools import wraps
+
+def agent(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        result = method(self, *args, **kwargs)
+        if asyncio.iscoroutine(result):
+            # Option 1: Run in current event loop (if in async context)
+            try:
+                loop = asyncio.get_running_loop()
+                # Schedule as task if already in event loop
+                return asyncio.ensure_future(result)
+            except RuntimeError:
+                # No running loop - run new one
+                return asyncio.run(result)
+        return result
+    return wrapper
+```
+
+This allows developers to write naturally async code while maintaining backward compatibility.
+
+### Steps to Reproduce
+
+## Steps to Reproduce
+
+### Code Example
+```python
+from crewai import Agent, Task, Crew
+from crewai.task import Task
+from crewai.agent import Agent
+
+class FounderCrew:
+    @agent
+    async def your-agent(self) -> Agent:
+        """This is the problem - decorators don't support async"""
+        tools = await self._create_tools()  # Async operation
+        return Agent(
+            config=self.agents_config["your-agent"],
+            tools=tools,
+        )
+    
+    @task
+    async def your-agent(self) -> Task:
+        """Task method with async"""
+        return Task(
+            config=self.tasks_config["your-agent"],
+        )
+    
+    @crew
+    async def crew(self, run_mode: str = "answer") -> Crew:
+        """Crew method with async/await"""
+        tasks = [await self. your-agent()]
+        agents = [await self. your-agent()]
+        return Crew(agents=agents, tasks=tasks, process=Process.sequential)
+
+# Called from FastAPI/Telegram async handler
+result = await crew.crew(run_mode="answer").kickoff_async(inputs={})
+```
+
+
+### Expected behavior
+
+I think when I use the kickoff_async(), it should call the tools using _arun() by default, or should I create tools in async ? 
+
+## Expected Behavior
+- `@agent`, `@task`, and `@crew` decorators should either:
+  1. Support async methods natively by awaiting them, OR
+  2. Raise a clear error message stating async is not supported, OR
+  3. Provide documentation and recommended patterns for async tool creation
+
+## Actual Behavior
+- Decorators return unawaited coroutine objects
+- Causes cascading `AttributeError` when CrewAI tries to access object properties
+- No clear error message indicating the problem is with async decorator usage
+
+
+### Screenshots/Code snippets
+
+<img width="755" height="716" alt="Image" src="https://github.com/user-attachments/assets/c04a7f68-5c9b-4ac4-b54f-b3441d37083d" />
+
+<img width="660" height="183" alt="Image" src="https://github.com/user-attachments/assets/c8446d13-132d-4995-bcad-a8e89451ade7" />
+
+<img width="540" height="161" alt="Image" src="https://github.com/user-attachments/assets/a128449e-ba11-4ae9-8b50-1d8c150f2aab" />
+
+<img width="664" height="174" alt="Image" src="https://github.com/user-attachments/assets/0865753c-4ceb-4215-a49c-c4bb149e0174" />
+
+### Operating System
+
+Ubuntu 20.04
+
+### Python Version
+
+3.12
+
+### crewAI Version
+
+crewai==1.4.1
+
+### crewAI Tools Version
+
+crewai-tools==1.4.1
+
+### Virtual Environment
+
+Venv
+
+### Evidence
+
+.
+
+### Possible Solution
+
+.
+
+### Additional context
+
+.

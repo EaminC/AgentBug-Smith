@@ -1,0 +1,720 @@
+diff --git a/lib/crewai/src/crewai/project/annotations.py b/lib/crewai/src/crewai/project/annotations.py
+index a36999052..ae96358b9 100644
+--- a/lib/crewai/src/crewai/project/annotations.py
++++ b/lib/crewai/src/crewai/project/annotations.py
+@@ -1,33 +1,11 @@
+-"""Decorators for defining crew components and their behaviors."""
+-
+-from __future__ import annotations
+-
+-from collections.abc import Callable
+-from functools import wraps
+-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, overload
+-
+ from crewai.project.utils import memoize
+-
++import asyncio
++from typing import TYPE_CHECKING, overload, Callable, Concatenate, ParamSpec, TypeVar, Any
++from functools import wraps
+ 
+ if TYPE_CHECKING:
+     from crewai import Agent, Crew, Task
+ 
+-from crewai.project.wrappers import (
+-    AfterKickoffMethod,
+-    AgentMethod,
+-    BeforeKickoffMethod,
+-    CacheHandlerMethod,
+-    CallbackMethod,
+-    CrewInstance,
+-    LLMMethod,
+-    OutputJsonClass,
+-    OutputPydanticClass,
+-    TaskMethod,
+-    TaskResultT,
+-    ToolMethod,
+-)
+-
+-
+ P = ParamSpec("P")
+ P2 = ParamSpec("P2")
+ R = TypeVar("R")
+@@ -35,138 +13,14 @@ R2 = TypeVar("R2")
+ T = TypeVar("T")
+ SelfT = TypeVar("SelfT")
+ 
++@overload
++def crew(meth: Callable[Concatenate[SelfT, P], "Crew"]) -> Callable[Concatenate[SelfT, P], "Crew"]: ...
+ 
+-def before_kickoff(meth: Callable[P, R]) -> BeforeKickoffMethod[P, R]:
+-    """Marks a method to execute before crew kickoff.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked for before kickoff execution.
+-    """
+-    return BeforeKickoffMethod(meth)
+-
+-
+-def after_kickoff(meth: Callable[P, R]) -> AfterKickoffMethod[P, R]:
+-    """Marks a method to execute after crew kickoff.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked for after kickoff execution.
+-    """
+-    return AfterKickoffMethod(meth)
+-
+-
+-def task(meth: Callable[P, TaskResultT]) -> TaskMethod[P, TaskResultT]:
+-    """Marks a method as a crew task.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as a task with memoization.
+-    """
+-    return TaskMethod(memoize(meth))
+-
+-
+-def agent(meth: Callable[P, R]) -> AgentMethod[P, R]:
+-    """Marks a method as a crew agent.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as an agent with memoization.
+-    """
+-    return AgentMethod(memoize(meth))
+-
+-
+-def llm(meth: Callable[P, R]) -> LLMMethod[P, R]:
+-    """Marks a method as an LLM provider.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as an LLM provider with memoization.
+-    """
+-    return LLMMethod(memoize(meth))
+-
+-
+-def output_json(cls: type[T]) -> OutputJsonClass[T]:
+-    """Marks a class as JSON output format.
+-
+-    Args:
+-        cls: The class to mark.
+-
+-    Returns:
+-        A wrapped class marked as JSON output format.
+-    """
+-    return OutputJsonClass(cls)
+-
+-
+-def output_pydantic(cls: type[T]) -> OutputPydanticClass[T]:
+-    """Marks a class as Pydantic output format.
+-
+-    Args:
+-        cls: The class to mark.
+-
+-    Returns:
+-        A wrapped class marked as Pydantic output format.
+-    """
+-    return OutputPydanticClass(cls)
+-
+-
+-def tool(meth: Callable[P, R]) -> ToolMethod[P, R]:
+-    """Marks a method as a crew tool.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as a tool with memoization.
+-    """
+-    return ToolMethod(memoize(meth))
+-
+-
+-def callback(meth: Callable[P, R]) -> CallbackMethod[P, R]:
+-    """Marks a method as a crew callback.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as a callback with memoization.
+-    """
+-    return CallbackMethod(memoize(meth))
+-
+-
+-def cache_handler(meth: Callable[P, R]) -> CacheHandlerMethod[P, R]:
+-    """Marks a method as a cache handler.
+-
+-    Args:
+-        meth: The method to mark.
+-
+-    Returns:
+-        A wrapped method marked as a cache handler with memoization.
+-    """
+-    return CacheHandlerMethod(memoize(meth))
++@overload
++def crew(meth: Callable[..., "Crew"]) -> Callable[..., "Crew"]: ...
+ 
+ 
+-@overload
+-def crew(
+-    meth: Callable[Concatenate[SelfT, P], Crew],
+-) -> Callable[Concatenate[SelfT, P], Crew]: ...
+-@overload
+-def crew(
+-    meth: Callable[Concatenate[CrewInstance, P], Crew],
+-) -> Callable[Concatenate[CrewInstance, P], Crew]: ...
+-def crew(
+-    meth: Callable[..., Crew],
+-) -> Callable[..., Crew]:
++def crew(meth: Callable[..., "Crew"]) -> Callable[..., "Crew"]:
+     """Marks a method as the main crew execution point.
+ 
+     Args:
+@@ -177,19 +31,9 @@ def crew(
+     """
+ 
+     @wraps(meth)
+-    def wrapper(self: CrewInstance, *args: Any, **kwargs: Any) -> Crew:
+-        """Wrapper that sets up crew before calling the decorated method.
+-
+-        Args:
+-            self: The crew class instance.
+-            *args: Additional positional arguments.
+-            **kwargs: Keyword arguments to pass to the method.
+-
+-        Returns:
+-            The configured Crew instance with callbacks attached.
+-        """
+-        instantiated_tasks: list[Task] = []
+-        instantiated_agents: list[Agent] = []
++    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> "Crew":
++        instantiated_tasks: list["Task"] = []
++        instantiated_agents: list["Agent"] = []
+         agent_roles: set[str] = set()
+ 
+         # Use the preserved task and agent information
+@@ -198,7 +42,7 @@ def crew(
+ 
+         # Instantiate tasks in order
+         for _, task_method in tasks:
+-            task_instance = task_method(self)
++            task_instance = await task_method(self) if callable(getattr(task_method, '__call__', None)) and asyncio.iscoroutinefunction(task_method.unwrap()) else task_method(self)
+             instantiated_tasks.append(task_instance)
+             agent_instance = getattr(task_instance, "agent", None)
+             if agent_instance and agent_instance.role not in agent_roles:
+@@ -207,7 +51,7 @@ def crew(
+ 
+         # Instantiate agents not included by tasks
+         for _, agent_method in agents:
+-            agent_instance = agent_method(self)
++            agent_instance = await agent_method(self) if callable(getattr(agent_method, '__call__', None)) and asyncio.iscoroutinefunction(agent_method.unwrap()) else agent_method(self)
+             if agent_instance.role not in agent_roles:
+                 instantiated_agents.append(agent_instance)
+                 agent_roles.add(agent_instance.role)
+@@ -215,11 +59,9 @@ def crew(
+         self.agents = instantiated_agents
+         self.tasks = instantiated_tasks
+ 
+-        crew_instance = meth(self, *args, **kwargs)
++        crew_instance = await meth(self, *args, **kwargs) if asyncio.iscoroutinefunction(meth) else meth(self, *args, **kwargs)
+ 
+-        def callback_wrapper(
+-            hook: Callable[Concatenate[CrewInstance, P2], R2], instance: CrewInstance
+-        ) -> Callable[P2, R2]:
++        def callback_wrapper(hook: Callable[P2, R2], instance: object) -> Callable[P2, R2]:
+             """Bind a hook callback to an instance.
+ 
+             Args:
+@@ -245,14 +87,47 @@ def crew(
+             return bound_callback
+ 
+         for hook_callback in self.__crew_metadata__["before_kickoff"].values():
+-            crew_instance.before_kickoff_callbacks.append(
+-                callback_wrapper(hook_callback, self)
+-            )
++            crew_instance.before_kickoff_callbacks.append(callback_wrapper(hook_callback, self))
+         for hook_callback in self.__crew_metadata__["after_kickoff"].values():
+-            crew_instance.after_kickoff_callbacks.append(
+-                callback_wrapper(hook_callback, self)
+-            )
++            crew_instance.after_kickoff_callbacks.append(callback_wrapper(hook_callback, self))
+ 
+         return crew_instance
+ 
+-    return memoize(wrapper)
++    return wraps(meth)(wrapper)
++from crewai.project.wrappers import AfterKickoffMethod, BeforeKickoffMethod, AgentMethod, TaskMethod
++
++def before_kickoff(meth: Callable[P, R]) -> BeforeKickoffMethod[P, R]:
++    return BeforeKickoffMethod(meth)
++
++def after_kickoff(meth: Callable[P, R]) -> AfterKickoffMethod[P, R]:
++    return AfterKickoffMethod(meth)
++
++def agent(meth: Callable[P, R]) -> AgentMethod[P, R]:
++    return AgentMethod(memoize(meth))
++
++def task(meth: Callable[P, Any]) -> TaskMethod[P, Any]:
++    return TaskMethod(memoize(meth))
++from crewai.project.wrappers import CacheHandlerMethod
++
++def cache_handler(meth: Callable[P, R]) -> CacheHandlerMethod[P, R]:
++    return CacheHandlerMethod(meth)
++from crewai.project.wrappers import CallbackMethod
++
++def callback(meth: Callable[P, R]) -> CallbackMethod[P, R]:
++    return CallbackMethod(meth)
++from crewai.project.wrappers import LLMMethod
++
++def llm(meth: Callable[P, R]) -> LLMMethod[P, R]:
++    return LLMMethod(meth)
++from crewai.project.wrappers import OutputClass
++
++def output_json(cls: type[T]) -> OutputClass[T]:
++    return OutputClass(cls)
++from crewai.project.wrappers import OutputClass
++
++def output_pydantic(cls: type[T]) -> OutputClass[T]:
++    return OutputClass(cls)
++from crewai.project.wrappers import ToolMethod
++
++def tool(meth: Callable[P, R]) -> ToolMethod[P, R]:
++    return ToolMethod(meth)
+diff --git a/lib/crewai/src/crewai/project/wrappers.py b/lib/crewai/src/crewai/project/wrappers.py
+index bfe28aa22..e727264a2 100644
+--- a/lib/crewai/src/crewai/project/wrappers.py
++++ b/lib/crewai/src/crewai/project/wrappers.py
+@@ -1,390 +1,58 @@
+-"""Wrapper classes for decorated methods with type-safe metadata."""
+-
+-from __future__ import annotations
+-
+-from collections.abc import Callable
++from typing import ParamSpec
++from typing import Callable, Generic, TypeVar, Any
+ from functools import partial
+-from pathlib import Path
+-from typing import (
+-    TYPE_CHECKING,
+-    Any,
+-    Generic,
+-    Literal,
+-    ParamSpec,
+-    Protocol,
+-    TypeVar,
+-    TypedDict,
+-)
+-
+-from typing_extensions import Self
+-
+-
+-if TYPE_CHECKING:
+-    from crewai import Agent, Crew, Task
+-    from crewai.crews.crew_output import CrewOutput
+-    from crewai.tools import BaseTool
+-
+-
+-class CrewMetadata(TypedDict):
+-    """Type definition for crew metadata dictionary.
+-
+-    Stores framework-injected metadata about decorated methods and callbacks.
+-    """
+-
+-    original_methods: dict[str, Callable[..., Any]]
+-    original_tasks: dict[str, Callable[..., Task]]
+-    original_agents: dict[str, Callable[..., Agent]]
+-    before_kickoff: dict[str, Callable[..., Any]]
+-    after_kickoff: dict[str, Callable[..., Any]]
+-    kickoff: dict[str, Callable[..., Any]]
+-
+-
+-P = ParamSpec("P")
+-R = TypeVar("R")
+-T = TypeVar("T")
+-
+-
+-class TaskResult(Protocol):
+-    """Protocol for task objects that have a name attribute."""
+-
+-    name: str | None
+-
+-
+-TaskResultT = TypeVar("TaskResultT", bound=TaskResult)
+-
+-
+-def _copy_method_metadata(wrapper: Any, meth: Callable[..., Any]) -> None:
+-    """Copy method metadata to a wrapper object.
+-
+-    Args:
+-        wrapper: The wrapper object to update.
+-        meth: The method to copy metadata from.
+-    """
+-    wrapper.__name__ = meth.__name__
+-    wrapper.__doc__ = meth.__doc__
+-
+-
+-class CrewInstance(Protocol):
+-    """Protocol for crew class instances with required attributes."""
+-
+-    __crew_metadata__: CrewMetadata
+-    _mcp_server_adapter: Any
+-    _all_methods: dict[str, Callable[..., Any]]
+-    agents: list[Agent]
+-    tasks: list[Task]
+-    base_directory: Path
+-    original_agents_config_path: str
+-    original_tasks_config_path: str
+-    agents_config: dict[str, Any]
+-    tasks_config: dict[str, Any]
+-    mcp_server_params: Any
+-    mcp_connect_timeout: int
+-
+-    def load_configurations(self) -> None: ...
+-    def map_all_agent_variables(self) -> None: ...
+-    def map_all_task_variables(self) -> None: ...
+-    def close_mcp_server(self, instance: Self, outputs: CrewOutput) -> CrewOutput: ...
+-    def _load_config(
+-        self, config_path: str | None, config_type: Literal["agent", "task"]
+-    ) -> dict[str, Any]: ...
+-    def _map_agent_variables(
+-        self,
+-        agent_name: str,
+-        agent_info: dict[str, Any],
+-        llms: dict[str, Callable[..., Any]],
+-        tool_functions: dict[str, Callable[..., Any]],
+-        cache_handler_functions: dict[str, Callable[..., Any]],
+-        callbacks: dict[str, Callable[..., Any]],
+-    ) -> None: ...
+-    def _map_task_variables(
+-        self,
+-        task_name: str,
+-        task_info: dict[str, Any],
+-        agents: dict[str, Callable[..., Any]],
+-        tasks: dict[str, Callable[..., Any]],
+-        output_json_functions: dict[str, Callable[..., Any]],
+-        tool_functions: dict[str, Callable[..., Any]],
+-        callback_functions: dict[str, Callable[..., Any]],
+-        output_pydantic_functions: dict[str, Callable[..., Any]],
+-    ) -> None: ...
+-    def load_yaml(self, config_path: Path) -> dict[str, Any]: ...
+-
+-
+-class CrewClass(Protocol):
+-    """Protocol describing class attributes injected by CrewBaseMeta."""
+-
+-    is_crew_class: bool
+-    _crew_name: str
+-    base_directory: Path
+-    original_agents_config_path: str
+-    original_tasks_config_path: str
+-    mcp_server_params: Any
+-    mcp_connect_timeout: int
+-    close_mcp_server: Callable[..., Any]
+-    get_mcp_tools: Callable[..., list[BaseTool]]
+-    _load_config: Callable[..., dict[str, Any]]
+-    load_configurations: Callable[..., None]
+-    load_yaml: Callable[..., dict[str, Any]]
+-    map_all_agent_variables: Callable[..., None]
+-    _map_agent_variables: Callable[..., None]
+-    map_all_task_variables: Callable[..., None]
+-    _map_task_variables: Callable[..., None]
+-    crew: Callable[..., Crew]
+ 
++P = TypeVar('P')
++R = TypeVar('R')
+ 
+ class DecoratedMethod(Generic[P, R]):
+-    """Base wrapper for methods with decorator metadata.
+-
+-    This class provides a type-safe way to add metadata to methods
+-    while preserving their callable signature and attributes.
+-    """
+-
+     def __init__(self, meth: Callable[P, R]) -> None:
+-        """Initialize the decorated method wrapper.
+-
+-        Args:
+-            meth: The method to wrap.
+-        """
+         self._meth = meth
+-        _copy_method_metadata(self, meth)
++        self._copy_method_metadata(meth)
+ 
+-    def __get__(
+-        self, obj: Any, objtype: type[Any] | None = None
+-    ) -> Self | Callable[..., R]:
+-        """Support instance methods by implementing the descriptor protocol.
++    def _copy_method_metadata(self, meth: Callable[P, R]) -> None:
++        for attr in ('__module__', '__name__', '__qualname__', '__annotations__', '__doc__'):
++            if hasattr(meth, attr):
++                setattr(self, attr, getattr(meth, attr))
+ 
+-        Args:
+-            obj: The instance that the method is accessed through.
+-            objtype: The type of the instance.
+-
+-        Returns:
+-            Self when accessed through class, bound method when accessed through instance.
+-        """
++    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+         if obj is None:
+             return self
+         bound = partial(self._meth, obj)
+-        for attr in (
+-            "is_agent",
+-            "is_llm",
+-            "is_tool",
+-            "is_callback",
+-            "is_cache_handler",
+-            "is_before_kickoff",
+-            "is_after_kickoff",
+-            "is_crew",
+-        ):
+-            if hasattr(self, attr):
+-                setattr(bound, attr, getattr(self, attr))
+         return bound
+ 
+-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+-        """Call the wrapped method.
+-
+-        Args:
+-            *args: Positional arguments.
+-            **kwargs: Keyword arguments.
+-
+-        Returns:
+-            The result of calling the wrapped method.
+-        """
++    def __call__(self, *args: Any, **kwargs: Any) -> R:
+         return self._meth(*args, **kwargs)
+ 
+     def unwrap(self) -> Callable[P, R]:
+-        """Get the original unwrapped method.
+-
+-        Returns:
+-            The original method before decoration.
+-        """
+         return self._meth
+-
+-
+-class BeforeKickoffMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked to execute before crew kickoff."""
+-
+-    is_before_kickoff: bool = True
+-
+-
+-class AfterKickoffMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked to execute after crew kickoff."""
+-
+-    is_after_kickoff: bool = True
+-
+-
++from typing import Generic, TypeVar, Any
++from typing import Generic, TypeVar
++TaskResultT = TypeVar("TaskResultT")
++from typing import Generic
+ class BoundTaskMethod(Generic[TaskResultT]):
+     """Bound task method with task marker attribute."""
+ 
+     is_task: bool = True
+ 
+-    def __init__(self, task_method: TaskMethod[Any, TaskResultT], obj: Any) -> None:
+-        """Initialize the bound task method.
+-
+-        Args:
+-            task_method: The TaskMethod descriptor instance.
+-            obj: The instance to bind to.
+-        """
++    def __init__(self, task_method: "TaskMethod[Any, TaskResultT]", obj: Any) -> None:
++        """Initialize the bound task method."""
+         self._task_method = task_method
+         self._obj = obj
+ 
+-    def __call__(self, *args: Any, **kwargs: Any) -> TaskResultT:
+-        """Execute the bound task method.
+-
+-        Args:
+-            *args: Positional arguments.
+-            **kwargs: Keyword arguments.
+-
+-        Returns:
+-            The task result with name ensured.
+-        """
++    async def __call__(self, *args: Any, **kwargs: Any) -> TaskResultT:
+         result = self._task_method.unwrap()(self._obj, *args, **kwargs)
++        if asyncio.iscoroutine(result):
++            result = await result
+         return self._task_method.ensure_task_name(result)
+ 
+-
+-class TaskMethod(Generic[P, TaskResultT]):
+-    """Wrapper for methods marked as crew tasks."""
+-
+-    is_task: bool = True
+-
+-    def __init__(self, meth: Callable[P, TaskResultT]) -> None:
+-        """Initialize the task method wrapper.
+-
+-        Args:
+-            meth: The method to wrap.
+-        """
+-        self._meth = meth
+-        _copy_method_metadata(self, meth)
+-
+-    def ensure_task_name(self, result: TaskResultT) -> TaskResultT:
+-        """Ensure task result has a name set.
+-
+-        Args:
+-            result: The task result to check.
+-
+-        Returns:
+-            The task result with name ensured.
+-        """
+-        if not result.name:
+-            result.name = self._meth.__name__
+-        return result
+-
+-    def __get__(
+-        self, obj: Any, objtype: type[Any] | None = None
+-    ) -> Self | BoundTaskMethod[TaskResultT]:
+-        """Support instance methods by implementing the descriptor protocol.
+-
+-        Args:
+-            obj: The instance that the method is accessed through.
+-            objtype: The type of the instance.
+-
+-        Returns:
+-            Self when accessed through class, bound method when accessed through instance.
+-        """
+-        if obj is None:
+-            return self
+-        return BoundTaskMethod(self, obj)
+-
+-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> TaskResultT:
+-        """Call the wrapped method and set task name if not provided.
+-
+-        Args:
+-            *args: Positional arguments.
+-            **kwargs: Keyword arguments.
+-
+-        Returns:
+-            The task instance with name set if not already provided.
+-        """
+-        return self.ensure_task_name(self._meth(*args, **kwargs))
+-
+-    def unwrap(self) -> Callable[P, TaskResultT]:
+-        """Get the original unwrapped method.
+-
+-        Returns:
+-            The original method before decoration.
+-        """
+-        return self._meth
+-
+-
+-class AgentMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as crew agents."""
+-
+-    is_agent: bool = True
+-
+-
+-class LLMMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as LLM providers."""
+-
+-    is_llm: bool = True
+-
+-
+-class ToolMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as crew tools."""
+-
+-    is_tool: bool = True
+-
+-
+-class CallbackMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as crew callbacks."""
+-
+-    is_callback: bool = True
+-
+-
+-class CacheHandlerMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as cache handlers."""
+-
+-    is_cache_handler: bool = True
+-
+-
+-class CrewMethod(DecoratedMethod[P, R]):
+-    """Wrapper for methods marked as the main crew execution point."""
+-
+-    is_crew: bool = True
+-
+-
+-class OutputClass(Generic[T]):
+-    """Base wrapper for classes marked as output format."""
+-
+-    def __init__(self, cls: type[T]) -> None:
+-        """Initialize the output class wrapper.
+-
+-        Args:
+-            cls: The class to wrap.
+-        """
+-        self._cls = cls
+-        self.__name__ = cls.__name__
+-        self.__qualname__ = cls.__qualname__
+-        self.__module__ = cls.__module__
+-        self.__doc__ = cls.__doc__
+-
+-    def __call__(self, *args: Any, **kwargs: Any) -> T:
+-        """Create an instance of the wrapped class.
+-
+-        Args:
+-            *args: Positional arguments for the class constructor.
+-            **kwargs: Keyword arguments for the class constructor.
+-
+-        Returns:
+-            An instance of the wrapped class.
+-        """
+-        return self._cls(*args, **kwargs)
+-
+-    def __getattr__(self, name: str) -> Any:
+-        """Delegate attribute access to the wrapped class.
+-
+-        Args:
+-            name: The attribute name.
+-
+-        Returns:
+-            The attribute from the wrapped class.
+-        """
+-        return getattr(self._cls, name)
+-
+-
+-class OutputJsonClass(OutputClass[T]):
+-    """Wrapper for classes marked as JSON output format."""
+-
+-    is_output_json: bool = True
+-
+-
+-class OutputPydanticClass(OutputClass[T]):
+-    """Wrapper for classes marked as Pydantic output format."""
+-
+-    is_output_pydantic: bool = True
++        result = self._task_method.unwrap()(self._obj, *args, **kwargs)
++        if asyncio.iscoroutine(result):
++            result = await result
++        return self._task_method.ensure_task_name(result)
++class AfterKickoffMethod(DecoratedMethod[P, R]):
++    """Wrapper for methods marked as after kickoff."""
++    is_after_kickoff: bool = True
++class BeforeKickoffMethod(DecoratedMethod[P, R]):
++    """Wrapper for methods marked as before kickoff."""
++    is_before_kickoff: bool = True

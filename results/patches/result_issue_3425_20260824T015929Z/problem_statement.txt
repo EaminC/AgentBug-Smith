@@ -1,0 +1,80 @@
+# Issue #3425: [BUG] Reasoning signature leaks across content blocks — signatures concatenate when one message has multiple signed thinking blocks
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](../issues?q=) and there are no duplicates of my issue
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+1.48.0 (the bug is also present on current `main`)
+
+### Language Runtime Version
+
+Python 3.14.6
+
+### Operating System
+
+macOS (Darwin 25.5)
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+`handle_content_block_delta` accumulates signature deltas (`state["signature"] += …`) — correct within one block, since signatures stream in chunks. But `handle_content_block_stop` never clears `state["signature"]` when it finalizes a reasoning block, unlike every other accumulator (`text`, `reasoningText`, `redactedContent`, `current_tool_use`).
+
+Minimal repro through `process_stream`:
+
+```python
+response = [
+    {"messageStart": {"role": "assistant"}},
+    {"contentBlockDelta": {"delta": {"reasoningContent": {"text": "first"}}, "contentBlockIndex": 0}},
+    {"contentBlockDelta": {"delta": {"reasoningContent": {"signature": "SIG1"}}, "contentBlockIndex": 0}},
+    {"contentBlockStop": {"contentBlockIndex": 0}},
+    {"contentBlockDelta": {"delta": {"reasoningContent": {"text": "second"}}, "contentBlockIndex": 1}},
+    {"contentBlockDelta": {"delta": {"reasoningContent": {"signature": "SIG2"}}, "contentBlockIndex": 1}},
+    {"contentBlockStop": {"contentBlockIndex": 1}},
+    {"messageStop": {"stopReason": "end_turn"}},
+]
+# process_stream(...) -> constructed message carries signatures ["SIG1", "SIG1SIG2"]
+```
+
+Real-world trigger: an Anthropic model with `thinking: adaptive` plus tool use produces assistant messages with multiple signed thinking blocks; any follow-up request that re-sends the conversation (tool-loop continuation, a second invoke on the same agent) then fails.
+
+### Expected Behavior
+
+Each reasoning block keeps exactly the signature that was streamed for it (`SIG1`, `SIG2`).
+
+### Actual Behavior
+
+Signatures concatenate cumulatively across blocks (`SIG1`, `SIG1SIG2`, …). Providers verify thinking signatures byte-identical per block when the conversation is sent back, so the next request is rejected:
+
+```
+400 invalid_request_error: "…`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified…"
+```
+
+### Additional Context
+
+Secondary effect of the same leak: because the stale `"signature"` key stays in `state`, the `elif reasoning_text or "signature" in state:` branch (introduced in #2150) can turn later empty content blocks into spurious reasoning blocks carrying the stale signature.
+
+### Possible Solution
+
+Consume the signature when the block is finalized:
+
+```python
+if (signature := state.pop("signature", None)) is not None:
+    content_block["reasoningContent"]["reasoningText"]["signature"] = signature
+```
+
+PR with this fix plus a regression test follows.
+
+### Related Issues
+
+#2150 (introduced the signature-in-state guard), #790 / #1698 (adjacent signature handling issues)

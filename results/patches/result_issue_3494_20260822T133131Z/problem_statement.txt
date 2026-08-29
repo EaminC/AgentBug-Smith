@@ -1,0 +1,94 @@
+# Issue #3494: [BUG] context_offloader FileStorage: sandbox-bound retrieve() rejects the bare filenames its docstring promises
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+1.50.1
+
+### Language Runtime Version
+
+Python 3.13
+
+### Operating System
+
+macOS 26.5, also seen on a deployed Bedrock AgentCore runtime
+
+### Installation Method
+
+pip (uv)
+
+### Steps to Reproduce
+
+```py
+import asyncio
+import tempfile
+
+from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
+from strands.vended_plugins.context_offloader import FileStorage
+
+
+async def main() -> None:
+    host = FileStorage(tempfile.mkdtemp())
+    reference = await host.store("tooluse_abc123_0", b"payload", "text/plain")
+    print("store() ->", reference)
+    try:
+        await host.retrieve(reference.split("/")[-1].removesuffix(".txt"))
+    except KeyError as error:
+        print("host, no extension ->", error)
+
+    sandboxed = host.for_sandbox(NotASandboxLocalEnvironment())
+    sandbox_reference = await sandboxed.store("tooluse_abc123_1", b"payload", "text/plain")
+    print("sandboxed, full path ->", (await sandboxed.retrieve(sandbox_reference))[1])
+    try:
+        await sandboxed.retrieve(sandbox_reference.split("/")[-1])
+    except KeyError as error:
+        print("sandboxed, bare filename ->", error)
+
+
+asyncio.run(main())
+```
+
+### Expected Behavior
+
+`retrieve()` accepts what its docstring promises (`strands/vended_plugins/context_offloader/storage.py:220-221`):
+
+> Accepts both full paths (as returned by `store()`) and bare filenames for backward compatibility.
+
+### Actual Behavior
+
+```
+store() -> /var/folders/.../1785164954198_1_tooluse_abc123_0.txt
+host, no extension -> 'Reference not found: 1785164954198_1_tooluse_abc123_0'
+sandboxed, full path -> text/plain
+sandboxed, bare filename -> 'Reference not found: 1785164954200_1_tooluse_abc123_1.txt'
+```
+
+Two gaps:
+
+1. The sandbox-bound branch accepts no bare filename at all, since `storage.py:234-236` requires the `artifact_dir/` prefix.
+2. Neither branch accepts the stem without the extension `store()` chose (`storage.py:165-169`).
+
+Under an `Agent` only the sandbox branch runs: `Agent.sandbox` is never `None` (`agent/agent.py:299`) and `_storage_for_agent` binds file storage through `for_sandbox` when the plugin is registered (`strands/plugins/registry.py:92`, `plugin.py:263-268`), so the full path is the only accepted form.
+
+### Additional Context
+
+The retrieval tool documents references as `"ref_1"` and `"mem_1_tool-123_0"` (`strands/vended_plugins/context_offloader/plugin.py:328-334`), which is `InMemoryStorage`'s scheme, while `FileStorage` emits absolute paths. Models send the stem and lose a round trip. In production the agent sent the stem, got not-found, then retried with the full path.
+
+`strands.storage.LocalFileStorage` is symmetric (the reference is the bare key it accepts), so if the legacy backend is being retired, a deprecation plus a docstring fix resolves this too.
+
+### Possible Solution
+
+Normalize in `retrieve()`, in both branches: take the basename, and when it carries no extension match it by stem against the known `_content_types` keys.
+
+### Related Issues
+
+#3110, #3476, #3493

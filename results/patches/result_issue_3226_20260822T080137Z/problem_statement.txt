@@ -1,0 +1,105 @@
+# Issue #3226: [BUG] GeminiModel does not convert Vertex AI 429 with plain-text error message to ModelThrottledException
+
+## Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched ./issues and there are no duplicates of my issue
+
+## SDK Language
+
+Python
+
+## Strands Version
+
+1.47.0 (first observed on 1.45.0; the relevant code on `main` is unchanged)
+
+## Language Runtime Version
+
+Python 3.12
+
+## Operating System
+
+macOS 15 (Darwin 25.4.0)
+
+## Installation Method
+
+pip
+
+## Steps to Reproduce
+
+When Vertex AI (`vertexai=True`) returns a 429 under concurrent load, the error arrives as a `genai.errors.ClientError` whose `message` is **plain text**, not JSON:
+
+```
+429 RESOURCE_EXHAUSTED. Resource exhausted. Please try again later. ...
+```
+
+`GeminiModel.stream()` detects throttling by `json.loads(error.message)` and matching `message["error"]["status"]`. With a plain-text message, `json.loads` raises `JSONDecodeError`, the handler logs a warning and re-raises the raw `ClientError` — so it is never converted to `ModelThrottledException` and the event loop's built-in retry (`ModelRetryStrategy`) never fires.
+
+Deterministic reproduction (mirrors what the google-genai SDK raises mid-stream for a Vertex AI 429):
+
+```python
+import asyncio
+from unittest import mock
+
+from google import genai
+
+from strands.models.gemini import GeminiModel
+
+# What Vertex AI's 429 looks like: structured code/status, plain-text message
+error = genai.errors.ClientError(
+    429,
+    {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Resource exhausted. Please try again later."}},
+)
+assert error.code == 429
+assert error.status == "RESOURCE_EXHAUSTED"
+
+model = GeminiModel(model_id="gemini-2.5-flash", client_args={"api_key": "test"})
+with mock.patch.object(genai.Client, "aio", new_callable=mock.PropertyMock) as aio:
+    aio.return_value.models.generate_content_stream.side_effect = error
+    events = model.stream([{"role": "user", "content": [{"text": "hi"}]}])
+    asyncio.run(events.__anext__())  # raises raw ClientError, not ModelThrottledException
+```
+
+Real-world trigger: Vertex AI's pay-as-you-go Gemini models use Dynamic Shared Quota, so any concurrent traffic can receive a 429 regardless of configured quota. In my case, 1 out of 30 requests at concurrency 4 hit this (gemini model, `global` endpoint), and the error surfaced directly to the user instead of being retried.
+
+## Expected Behavior
+
+A 429 (`RESOURCE_EXHAUSTED`) from Vertex AI is converted to `ModelThrottledException`, regardless of whether `error.message` happens to be JSON, so the built-in exponential-backoff retry in the event loop handles it.
+
+## Actual Behavior
+
+The raw `genai.errors.ClientError` propagates out of `stream()`:
+
+```
+strands  | error_message=<Resource exhausted. Please try again later. ...> | Gemini API returned non-JSON error
+...
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. Resource exhausted. Please try again later. ...
+```
+
+No retry is attempted; the request fails immediately.
+
+## Additional Context
+
+- #1062 fixed the `JSONDecodeError` crash for non-JSON error messages (#1024), but the non-JSON path re-raises the raw `ClientError` without ever checking for throttling — which is exactly the path a Vertex AI 429 takes.
+- The SDK-level HTTP retry (`HttpRetryOptions`) does not help here: the 429 is raised while iterating the response stream (`errors.APIError.raise_error_async`), which is outside the request-issuing wrapper that `retry_options` covers.
+- The TypeScript SDK has the same root cause: `classifyGoogleError()` in `src/models/google/errors.ts` also relies on `JSON.parse(error.message)` and returns `undefined` for non-JSON messages, so a plain-text 429 is not classified as throttling there either.
+
+## Possible Solution
+
+`genai.errors.APIError` already exposes structured `code` and `status` attributes (populated by the google-genai SDK from the response), so the handler doesn't need to parse `error.message` at all:
+
+```python
+except genai.errors.ClientError as error:
+    match error.status:
+        case "RESOURCE_EXHAUSTED" | "UNAVAILABLE":
+            raise ModelThrottledException(error.message) from error
+        case "INVALID_ARGUMENT":
+            ...
+```
+
+I'd be happy to submit a PR for the Python SDK with this fix.
+
+## Related Issues
+
+#1024, #1062, #370

@@ -1,0 +1,40 @@
+# Issue #2296: bug: repository_session_manager adds incorrect number of toolResult blocks when fixing orphaned toolUse
+
+## Bug Description
+
+When `AgentCoreMemorySessionManager` restores conversation history that contains orphaned `toolUse` blocks (toolUse without matching toolResult), the `repository_session_manager` attempts to fix the history by adding toolResult blocks. However, the fix adds an incorrect number of toolResult blocks, causing Bedrock's ConverseStream API to reject the request with:
+
+```
+ValidationException: The number of toolResult blocks at messages.N.content exceeds the number of toolUse blocks of previous turn.
+```
+
+## Steps to Reproduce
+
+1. Use `AgentCoreMemorySessionManager` with Bedrock AgentCore Memory enabled
+2. During an agent invocation, have a tool call interrupted (e.g., MCP server timeout, network error) — this leaves a `toolUse` block in the assistant message without a corresponding `toolResult` in the next user message
+3. Memory saves this incomplete conversation history
+4. On the next invocation in the same session, Memory restores the history
+5. `repository_session_manager` detects the orphaned toolUse and logs:
+   ```
+   WARNING:strands.session.repository_session_manager:Session message history has an orphaned toolUse with no toolResult. Adding toolResult content blocks to create valid conversation.
+   ```
+6. The agent then logs:
+   ```
+   INFO:strands.agent.agent:Agents latest message is toolUse, appending a toolResult message to have valid conversation.
+   ```
+7. The combined fixes result in more toolResult blocks than toolUse blocks, and Bedrock rejects the request
+
+## Expected Behavior
+
+The repair logic should ensure the number of toolResult blocks exactly matches the number of toolUse blocks in the previous assistant message.
+
+## Environment
+
+- strands-agents: 1.39.0
+- bedrock-agentcore: 1.9.1
+- Model: zai.glm-5 via Bedrock ConverseStream API
+- Region: us-east-2
+
+## Workaround
+
+Manually validate and fix the message history after session restoration, before calling the model.

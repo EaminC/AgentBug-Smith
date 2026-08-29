@@ -1,0 +1,64 @@
+# Issue #3422: [BUG] llama.cpp sampling params are nested under extra_body and silently dropped over raw httpx
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+`main` @ 81bccd84
+
+### Language Runtime Version
+
+Python 3.12 (clean Docker container)
+
+### Operating System
+
+Linux
+
+### Bug
+
+`LlamaCppModel._format_request` collects the llama.cpp-specific sampling parameters (`top_k`, `repeat_penalty`, `min_p`, `typical_p`, `tfs_z`, `top_a`, `mirostat*`, `penalty_last_n`, `n_probs`, `min_keep`, `ignore_eos`, `logit_bias`, `cache_prompt`, `slot_id`, `samplers`) into a nested `extra_body` object:
+
+```python
+# Add extra_body if we have llama.cpp-specific parameters
+if extra_body:
+    request["extra_body"] = extra_body
+```
+
+`extra_body` is an OpenAI **Python SDK** client-side convention: the SDK merges its contents into the top level of the request body before the request is sent. This provider does not use the OpenAI SDK. It posts the request dict verbatim over raw httpx:
+
+```python
+response = await self.client.post("/v1/chat/completions", json=request)  # stream()
+```
+
+So these parameters are transmitted nested under a literal `"extra_body"` object rather than as top-level request fields. Every other request-level field the method sets is placed at the top level: the standard OpenAI params (`temperature`, `top_p`, `stop`) and `grammar`/`json_schema` (also llama.cpp-specific). The sampler params are the only ones nested under `extra_body`, so they are not delivered in the same top-level form as the fields the server is handed directly.
+
+### Reproduction
+
+Against `main` @ 81bccd84 in a clean Python 3.12 Docker container:
+
+```python
+from strands.models.llamacpp import LlamaCppModel
+
+model = LlamaCppModel(model_id="test", params={
+    "temperature": 0.7,     # OpenAI-standard -> top level
+    "top_k": 40,            # llama.cpp sampler
+    "repeat_penalty": 1.1,  # llama.cpp sampler
+    "mirostat": 2,          # llama.cpp sampler
+})
+req = model._format_request(messages=[{"role": "user", "content": [{"text": "hi"}]}])
+print("temperature top-level:", "temperature" in req)   # True
+print("top_k top-level:", "top_k" in req)               # False
+print("extra_body:", req.get("extra_body"))
+```
+
+Output:
+
+```
+temperature top-level: True
+top_k top-level: False
+extra_body: {'top_k': 40, 'repeat_penalty': 1.1, 'mirostat': 2}
+```
+
+Because the request is posted verbatim over httpx, `top_k`, `repeat_penalty`, and `mirostat` are sent nested under `extra_body` rather than at the top level, unlike `temperature`.

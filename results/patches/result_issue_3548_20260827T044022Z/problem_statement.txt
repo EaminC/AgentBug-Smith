@@ -1,0 +1,89 @@
+# Issue #3548: [FEATURE] add RiskGate vended intervention handler
+
+## Description
+
+### Problem
+
+Production agents need to decide *when* to escalate to a human. Today, developers either:
+- Escalate everything (permission fatigue — users stop reading approvals, defeating the purpose)
+- Escalate nothing (agent breaks things with no oversight)
+
+Cursor's data shows 40% of actions blocked → users stop paying attention. Their solution: contextual risk classification dropped interruptions to 7% of chats — humans actually read when they're only asked about genuinely risky things.
+
+There's no built-in way in Strands to declare "reads are safe, writes need logging, destructive ops need a human" without writing custom hook logic per-tool.
+
+### Proposal
+
+A vended intervention handler (`RiskGate`) that classifies tool calls by risk level and routes to the appropriate action:
+
+```typescript
+import { RiskGate } from '@strands-agents/sdk/vended-interventions/risk-gate'
+
+const agent = new Agent({
+  tools: [search, writeFile, deleteProdDb, charge, sendEmail],
+  interventions: [
+    new RiskGate({
+      // Static risk classification
+      tools: {
+        search: 'read',
+        write_file: 'write',
+        delete_prod_db: 'destructive',
+      },
+
+      // Argument-based thresholds
+      thresholds: {
+        charge: { field: 'amount', warn: 1000, deny: 10000 },
+        send_email: { field: 'recipients.length', warn: 5, deny: 100 },
+      },
+
+      // Action per risk level
+      read: 'proceed',
+      write: 'audit',         // log + proceed
+      destructive: 'escalate', // trigger HITL
+      warn: 'escalate',
+      deny: 'deny',
+    }),
+  ],
+})
+```
+
+### Behavior
+
+`beforeToolCall`:
+1. Classify tool by name → static risk level (read/write/destructive)
+2. Check arguments against thresholds → may upgrade to warn/deny
+3. Route: `proceed()` / `guide()` (audit) / HITL escalation / `deny()`
+
+### Stretch: auto-classification
+
+Zero-config mode where tool descriptions and schemas are analyzed at init to infer risk levels:
+- No side effects in description + read-only schema → `read`
+- Creates/modifies resources → `write`
+- Deletes/sends/deploys/pays → `destructive`
+
+```typescript
+// Zero config — infers risk from tool descriptions
+new RiskGate({ classify: 'auto' })
+```
+
+### Scope
+
+- [ ] `RiskGate` intervention handler with static tool classification
+- [ ] Argument-based threshold checking (field path + warn/deny levels)
+- [ ] Integration with HITL escalation (existing intervention actions)
+- [ ] Audit mode (log call + proceed)
+- [ ] Unit tests
+- [ ] Stretch: auto-classification from tool descriptions
+
+### Non-goals
+
+- Temporal logic / trace-level patterns
+- Learning from runtime behavior
+- Budget enforcement (belongs in Agent config as `maxCost`/`maxSteps`)
+- Circuit breaking or rate limiting (separate utilities)
+
+### Prior art
+
+- Cursor's "Governing Agent Autonomy with Auto-review" (June 2026) — contextual risk assessment, "autonomy as a dial not a switch"
+- seccomp (Linux) — syscall filtering at a privilege boundary
+- rwx permission model — simple read/write/execute classification

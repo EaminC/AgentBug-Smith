@@ -1,0 +1,91 @@
+# Issue #2635: [BUG] Heuristic count_tokens returns 0 for toolResult content with json blocks
+
+# Overview
+
+The heuristic `count_tokens` estimator silently returns 0 for tool results that use `json` content blocks. This breaks the `ContextOffloader` plugin's threshold check whenever native token counting is unavailable (e.g., `bedrock:CountTokens` IAM denied, model not on the CountTokens allowlist, network failure → fallback path).
+
+**Root cause:** `_count_content_block_tokens` in `strands-py/src/strands/models/model.py` only counts `text` items inside `toolResult` content. The `json` branch is missing, even though `count_json` is already passed into the function and used elsewhere (e.g., `toolUse.input`).
+
+## Implementation Requirements
+
+### Technical Approach
+
+**File to modify:** `strands-py/src/strands/models/model.py`
+
+In `_count_content_block_tokens` (lines 60-64), the `toolResult` branch currently only handles `text` items:
+
+```python
+if "toolResult" in block:
+    tool_result = block["toolResult"]
+    for item in tool_result.get("content", []):
+        if "text" in item:
+            total += count_text(item["text"])
+```
+
+Add the missing `json` handling to mirror how `toolUse.input` is counted:
+
+```python
+if "toolResult" in block:
+    tool_result = block["toolResult"]
+    for item in tool_result.get("content", []):
+        if "text" in item:
+            total += count_text(item["text"])
+        if "json" in item:
+            total += count_json(item["json"])
+```
+
+The `count_json` callable is already a parameter of the function and uses `json.dumps(obj) / 2` for heuristic estimation (consistent with the function's own docstring).
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `strands-py/src/strands/models/model.py` | Add `json` branch in `toolResult` loop inside `_count_content_block_tokens` |
+| `strands-py/tests/strands/models/test_model.py` | Add regression test(s) for `toolResult` with `json` content |
+
+### Acceptance Criteria
+
+- [ ] `_count_content_block_tokens` counts tokens for `json` items in `toolResult` content using the `count_json` callable
+- [ ] `_estimate_tokens_with_heuristic` returns a non-zero value for messages containing `toolResult` with `json` content blocks
+- [ ] The fix uses the same heuristic pattern as `toolUse.input` (i.e., `json.dumps(obj) / 2`)
+- [ ] A regression test verifies that `count_tokens` returns the expected non-zero value for a `toolResult` containing `json` content
+- [ ] A regression test verifies mixed `text` + `json` content in a single `toolResult`
+- [ ] Existing tests continue to pass (no regressions)
+- [ ] Code passes `hatch fmt --formatter` and `hatch fmt --linter`
+
+### Reproduction Test Case
+
+```python
+from strands.models.model import _estimate_tokens_with_heuristic
+
+messages = [{
+    "role": "user",
+    "content": [{
+        "toolResult": {
+            "status": "success",
+            "content": [{"json": {"x": "lorem ipsum " * 1000}}],
+        }
+    }]
+}]
+
+tokens = _estimate_tokens_with_heuristic(messages)
+# Before fix: 0
+# After fix: ~6001 (ceil(len(json.dumps({"x": "lorem ipsum " * 1000})) / 2))
+assert tokens > 0
+```
+
+### Downstream Impact
+
+The `ContextOffloader` plugin (`strands-py/src/strands/vended_plugins/context_offloader/plugin.py`) relies on `model.count_tokens` to determine when to offload large tool results. When `count_tokens` returns 0 for `json` content, the offloader's threshold check (`token_count <= self._max_result_tokens`) always passes and offloading never triggers — silently making the plugin a no-op for JSON tool results.
+
+### Notes
+
+- This is a 2-line production code change with regression tests
+- No workflow changes needed
+- No breaking changes — this only adds previously-missing functionality
+- The `ToolResultContent` TypedDict already defines `json: Any` as a valid content type
+- For future maintainability: consider adding a code comment noting which `ToolResultContent` fields are handled vs. skipped (e.g., `image` and `document` are binary and intentionally not counted by the heuristic)
+
+---
+
+*Original report by @sonerkuyar*

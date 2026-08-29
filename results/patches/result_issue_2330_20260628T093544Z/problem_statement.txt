@@ -1,0 +1,218 @@
+# Issue #2330: [BUG]Keyerror when specifying function_calling_llm in agents.yaml
+
+### Description
+
+when I try to specify function_calling_llm in agents.yaml, got following error:
+```python
+Traceback (most recent call last):
+  File "/root/code/ai_learning/agent/latest_ai_development/src/latest_ai_development/main.py", line 100, in <module>
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 35, in __init__
+    self.map_all_agent_variables()
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 147, in map_all_agent_variables
+    self._map_agent_variables(
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 179, in _map_agent_variables
+    self.agents_config[agent_name]["function_calling_llm"] = agents[
+                                                             ^^^^^^^
+KeyError: 'gpt-4o-mini'
+```
+The code seems to be looking for function_calling_llm from the registered agent.
+
+
+
+### Steps to Reproduce
+
+The complete code is as follows
+
+### Expected behavior
+
+Ability to use specify function_calling_llm in agents.yaml
+
+### Screenshots/Code snippets
+
+config/agents.yaml
+```yaml
+log_qurier:
+  role: >
+    LOG Qurier.
+  goal: >
+    Read the log file of the target node.
+  backstory: >
+    You are an experienced operator who is good at log reading. 
+    You can read the specified log file on the specified node and 
+    capture the log information for a specific time period.
+  tools: [query_log]
+  function_calling_llm: "gpt-4o-mini"
+
+log_analyst:
+  role: >
+    LOG Analyst
+  goal: >
+    Find the log with the keyword and extract the relevant part.
+  backstory: >
+    You are a meticulous analyst with a keen eye for detail. 
+    You are known for your ability to find relevant logs based on keywords in complex log files, 
+    making it easy for others to understand and act on the information you provide.
+```
+config/tasks.yaml
+```yaml
+research_task:
+  description: >
+    Search for logs in '{log_file}' on host '{remote_host}' within the last {capture_time} minutes.now time is {now_time}.
+  expected_output: >
+    Extract all relevant log entries from '{log_file}' within the last {capture_time} minutes.
+  agent: log_qurier
+
+reporting_task:
+  description: >
+    Analyze the context data and expand sections relevant to '{keyword}' into comprehensive report sections. Ensure the report is detailed and includes all pertinent information.
+  expected_output: >
+    A self-contained report featuring main topics, each with a dedicated section containing all pertinent information, formatted in markdown without code blocks (```).
+  agent: log_analyst
+```
+
+main.py
+```python
+#!/usr/bin/env python
+import os
+import warnings
+from typing import Type
+
+from crewai import Agent, Crew, Process, Task
+from crewai.project import CrewBase, agent, crew, task, tool
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+
+
+os.environ["OPENAI_API_KEY"] = "EMPTY"
+os.environ["OPENAI_API_BASE"] = "http://xxx.xxx.xxx.xxx:8000/v1/"
+os.environ["OPENAI_MODEL_NAME"] = "openai//data/QwQ-32B-AWQ"
+os.environ['OTEL_SDK_DISABLED'] = "true" 
+
+
+class LOGQurierInput(BaseModel):
+    host: str = Field(..., description="IP address of the target host.")
+    now_time: str = Field(..., description="Current timestamp for log query.")
+    capture_time: int = Field(2, description="Time in minutes before the current timestamp to capture log.")
+    log_file_path: str = Field(..., description="Full path to the log file for query.")
+
+
+class LOGQurier(BaseTool):
+    name: str = "Query LOG"
+    description: str = "Query the designated log during a specific time period on a specified host."
+    args_schema: Type[BaseModel] = LOGQurierInput
+
+    def _run(self, host: str, log_file_path: str, now_time: str, capture_time: int=2) -> str:
+        print(f"call args: host: {host}, log_file_path: {log_file_path}, now_time: {now_time}, capture_time: {capture_time}")
+        return """
+[2025-02-28 17:19:37]  Input parameters: add_route_ipv4 66.77.88.0/24 1.2.3.254
+[2025-02-28 17:19:37]  add_route_ipv4 66.77.88.0/24 1.2.3.254
+[2025-02-28 17:19:37] Command 'sudo ip route add 66.77.88.0/24 via 1.2.3.254 metric 0'
+[2025-02-28 17:19:37] Execute command failed: Error: Nexthop has invalid gateway.
+"""
+
+
+
+@CrewBase
+class LatestAiDevelopment():
+	"""LatestAiDevelopment crew"""
+	agents_config = 'config/agents.yaml'
+	tasks_config = 'config/tasks.yaml'
+
+	@tool
+	def query_log(self):
+		return LOGQurier()
+
+	@agent
+	def log_qurier(self) -> Agent:
+		return Agent(
+			config=self.agents_config['log_qurier'],
+			verbose=True
+		)
+
+	@agent
+	def log_analyst(self) -> Agent:
+		return Agent(
+			config=self.agents_config['log_analyst'],
+			verbose=True
+		)
+
+	@task
+	def research_task(self) -> Task:
+		return Task(
+			config=self.tasks_config['research_task'],
+		)
+	
+
+	@task
+	def reporting_task(self) -> Task:
+		return Task(
+			config=self.tasks_config['reporting_task']
+		)
+
+	@crew
+	def crew(self) -> Crew:
+		"""Creates the LatestAiDevelopment crew"""
+		return Crew(
+			agents=self.agents,
+			tasks=self.tasks,
+			process=Process.sequential,
+			verbose=True,
+		)
+
+
+inputs = {
+    'keyword': 'failed',
+    'log_file': '/home/tecs/sa.log',
+    'capture_time': 5,
+    'now_time': '2025-02-28 17:19:00',
+    'remote_host': '127.0.0.1'
+}
+
+LatestAiDevelopment().crew().kickoff(inputs=inputs)
+
+```
+
+### Operating System
+
+Ubuntu 20.04
+
+### Python Version
+
+3.11
+
+### crewAI Version
+
+0.102.0
+
+### crewAI Tools Version
+
+N/A
+
+### Virtual Environment
+
+Venv
+
+### Evidence
+
+```python
+Traceback (most recent call last):
+  File "/root/code/ai_learning/agent/latest_ai_development/src/latest_ai_development/main.py", line 100, in <module>
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 35, in __init__
+    self.map_all_agent_variables()
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 147, in map_all_agent_variables
+    self._map_agent_variables(
+  File "/root/code/venv/lib/python3.11/site-packages/crewai/project/crew_base.py", line 179, in _map_agent_variables
+    self.agents_config[agent_name]["function_calling_llm"] = agents[
+                                                             ^^^^^^^
+KeyError: 'gpt-4o-mini'
+```
+
+### Possible Solution
+
+I think it should look for function_calling_llm in the registered llms
+
+### Additional context
+
+None

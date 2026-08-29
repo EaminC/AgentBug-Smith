@@ -1,0 +1,76 @@
+# Issue #2207: [Bug]: ChatModelBase interruption can be reported as completed
+
+### Prerequisites
+
+- [x] I have searched the existing [issues](https://github.com/agentscope-ai/agentscope/issues) and [discussions](https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.
+- [x] This is a bug, not a usage question. (For questions, please use [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)
+
+### Background / Description
+
+
+  In AgentScope 2.0.5 and current main (`807390b`), a `ChatResponse`
+  constructed with `finished_reason=FinishedReason.INTERRUPTED` returns
+  different values through mapping and attribute access.
+
+  `ChatModelBase.__call__` normalizes `asyncio.CancelledError` into such a
+  response. The Agent reads `response.finished_reason`, sees `COMPLETED`,
+  and can terminate the reply as completed. When `structured_schema` is
+  required, it may instead perform another model call.
+
+  Using the same ChatRunRegistry.spawn(agent.reply_stream(...)) and
+  task.cancel() pattern as service_agent_interrupt_test.py, but with a
+  ChatModelBase subclass:
+
+  task_done:      True
+  model_calls:    1
+  ReplyEndEvent:  completed
+
+  When structured output is required, the agent can make a second model
+  call after the interrupted call.
+
+  ChatResponse is a dataclass inheriting DictMixin.
+  DictMixin.__setattr__ writes the constructor value into the mapping,
+  while the dataclass default for finished_reason remains available as a
+  class attribute. Normal attribute lookup therefore returns the class
+  default before DictMixin.__getattr__ is invoked.
+
+  Extend the service interruption test with:
+
+  1. a model inheriting ChatModelBase;
+  2. cancellation while _call_api is awaiting;
+  3. assertions for an interrupted terminal event and no additional model
+     calls;
+
+  4. a variant with structured_schema.
+
+
+### Error Messages
+
+```shell
+- response.finished_reason is INTERRUPTED;
+  - the active reply ends with ReplyEndEvent(finished_reason="interrupted");
+  - no subsequent model call is made.
+```
+
+### Steps to Reproduce
+
+
+  ```python
+  from agentscope.model import ChatResponse, FinishedReason
+
+  response = ChatResponse(
+      content=[],
+      is_last=True,
+      finished_reason=FinishedReason.INTERRUPTED,
+  )
+
+  print(response["finished_reason"])  # interrupted
+  print(response.finished_reason)     # completed
+```
+
+### Environment
+
+
+  - AgentScope 2.0.5
+  - current main at 807390b
+  - reproduced on Python 3.11.14 and 3.14.0
