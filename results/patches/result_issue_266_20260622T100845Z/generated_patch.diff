@@ -1,0 +1,323 @@
+diff --git a/mle/cli.py b/mle/cli.py
+index 32990b4..2f3aefd 100644
+--- a/mle/cli.py
++++ b/mle/cli.py
+@@ -1,13 +1,4 @@
+-import os
+-import re
+-import yaml
+-import click
+-import pickle
+-import uvicorn
+-import questionary
+-from pathlib import Path
+ from rich.console import Console
+-from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn, TextColumn, BarColumn
+ 
+ import mle
+ from mle.server import app
+@@ -16,103 +7,47 @@ from mle.utils.system import (
+     get_config,
+     write_config,
+     check_config,
+-    startup_web,
++
+     print_in_box,
+ )
+ from mle.utils import LanceDBMemory, list_files, read_file
+ from mle.utils import CodeChunker
+ 
+ console = Console()
+-memory = LanceDBMemory(os.getcwd())
+-
+-
+ @click.group()
+-@click.version_option(version=mle.__version__)
+ def cli():
+-    """
+-    MLE-Agent: The CLI tool to build machine learning projects.
+-    """
+-    pass
++    """MLE-Agent: The CLI tool to build machine learning projects."""
+ 
+ 
+-@cli.command()
+-@click.pass_context
+-@click.argument('mode', default='baseline')
+-@click.option('--model', default=None, help='The model to use for the chat.')
+-def start(ctx, mode, model):
+-    """
+-    start: start the chat with LLM.
+-    """
+-    if not check_config(console):
+-        return
+ 
+-    if mode == 'baseline':
+-        # Baseline mode
+-        return workflow.baseline(os.getcwd(), model)
+-    elif mode == 'report':
+-        # Report mode
+-        return ctx.invoke(report, model=model, visualize=False)
+-    elif mode == 'kaggle':
+-        # Kaggle mode
+-        return ctx.invoke(kaggle, model=model)
+-    elif mode == 'chat':
+-        # Chat mode
+-        return ctx.invoke(chat, model=model)
+-    else:
+-        raise ValueError("Invalid mode. Supported modes: 'baseline', 'report', 'kaggle'.")
++import mle
++from mle.server import app
++import mle.workflow as workflow
++from mle.utils.system import (
++    get_config,
++    write_config,
++    check_config,
++    startup_web,
++    print_in_box,
++)
++from mle.utils import LanceDBMemory, list_files, read_file
++from mle.utils import CodeChunker
++
++console = Console()
+ 
+ 
+-@cli.command()
+-@click.pass_context
+-@click.argument('repo', required=False)
+-@click.option('--model', default=None, help='The model to use for the chat.')
+ @click.option('--user', default=None, help='The GitHub username.')
+ @click.option('--visualize', default=True, help='Visualize the report in browser.')
+ def report(ctx, repo, model, user, visualize):
+-    """
+-    report: generate report with LLM.
+-    """
+-    if visualize:
+-        print_in_box(
+-            "✨ Your MLE Agent is starting! \n"
+-            "Access to generate your report: "
+-            "[blue underline]http://localhost:3000/[/blue underline]",
+-            console=console, title="MLE Report", color="green"
+-        )
+-        from concurrent.futures import ThreadPoolExecutor
+ 
+         with ThreadPoolExecutor() as executor:
+             future1 = executor.submit(ctx.invoke, serve)
+             future2 = executor.submit(ctx.invoke, web)
+             future1.result()
+-            future2.result()
+-    else:
+-        if repo is None:
+-            repo = questionary.text(
+-                "What is your GitHub repository? (e.g., MLSysOps/MLE-agent)"
+-            ).ask()
+-
+-        if user is None:
+-            user = questionary.text(
+-                "What is your GitHub username? (e.g., huangyz0918)"
+-            ).ask()
+-
+-        if not re.match(r'.*/.*', repo):
+-            console.log("Invalid github repository, "
+-                        "Usage: 'mle report <organization/name>'")
+-            return False
++            console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
+ 
+-        if not check_config(console):
+-            # build a new project for GitHub report generating
+-            project_name = f"mle-report-{repo.replace('/', '_').lower()}"
+-            ctx.invoke(new, name=project_name)
+-            work_dir = os.path.join(os.getcwd(), project_name)
+-            os.chdir(work_dir)
+-            return workflow.report(work_dir, repo, user, model)
+-        return workflow.report(os.getcwd(), repo, user, model)
+-
+-
+-@cli.command()
+ @click.pass_context
+ @click.argument('path', default='./')
+ @click.option('--email', default=None, help='The email of the user.')
+@@ -133,7 +68,14 @@ def report_local(ctx, path, email, start_date, end_date):
+     return workflow.report_local(os.getcwd(), path, email, start_date=start_date, end_date=end_date)
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.option('--model', default=None, help='The model to use for the chat.')
+ @click.option('--auto', is_flag=True, help='Use auto mode to generate the coding plan.')
+ @click.option('--description', default=None, help='The description of the competition.')
+@@ -189,7 +131,14 @@ def kaggle(
+     return workflow.kaggle(os.getcwd(), model)
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.option('--model', default=None, help='The model to use for the chat.')
+ @click.option('--build_mem', is_flag=True, help='Build and enable the local memory for the chat.')
+ def chat(model, build_mem):
+@@ -224,7 +173,7 @@ def chat(model, build_mem):
+                 )
+ 
+                 chunks = chunker.chunk(raw_code, token_limit=100)
+-                memory.add(
++                get_memory().add(
+                     texts=list(chunks.values()),
+                     table_name=table_name,
+                     metadata=[{'file': file_path, 'chunk_key': k} for k, _ in chunks.items()]
+@@ -233,7 +182,14 @@ def chat(model, build_mem):
+     return workflow.chat(os.getcwd(), model=model, memory=memory)
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.option('--host', default='0.0.0.0', help='Host to bind the server to')
+ @click.option('--port', default=8000, help='Port to bind the server to')
+ def serve(host, port):
+@@ -242,7 +198,14 @@ def serve(host, port):
+     uvicorn.run(app, host=host, port=port, log_level="critical")
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.option('--host', default='0.0.0.0', help='Host to bind the server to')
+ @click.option('--port', default=3000, help='Port to bind the server to')
+ def web(host, port):
+@@ -251,7 +214,14 @@ def web(host, port):
+     startup_web(host, port)
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.argument('name')
+ def new(name):
+     """
+@@ -314,7 +284,14 @@ def new(name):
+         }, outfile, default_flow_style=False)
+ 
+ 
+-@cli.command()
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
+ @click.option('--reset', is_flag=True, help='Reset the integration')
+ def integrate(reset):
+     """
+@@ -353,3 +330,47 @@ def integrate(reset):
+                 "token": pickle.dumps(token, fix_imports=False),
+             }
+             write_config(config)
++@click.command()
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++
++
++
++@cli.command()
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++def memory_add(file_path, table):
++    """Add a file to the memory"""
++    table_name = table or get_memory().table_name
++    with open(file_path, "r") as f:
++        content = f.read()
++    get_memory().add([content], table_name=table_name)
++    console.print(f"Added {file_path} to memory table {table_name}.")
++@click.argument("key", type=str)
++@click.option("--table", default=None, help="Memory table name")
++def memory_remove(key, table):
++    """Remove a record from the memory by key"""
++    table_name = table or get_memory().table_name
++    success = get_memory().delete(key, table_name=table_name)
++    if success:
++        console.print(f"Removed record with key {key} from memory table {table_name}.")
++    else:
++        console.print(f"Failed to remove record with key {key} from memory table {table_name}.")
++
++@cli.command()
++@click.argument("file_path", type=click.Path(exists=True))
++@click.option("--table", default=None, help="Memory table name")
++def memory_add(file_path, table):
++    """Add a file to the memory"""
++    table_name = table or get_memory().table_name
++    with open(file_path, "r") as f:
++        content = f.read()
++    get_memory().add([content], table_name=table_name)
++    console.print(f"Added {file_path} to memory table {table_name}.")
++def memory_list():
++    """List all keys in the memory"""
++    keys = get_memory().list_all_keys()
++    console.print("Keys in memory:")
++    for key in keys:
++        console.print(f"- {key}")
++
+diff --git a/mle/utils/memory.py b/mle/utils/memory.py
+index b536ba6..9967d77 100644
+--- a/mle/utils/memory.py
++++ b/mle/utils/memory.py
+@@ -176,6 +176,24 @@ class LanceDBMemory:
+         else:
+             raise NotImplementedError
+ 
++    def list_all_keys(self, table_name: Optional[str] = None) -> List[str]:
++        """
++        List all keys in the specified memory table.
++
++        Args:
++            table_name (Optional[str]): The name of the table to list keys from. Defaults to self.table_name.
++
++        Returns:
++            List[str]: A list of keys (ids) in the table.
++        """
++        table_name = table_name or self.table_name
++        if table_name not in self.client.table_names():
++            return []
++        table = self.client.open_table(table_name)
++        records = table.search("").to_list()  # Fetch all records
++        keys = [record["id"] for record in records if "id" in record]
++        return keys
++
+     def add(
+             self,
+             texts: List[str],

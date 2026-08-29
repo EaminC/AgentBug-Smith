@@ -1,0 +1,287 @@
+diff --git a/src/agentscope/models/__init__.py b/src/agentscope/models/__init__.py
+index 0a6894b3..db40dda3 100644
+--- a/src/agentscope/models/__init__.py
++++ b/src/agentscope/models/__init__.py
+@@ -2,6 +2,7 @@
+ """ Import modules in models package."""
+ from typing import Type
+ 
++from agentscope.message.msg import Msg
+ from loguru import logger
+ 
+ from .model import ModelWrapperBase
+diff --git a/src/agentscope/models/ollama_model.py b/src/agentscope/models/ollama_model.py
+index 55cc5083..c5ac3277 100644
+--- a/src/agentscope/models/ollama_model.py
++++ b/src/agentscope/models/ollama_model.py
+@@ -266,41 +266,9 @@ class OllamaChatWrapper(OllamaWrapperBase):
+     ) -> List[dict]:
+         """Format the messages for ollama Chat API.
+ 
+-        All messages will be formatted into a single system message with
+-        system prompt and conversation history.
+-
+-        Note:
+-        1. This strategy maybe not suitable for all scenarios,
+-        and developers are encouraged to implement their own prompt
+-        engineering strategies.
+-        2. For ollama chat api, the content field shouldn't be empty string.
+-
+-        Example:
+-
+-        .. code-block:: python
+-
+-            prompt = model.format(
+-                Msg("system", "You're a helpful assistant", role="system"),
+-                Msg("Bob", "Hi, how can I help you?", role="assistant"),
+-                Msg("user", "What's the date today?", role="user")
+-            )
+-
+-        The prompt will be as follows:
+-
+-        .. code-block:: python
+-
+-            [
+-                {
+-                    "role": "user",
+-                    "content": (
+-                        "You're a helpful assistant\\n\\n"
+-                        "## Conversation History\\n"
+-                        "Bob: Hi, how can I help you?\\n"
+-                        "user: What's the date today?"
+-                    )
+-                }
+-            ]
+-
++        Following the docstring in the current implementation:
++        1. System messages keep role "system".
++        2. History messages keep their roles, mostly user or assistant.
+ 
+         Args:
+             args (`Union[Msg, Sequence[Msg]]`):
+@@ -310,10 +278,9 @@ class OllamaChatWrapper(OllamaWrapperBase):
+ 
+         Returns:
+             `List[dict]`:
+-                The formatted messages.
++                The formatted messages to send to the Ollama chat API.
+         """
+ 
+-        # Parse all information into a list of messages
+         input_msgs = []
+         for _ in args:
+             if _ is None:
+@@ -328,47 +295,24 @@ class OllamaChatWrapper(OllamaWrapperBase):
+                     f"of Msg objects, got {type(_)}.",
+                 )
+ 
+-        # record dialog history as a list of strings
+-        system_content_template = []
+-        dialogue = []
+-        # TODO: here we default the url links to images
++        messages = []
+         images = []
+-        for i, unit in enumerate(input_msgs):
+-            if i == 0 and unit.role == "system":
+-                # system prompt
+-                system_prompt = _convert_to_str(unit.content)
+-                if not system_prompt.endswith("\n"):
+-                    system_prompt += "\n"
+-                system_content_template.append(system_prompt)
+-            else:
+-                # Merge all messages into a conversation history prompt
+-                dialogue.append(
+-                    f"{unit.name}: {_convert_to_str(unit.content)}",
+-                )
+ 
++        for unit in input_msgs:
++            # For unit with url, remember the url as image
+             if unit.url is not None:
+                 images.append(unit.url)
+ 
+-        if len(dialogue) != 0:
+-            dialogue_history = "\n".join(dialogue)
+-
+-            system_content_template.extend(
+-                ["## Conversation History", dialogue_history],
+-            )
+-
+-        system_content = "\n".join(system_content_template)
+-
+-        system_message = {
+-            "role": "system",
+-            "content": system_content,
+-        }
+-
+-        if len(images) != 0:
+-            system_message["images"] = images
+-
+-        return [system_message]
+-
++            # Add the message in correct role
++            # Use the role from the unit, fall back to user if unknown
++            role = unit.role if unit.role in ["system", "user", "assistant"] else "user"
++            messages.append({"role": role, "content": _convert_to_str(unit.content)})
+ 
++        # Add images list to system message if any
++        for message in messages:
++            if message["role"] == "system" and images:
++                message["images"] = images
++                break
+ class OllamaEmbeddingWrapper(OllamaWrapperBase):
+     """The model wrapper for Ollama embedding API.
+ 
+@@ -468,152 +412,4 @@ class OllamaEmbeddingWrapper(OllamaWrapperBase):
+ 
+ 
+ class OllamaGenerationWrapper(OllamaWrapperBase):
+-    """The model wrapper for Ollama generation API.
+-
+-    Response:
+-        - From
+-        https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-completion
+-
+-        ```json
+-        {
+-            "model": "llama3",
+-            "created_at": "2023-08-04T19:22:45.499127Z",
+-            "response": "The sky is blue because it is the color of the sky.",
+-            "done": true,
+-            "context": [1, 2, 3],
+-            "total_duration": 5043500667,
+-            "load_duration": 5025959,
+-            "prompt_eval_count": 26,
+-            "prompt_eval_duration": 325953000,
+-            "eval_count": 290,
+-            "eval_duration": 4709213000
+-        }
+-        ```
+-    """
+-
+-    model_type: str = "ollama_generate"
+-
+-    def __call__(
+-        self,
+-        prompt: str,
+-        options: Optional[dict] = None,
+-        keep_alive: Optional[str] = None,
+-        **kwargs: Any,
+-    ) -> ModelResponse:
+-        """Generate response from the given prompt.
+-
+-        Args:
+-            prompt (`str`):
+-                The prompt to generate response.
+-            options (`dict`, default `None`):
+-                The extra arguments used in ollama generation API, which takes
+-                effect only on this call, and will be merged with the
+-                `options` input in the constructor,
+-                e.g. `{"temperature": 0., "seed": 123}`.
+-            keep_alive (`str`, default `None`):
+-                How long the model will stay loaded into memory following
+-                the request, which takes effect only on this call, and will
+-                override the `keep_alive` input in the constructor.
+-
+-        Returns:
+-            `ModelResponse`:
+-                The response text in `text` field, and the raw response in
+-                `raw` field.
+-
+-        """
+-        # step1: prepare parameters accordingly
+-        if options is None:
+-            options = self.options
+-        else:
+-            options = {**self.options, **options}
+-
+-        keep_alive = keep_alive or self.keep_alive
+-
+-        # step2: forward to generate response
+-        response = self.client.generate(
+-            model=self.model_name,
+-            prompt=prompt,
+-            options=options,
+-            keep_alive=keep_alive,
+-        )
+-
+-        # step3: record the api invocation if needed
+-        self._save_model_invocation(
+-            arguments={
+-                "model": self.model_name,
+-                "prompt": prompt,
+-                "options": options,
+-                "keep_alive": keep_alive,
+-                **kwargs,
+-            },
+-            response=response,
+-        )
+-
+-        # step4: monitor the response
+-        self.monitor.update_text_and_embedding_tokens(
+-            model_name=self.model_name,
+-            prompt_tokens=response.get("prompt_eval_count", 0),
+-            completion_tokens=response.get("eval_count", 0),
+-        )
+-
+-        # step5: return response
+-        return ModelResponse(
+-            text=response["response"],
+-            raw=response,
+-        )
+-
+-    def format(self, *args: Union[Msg, Sequence[Msg]]) -> str:
+-        """Forward the input to the model.
+-
+-        Args:
+-            args (`Union[Msg, Sequence[Msg]]`):
+-                The input arguments to be formatted, where each argument
+-                should be a `Msg` object, or a list of `Msg` objects.
+-                In distribution, placeholder is also allowed.
+-
+-        Returns:
+-            `str`:
+-                The formatted string prompt.
+-        """
+-        input_msgs = []
+-        for _ in args:
+-            if _ is None:
+-                continue
+-            if isinstance(_, Msg):
+-                input_msgs.append(_)
+-            elif isinstance(_, list) and all(isinstance(__, Msg) for __ in _):
+-                input_msgs.extend(_)
+-            else:
+-                raise TypeError(
+-                    f"The input should be a Msg object or a list "
+-                    f"of Msg objects, got {type(_)}.",
+-                )
+-
+-        sys_prompt = None
+-        dialogue = []
+-        for i, unit in enumerate(input_msgs):
+-            if i == 0 and unit.role == "system":
+-                # system prompt
+-                sys_prompt = _convert_to_str(unit.content)
+-            else:
+-                # Merge all messages into a conversation history prompt
+-                dialogue.append(
+-                    f"{unit.name}: {_convert_to_str(unit.content)}",
+-                )
+-
+-        dialogue_history = "\n".join(dialogue)
+-
+-        if sys_prompt is None:
+-            prompt_template = "## Conversation History\n{dialogue_history}"
+-        else:
+-            prompt_template = (
+-                "{system_prompt}\n"
+-                "\n"
+-                "## Conversation History\n"
+-                "{dialogue_history}"
+-            )
+-
+-        return prompt_template.format(
+-            system_prompt=sys_prompt,
+-            dialogue_history=dialogue_history,
+-        )
++    pass
