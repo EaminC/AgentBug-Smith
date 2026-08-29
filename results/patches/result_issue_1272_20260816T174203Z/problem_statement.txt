@@ -1,0 +1,53 @@
+# Issue #1272: [BUG] AgentCoreMemorySessionManager toolUse cutoff when hydrating the agent
+
+### Problem Statement
+
+The current [AgentCoreMemorySessionManager](https://github.com/aws/bedrock-agentcore-sdk-python/tree/main/src/bedrock_agentcore/memory/integrations/strands) integration with strands is leading to an unexpected behavior.
+
+TLDR: The toolUse and toolResult events are created separately due to which, the context is lost when retrieving previous conversation during re-initialization of an agent within the same session - which happens when there are more than 100 events - as we default to retrieving only the last 100 messages.
+We believe the above 2 steps should be considered as part of 1 event. The fix that was pushed out does not seem to fix it (PR linked below in the thread).
+
+Context:
+A customer makes use of the AgentCoreMemorySessionManager as the session manager in Strands Agent
+Whenever the customer makes a query with a tool, strands agent processes the query and provides a response with the help of toolUse and toolResult
+Workflow: `UserPrompt -> ToolUse -> ToolResult -> Response`
+
+However, the steps involved above are treated as individual components and these are intercepted by the session manager and as such are created as "separate" events.
+Problem:
+Due to the above behavior, whenever a customer makes a listEvents API call - when there are more than 100 events, the toolUse event would be cut off when it is the 101th event and toolResult would still be present when it is the 100th event.
+We default listEvents to return 100 events at max.
+The listEvent API is invoked during agent initialization - within the list_messages method
+Because of this, the Bedrock Model - throws a validation exception during the converse stream invocation - saying the toolUse event is required in the context
+
+As we can see in the below message array - the first message `0` has a toolResult but no previous toolUse. This causes Bedrock to throw a validation exception during the converse stream invocation,
+
+
+```python
+[{'role': 'user',
+  'content': [{'toolResult': {'toolUseId': 'tooluse_f09Y0LwyT2yteCYshTzb_Q',
+     'status': 'success',
+     'content': [{'text': 'Seattle, USA'}]}}]},
+ {'role': 'assistant', 'content': [{'text': 'You live in Seattle, USA.'}]},
+ {'role': 'user', 'content': [{'text': 'I like pizza'}]},
+...
+```
+```
+An error occurred (ValidationException) when calling the ConverseStream operation: Expected toolResult blocks at messages.0.content for the following Ids: tooluse_f09Y0LwyT2yteCYshTzb_
+```
+
+
+### Proposed Solution
+- Check if the last message relies on the previous message. If it does get the previous message
+- alternatively, create a dummy message like we do now here: `generate_missing_tool_result_content` but for tool_use instead
+
+### Use Case
+
+Using session manager with many messages and tools
+
+### Alternatives Solutions
+
+_No response_
+
+### Additional Context
+
+_No response_

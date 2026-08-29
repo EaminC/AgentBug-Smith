@@ -1,0 +1,143 @@
+# Issue #1651: [BUG] guardrail_latest_message wrapping lost after tool execution (toolResult becomes last message)
+
+## Checks
+
+- [x] I have updated to the latest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+## Strands Version
+
+1.24.0
+
+## Python Version
+
+3.13.9
+
+## Operating System
+
+macOS 15.7.3 (Darwin 24.6.0, arm64)
+
+## Installation Method
+
+pip
+
+## Steps to Reproduce
+
+When `guardrail_latest_message=True` is set on `BedrockModel`, the SDK wraps the latest user message in `guardContent` blocks so Bedrock only evaluates that message against the guardrail input policy. However, after a tool execution cycle, the last message in the conversation is a `toolResult` (role=user), not a text message. Because `toolResult` content doesn't match the `"text" in formatted_content or "image" in formatted_content` check in `_format_bedrock_messages()`, **no `guardContent` wrapping is applied to ANY message**.
+
+Without any `guardContent` blocks in the request, Bedrock falls back to evaluating ALL user messages against the guardrail — including prior messages and tool results that contain domain-specific text (e.g., raw knowledge base passages). This causes spurious guardrail interventions on innocuous content.
+
+### Minimal reproduction
+
+```python
+from strands import Agent
+from strands.models import BedrockModel
+
+# 1. Create a Bedrock guardrail with a topic policy (e.g., blocking tax advice)
+# 2. Create agent with guardrail_latest_message=True and a tool that returns domain text
+model = BedrockModel(
+    model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    region_name="us-east-1",
+    guardrail_id="<your-guardrail-id>",
+    guardrail_version="1",
+    guardrail_latest_message=True,
+)
+agent = Agent(model=model, tools=[your_knowledge_base_tool])
+
+# Turn 1: works — model uses tool, guardContent wraps the user text on first API call.
+# BUT on the second API call (after tool result), guardContent is lost.
+result = agent("what is the standard deduction?")
+# -> guardrail_intervened (false positive from tool result content)
+```
+
+### What happens internally
+
+Monkey-patching `_format_bedrock_messages` reveals the issue:
+
+```
+API Call #3 (first call of turn): 5 messages
+  [0] user: PLAIN_TEXT("hi")
+  [2] user: PLAIN_TEXT("[User input redacted.]")
+  [4] user: GUARD_CONTENT("what is the standard deduction?")  ✅ wrapped
+
+API Call #4 (after tool execution): 7 messages
+  [0] user: PLAIN_TEXT("hi")
+  [2] user: PLAIN_TEXT("[User input redacted.]")
+  [4] user: PLAIN_TEXT("what is the standard deduction?")  ❌ no longer wrapped!
+  [6] user: TOOL_RESULT  ← this is idx == len-1, but has no "text" key
+```
+
+## Expected Behavior
+
+When `guardrail_latest_message=True`, the SDK should wrap the **last user message that contains text or image content** in `guardContent` blocks — not just the absolute last message. This ensures `guardContent` wrapping is maintained across multi-turn tool execution cycles within a single agent invocation.
+
+## Actual Behavior
+
+After tool execution, the last message is a `toolResult` (role=user). The condition at `bedrock.py` line 414 (`idx == len(messages) - 1`) only matches this `toolResult` message, which has no `text`/`image` content, so no `guardContent` wrapping is applied. The guardrail then evaluates ALL user messages, causing false positives from tool result content.
+
+## Additional Context
+
+The bug is in `_format_bedrock_messages()`, lines 411-421:
+
+```python
+if (
+    guardrail_latest_message
+    and idx == len(messages) - 1        # <-- only checks absolute last
+    and message["role"] == "user"
+    and ("text" in formatted_content or "image" in formatted_content)
+):
+```
+
+This condition is only `True` for the final message in the list. After tool use, the message list ends with:
+
+```
+[N-2] user: "question text"          <- should get guardContent
+[N-1] assistant: toolUse(...)
+[N]   user: toolResult(...)          <- idx == len-1, but no "text" key
+```
+
+Neither message gets wrapped, so the entire request has no `guardContent` blocks.
+
+## Possible Solution
+
+Pre-compute the index of the last user text/image message before the formatting loop:
+
+```python
+last_user_text_idx = None
+if guardrail_latest_message:
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if msg["role"] == "user" and any(
+            "text" in cb or "image" in cb for cb in msg.get("content", [])
+        ):
+            last_user_text_idx = idx
+            break
+
+# Then in the loop, replace the condition with:
+#   idx == last_user_text_idx
+```
+
+### Workaround
+
+Apply the guardrail manually using the standalone `ApplyGuardrail` API on user input BEFORE sending it to the agent, and don't pass `guardrail_id`/`guardrail_version` to `BedrockModel`:
+
+```python
+import boto3
+
+def check_guardrail(message, guardrail_id, guardrail_version="1"):
+    client = boto3.client("bedrock-runtime")
+    response = client.apply_guardrail(
+        guardrailIdentifier=guardrail_id,
+        guardrailVersion=guardrail_version,
+        source="INPUT",
+        content=[{"text": {"text": message}}],
+    )
+    return response.get("action") == "GUARDRAIL_INTERVENED"
+
+# Check BEFORE calling agent
+if check_guardrail(user_input, guardrail_id):
+    print("Blocked by guardrail")
+else:
+    agent(user_input)
+```

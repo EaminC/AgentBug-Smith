@@ -1,0 +1,91 @@
+# Issue #1432: [FEATURE] Add cache_strategy="auto" for automatic prompt caching
+
+### Problem Statement
+
+1. **No SDK-level support for conversation caching**
+   - Prompt caching can significantly reduce costs (up to 90% on cache reads) and latency
+   - Users must implement custom hooks to enable caching across tool-use loops
+
+2. **Limited scope of existing cache options**
+   - Current `cache_prompt`, `cache_tools` only support system prompt and tool definitions
+   - Minimal impact in real-world workflows where conversation history dominates token usage
+
+3. **Provider-specific configuration**
+   - Cache configuration only available in BedrockModel
+   - Other providers have cachePoint conversion logic but no way to enable via config
+   - Inconsistent developer experience
+
+<img width="1850" height="1422" alt="Image" src="https://github.com/user-attachments/assets/6b1ff6b6-2407-4ae5-bfe9-4c3e54b03bd7" />
+
+### Proposed Solution
+
+Add `cache_strategy` parameter to base Model class with hook-based auto-caching.
+
+### Key Components
+
+<img width="2905" height="928" alt="Image" src="https://github.com/user-attachments/assets/71f00119-f0df-4711-a1a4-4da8e84d3730" />
+
+* Model (ABC) : Shared Configuration
+    * Add cache_strategy: Optional[str] = None to the base Model class. All provider implementations (BedrockModel, AnthropicModel, LiteLLM, etc.) inherit this configuration automatically.
+```
+# Usage (any provider)
+agent = Agent(model=BedrockModel(cache_strategy="auto"))
+agent = Agent(model=AnthropicModel(cache_strategy="auto"))
+agent = Agent(model=LiteLLM(cache_strategy="auto"))
+```
+
+* Agent: Hook Auto-Registration
+    * When cache_strategy="auto" is detected, the Agent automatically registers a ConversationCachingHook:
+```
+# In Agent.__init__()
+if model.get_config().get("cache_strategy") == "auto":
+    self.hooks.add_hook(ConversationCachingHook())
+```
+
+* ConversationCachingHook: CachePoint Injection
+    * The hook injects a cachePoint block at the last assistant message on each BeforeModelCallEvent
+```
+# Before injection
+[..., {role: "assistant", content: [...]}, {role: "user", ...}]
+
+# After injection  
+[..., {role: "assistant", content: [..., {"cachePoint": {"type": "default"}}]}, {role: "user", ...}]
+```
+
+    * This single cache point covers system prompt + tools + conversation history up to that point.
+* Provider-Specific Handling (Existing Logic)
+    * Each model provider processes the injected cachePoint using existing conversion logic:
+        * BedrockModel : Pass-through (native format) | Maintain
+        * AnthropicModel : Convert to cache_control | Maintain
+        * LiteLLMModel : Convert to cache_control | Fix needed (add message-level handling)
+
+
+
+### Use Case
+
+Agent workflows with tool usage where multiple model calls occur:
+
+**Single-turn scenarios:**
+- Tool-heavy tasks (search → fetch → analyze → respond)
+- Each model call after first assistant message benefits from cache
+- Test result: 50-90+% cache hit within single turn ([link](https://medium.com/@revoir07/agent-loop-caching-the-missing-optimization-for-agent-workflows-230cc530eb72))
+
+**Multi-turn scenarios:**
+- Conversation history accumulates across turns
+- Previous turns fully cached on subsequent turns
+- Compounding cost savings over conversation lifetime
+
+**Impact:**
+- 90% cost reduction on cached tokens
+- Reduced latency on subsequent model calls
+
+### Alternatives Solutions
+
+1. Manual cachePoint injection - Current approach, requires custom hook implementation
+2. Agent-level cache_strategy - Rejected because Model owns provider config
+3. Automatic system prompt caching only - Insufficient, conversation history dominates
+
+### Additional Context
+
+- Backward compatible with existing manual cachePoint insertion
+- Extensible for future cache strategies

@@ -1,0 +1,233 @@
+diff --git a/src/agentscope/model/_dashscope_model.py b/src/agentscope/model/_dashscope_model.py
+index ebbd45f0..f77d9da7 100644
+--- a/src/agentscope/model/_dashscope_model.py
++++ b/src/agentscope/model/_dashscope_model.py
+@@ -353,14 +353,14 @@ class DashScopeChatModel(ChatModelBase):
+                         text=acc_content,
+                     ),
+                 )
++                repaired_input = tool_call.get("arguments", "{}") or "{}"
+ 
+-            for tool_call in acc_tool_calls.values():
+-                repaired_input = _json_loads_with_repair(
+-                    tool_call.get("arguments", "{}") or "{}",
+-                )
++                # TODO: parse repaired_input with _json_loads_with_repair only on last chunk
++                # repaired_input = _json_loads_with_repair(repaired_input)
+ 
+                 if not isinstance(repaired_input, dict):
+-                    repaired_input = {}
++                    # For streaming safety, keep as raw string until last chunk
++                    pass
+ 
+                 content_blocks.append(
+                     ToolUseBlock(
+@@ -374,172 +374,80 @@ class DashScopeChatModel(ChatModelBase):
+                 if structured_model:
+                     metadata = repaired_input
+ 
+-            usage = None
+-            if chunk.usage:
+-                usage = ChatUsage(
+-                    input_tokens=chunk.usage.input_tokens,
+-                    output_tokens=chunk.usage.output_tokens,
+-                    time=(datetime.now() - start_datetime).total_seconds(),
+-                    metadata=chunk.usage,
+-                )
+-
+-            parsed_chunk = ChatResponse(
+-                content=content_blocks,
+-                usage=usage,
+-                metadata=metadata,
+-            )
+-            yield parsed_chunk
+-
+-    async def _parse_dashscope_generation_response(
+-        self,
+-        start_datetime: datetime,
+-        response: Union[
+-            GenerationResponse,
+-            MultiModalConversationResponse,
+-        ],
+-        structured_model: Type[BaseModel] | None = None,
+-    ) -> ChatResponse:
+-        """Given a DashScope GenerationResponse object, extract the content
+-        blocks and usages from it.
+-
+-        Args:
+-            start_datetime (`datetime`):
+-                The start datetime of the response generation.
+-            response (
+-                `Union[GenerationResponse, MultiModalConversationResponse]`
+-            ):
+-                Dashscope GenerationResponse | MultiModalConversationResponse
+-                object to parse.
+-            structured_model (`Type[BaseModel] | None`, default `None`):
+-                A Pydantic BaseModel class that defines the expected structure
+-                for the model's output.
+-
+-        Returns:
+-            ChatResponse (`ChatResponse`):
+-                A ChatResponse object containing the content blocks and usage.
+-
+-        .. note::
+-            If `structured_model` is not `None`, the expected structured output
+-            will be stored in the metadata of the `ChatResponse`.
+-        """
+-        # Collect the content blocks from the response.
+-        if response.status_code != 200:
+-            raise RuntimeError(response)
+-
+-        content_blocks: List[TextBlock | ToolUseBlock] = []
+-        metadata: dict | None = None
+-
+-        message = response.output.choices[0].message
+-        content = message.get("content")
+-
+-        if response.output.choices[0].message.get("content") not in [
+-            None,
+-            "",
+-            [],
+-        ]:
+-            if isinstance(content, list):
+-                for item in content:
+-                    if isinstance(item, dict) and "text" in item:
+-                        content_blocks.append(
+-                            TextBlock(
+-                                type="text",
+-                                text=item["text"],
+-                            ),
+-                        )
+-            else:
+-                content_blocks.append(
+-                    TextBlock(
+-                        type="text",
+-                        text=content,
+-                    ),
+-                )
+ 
+-        if message.get("tool_calls"):
+-            for tool_call in message["tool_calls"]:
+-                input_ = _json_loads_with_repair(
+-                    tool_call["function"].get(
+-                        "arguments",
+-                        "{}",
++                usage = None
++                if chunk.usage:
++                    usage = ChatUsage(
++                        output_tokens=chunk.usage.output_tokens,
++                        metadata=chunk.usage,
+                     )
+-                    or "{}",
++
++                parsed_chunk = ChatResponse(
++                    content=content_blocks,
++                    metadata=metadata,
++                    usage=usage,
+                 )
+-                content_blocks.append(
+-                    ToolUseBlock(
+-                        type="tool_use",
+-                        name=tool_call["function"]["name"],
+-                        input=input_,
+-                        id=tool_call["id"],
+-                    ),
+                 )
+ 
+                 if structured_model:
+-                    metadata = input_
+ 
+         # Usage information
+         usage = None
+         if response.usage:
+             usage = ChatUsage(
+-                input_tokens=response.usage.input_tokens,
+                 output_tokens=response.usage.output_tokens,
+                 time=(datetime.now() - start_datetime).total_seconds(),
+                 metadata=response.usage,
+             )
+ 
+-        parsed_response = ChatResponse(
+             content=content_blocks,
+             usage=usage,
+             metadata=metadata,
+         )
+ 
+-        return parsed_response
+ 
+     def _format_tools_json_schemas(
+         self,
++"""
+         schemas: list[dict[str, Any]],
+     ) -> list[dict[str, Any]]:
+-        """Format the tools JSON schema into required format for DashScope API.
+ 
+         Args:
+             schemas (`dict[str, dict[str, Any]]`):
+                 The tools JSON schemas.
+         """
+-        # Check schemas format
+         for value in schemas:
+             if (
+                 not isinstance(value, dict)
+                 or "type" not in value
+                 or value["type"] != "function"
+-                or "function" not in value
+             ):
+                 raise ValueError(
+                     f"Each schema must be a dict with 'type' as 'function' "
+                     f"and 'function' key, got {value}",
+                 )
+-
+-        return schemas
+-
+-    def _format_tool_choice(
+-        self,
+-        tool_choice: Literal["auto", "none", "required"] | str | None,
+-    ) -> str | dict | None:
+-        """Format tool_choice parameter for API compatibility.
+-
+-        Args:
+-            tool_choice (`Literal["auto", "none", "required"] | str \
+-            | None`, default  `None`):
+-                Controls which (if any) tool is called by the model. For more
+-                details, please refer to
+-                https://help.aliyun.com/zh/model-studio/qwen-function-calling
+-
+-        Returns:
+-            `dict | None`:
+-                The formatted tool choice configuration dict, or None if
+-                    tool_choice is None.
+-        """
+-        if tool_choice is None:
+-            return None
+-        if tool_choice in ["auto", "none"]:
+-            return tool_choice
+-        if tool_choice == "required":
+-            return "auto"
+-        return {"type": "function", "function": {"name": tool_choice}}
++def _parse_dashscope_generation_response(
++    start_datetime: datetime,
++    response: Union[GenerationResponse, MultiModalConversationResponse],
++    structured_model: Type[BaseModel] | None = None,
++) -> ChatResponse:
++    """Given a DashScope GenerationResponse object, extract the content
++    blocks and usages from it.
++
++    Args:
++        start_datetime ():
++            The start datetime of the response generation.
++        response ():
++            Dashscope GenerationResponse | MultiModalConversationResponse
++            object to parse.
++        structured_model (, default ):
++            A Pydantic BaseModel class that defines the expected structure
++            for the model's output.
++
++    Returns:
++        ChatResponse ():
++            A ChatResponse object containing the content blocks and usage.
++
++    .. note::
++        will be stored in the metadata of the .
++    """

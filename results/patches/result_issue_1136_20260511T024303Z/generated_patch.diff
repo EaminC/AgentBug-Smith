@@ -1,0 +1,493 @@
+diff --git a/src/agentscope/agent/_react_agent.py b/src/agentscope/agent/_react_agent.py
+index a0797da2..969450ee 100644
+--- a/src/agentscope/agent/_react_agent.py
++++ b/src/agentscope/agent/_react_agent.py
+@@ -650,8 +650,18 @@ class ReActAgent(ReActAgentBase):
+         return msg
+ 
+     async def _acting(self, tool_call: ToolUseBlock) -> dict | None:
++        if not hasattr(self, "_tool_call_cache"):
++            self._tool_call_cache = {}
++
++        # Creating a key for caching based on tool name and input parameters
++        tool_key = (tool_call["name"], str(tool_call.get("input", {})))
++
++        # If the tool call has been made already with the same parameters, return cached result
++        if tool_key in self._tool_call_cache:
++            return self._tool_call_cache[tool_key]
++
+         """Perform the acting process, and return the structured output if
+-        it's generated and verified in the finish function call.
++        its generated and verified in the finish function call.
+ 
+         Args:
+             tool_call (`ToolUseBlock`):
+@@ -659,7 +669,7 @@ class ReActAgent(ReActAgentBase):
+ 
+         Returns:
+             `Union[dict, None]`:
+-                Return the structured output if it's verified in the finish
++                Return the structured output if its verified in the finish
+                 function call, otherwise return None.
+         """
+ 
+@@ -699,422 +709,12 @@ class ReActAgent(ReActAgentBase):
+                     and chunk.metadata
+                     and chunk.metadata.get("success", False)
+                 ):
+-                    # Only return the structured output
++                    self._tool_call_cache[tool_key] = chunk.metadata.get("structured_output")
+                     return chunk.metadata.get("structured_output")
+ 
++            self._tool_call_cache[tool_key] = None
+             return None
+ 
+         finally:
+             # Record the tool result message in the memory
+             await self.memory.add(tool_res_msg)
+-
+-    async def observe(self, msg: Msg | list[Msg] | None) -> None:
+-        """Receive observing message(s) without generating a reply.
+-
+-        Args:
+-            msg (`Msg | list[Msg] | None`):
+-                The message or messages to be observed.
+-        """
+-        await self.memory.add(msg)
+-
+-    async def _summarizing(self) -> Msg:
+-        """Generate a response when the agent fails to solve the problem in
+-        the maximum iterations."""
+-
+-        hint_msg = Msg(
+-            "user",
+-            "You have failed to generate response within the maximum "
+-            "iterations. Now respond directly by summarizing the current "
+-            "situation.",
+-            role="user",
+-        )
+-
+-        # Generate a reply by summarizing the current situation
+-        prompt = await self.formatter.format(
+-            [
+-                Msg("system", self.sys_prompt, "system"),
+-                *await self.memory.get_memory(),
+-                hint_msg,
+-            ],
+-        )
+-        # TODO: handle the structured output here, maybe force calling the
+-        #  finish_function here
+-        res = await self.model(prompt)
+-
+-        # TTS model context manager
+-        tts_context = self.tts_model or _AsyncNullContext()
+-        speech: AudioBlock | list[AudioBlock] | None = None
+-
+-        async with tts_context:
+-            res_msg = Msg(self.name, [], "assistant")
+-            if isinstance(res, AsyncGenerator):
+-                async for chunk in res:
+-                    res_msg.content = chunk.content
+-
+-                    # The speech generated from multimodal (audio) models
+-                    # e.g. Qwen-Omni and GPT-AUDIO
+-                    speech = res_msg.get_content_blocks("audio") or None
+-
+-                    # Push to TTS model if available
+-                    if (
+-                        self.tts_model
+-                        and self.tts_model.supports_streaming_input
+-                    ):
+-                        tts_res = await self.tts_model.push(res_msg)
+-                        speech = tts_res.content
+-
+-                    await self.print(res_msg, False, speech=speech)
+-
+-            else:
+-                res_msg.content = res.content
+-
+-            if self.tts_model:
+-                # Push to TTS model and block to receive the full speech
+-                # synthesis result
+-                tts_res = await self.tts_model.synthesize(res_msg)
+-                if self.tts_model.stream:
+-                    async for tts_chunk in tts_res:
+-                        speech = tts_chunk.content
+-                        await self.print(res_msg, False, speech=speech)
+-                else:
+-                    speech = tts_res.content
+-
+-            await self.print(res_msg, True, speech=speech)
+-
+-            return res_msg
+-
+-    # pylint: disable=unused-argument
+-    async def handle_interrupt(
+-        self,
+-        msg: Msg | list[Msg] | None = None,
+-        structured_model: Type[BaseModel] | None = None,
+-    ) -> Msg:
+-        """The post-processing logic when the reply is interrupted by the
+-        user or something else.
+-
+-        Args:
+-            msg (`Msg | list[Msg] | None`, optional):
+-                The input message(s) to the agent.
+-            structured_model (`Type[BaseModel] | None`, optional):
+-                The required structured output model.
+-        """
+-
+-        response_msg = Msg(
+-            self.name,
+-            "I noticed that you have interrupted me. What can I "
+-            "do for you?",
+-            "assistant",
+-            metadata={
+-                # Expose this field to indicate the interruption
+-                "_is_interrupted": True,
+-            },
+-        )
+-
+-        await self.print(response_msg, True)
+-        await self.memory.add(response_msg)
+-        return response_msg
+-
+-    def generate_response(
+-        self,
+-        **kwargs: Any,
+-    ) -> ToolResponse:
+-        """
+-        Generate required structured output by this function and return it
+-        """
+-
+-        structured_output = None
+-        # Prepare structured output
+-        if self._required_structured_model:
+-            try:
+-                # Use the metadata field of the message to store the
+-                # structured output
+-                structured_output = (
+-                    self._required_structured_model.model_validate(
+-                        kwargs,
+-                    ).model_dump()
+-                )
+-
+-            except ValidationError as e:
+-                return ToolResponse(
+-                    content=[
+-                        TextBlock(
+-                            type="text",
+-                            text=f"Arguments Validation Error: {e}",
+-                        ),
+-                    ],
+-                    metadata={
+-                        "success": False,
+-                        "structured_output": {},
+-                    },
+-                )
+-        else:
+-            logger.warning(
+-                "The generate_response function is called when no structured "
+-                "output model is required.",
+-            )
+-
+-        return ToolResponse(
+-            content=[
+-                TextBlock(
+-                    type="text",
+-                    text="Successfully generated response.",
+-                ),
+-            ],
+-            metadata={
+-                "success": True,
+-                "structured_output": structured_output,
+-            },
+-            is_last=True,
+-        )
+-
+-    async def _retrieve_from_long_term_memory(
+-        self,
+-        msg: Msg | list[Msg] | None,
+-    ) -> None:
+-        """Insert the retrieved information from the long-term memory into
+-        the short-term memory as a Msg object.
+-
+-        Args:
+-            msg (`Msg | list[Msg] | None`):
+-                The input message to the agent.
+-        """
+-        if self._static_control and msg:
+-            # Retrieve information from the long-term memory if available
+-            retrieved_info = await self.long_term_memory.retrieve(msg)
+-            if retrieved_info:
+-                retrieved_msg = Msg(
+-                    name="long_term_memory",
+-                    content="<long_term_memory>The content below are "
+-                    "retrieved from long-term memory, which maybe "
+-                    f"useful:\n{retrieved_info}</long_term_memory>",
+-                    role="user",
+-                )
+-                if self.print_hint_msg:
+-                    await self.print(retrieved_msg, True)
+-                await self.memory.add(retrieved_msg)
+-
+-    async def _retrieve_from_knowledge(
+-        self,
+-        msg: Msg | list[Msg] | None,
+-    ) -> None:
+-        """Insert the retrieved documents from the RAG knowledge base(s) if
+-        available.
+-
+-        Args:
+-            msg (`Msg | list[Msg] | None`):
+-                The input message to the agent.
+-        """
+-        if self.knowledge and msg:
+-            # Prepare the user input query
+-            query = None
+-            if isinstance(msg, Msg):
+-                query = msg.get_text_content()
+-            elif isinstance(msg, list):
+-                texts = []
+-                for m in msg:
+-                    text = m.get_text_content()
+-                    if text:
+-                        texts.append(text)
+-                query = "\n".join(texts)
+-
+-            # Skip if the query is empty
+-            if not query:
+-                return
+-
+-            # Rewrite the query by the LLM if enabled
+-            if self.enable_rewrite_query:
+-                stream_tmp = self.model.stream
+-                try:
+-                    rewrite_prompt = await self.formatter.format(
+-                        msgs=[
+-                            Msg("system", self.sys_prompt, "system"),
+-                            *await self.memory.get_memory(),
+-                            Msg(
+-                                "user",
+-                                "<system-hint>Now you need to rewrite "
+-                                "the above user query to be more specific and "
+-                                "concise for knowledge retrieval. For "
+-                                "example, rewrite the query 'what happened "
+-                                "last day' to 'what happened on 2023-10-01' "
+-                                "(assuming today is 2023-10-02)."
+-                                "</system-hint>",
+-                                "user",
+-                            ),
+-                        ],
+-                    )
+-                    self.model.stream = False
+-                    res = await self.model(
+-                        rewrite_prompt,
+-                        structured_model=_QueryRewriteModel,
+-                    )
+-                    if res.metadata and res.metadata.get("rewritten_query"):
+-                        query = res.metadata["rewritten_query"]
+-
+-                except Exception as e:
+-                    logger.warning(
+-                        "Skipping the query rewriting due to error: %s",
+-                        str(e),
+-                    )
+-                finally:
+-                    self.model.stream = stream_tmp
+-
+-            docs: list[Document] = []
+-            for kb in self.knowledge:
+-                # retrieve the user input query
+-                docs.extend(
+-                    await kb.retrieve(query=query),
+-                )
+-            if docs:
+-                # Rerank by the relevance score
+-                docs = sorted(
+-                    docs,
+-                    key=lambda doc: doc.score or 0.0,
+-                    reverse=True,
+-                )
+-                # Prepare the retrieved knowledge string
+-                retrieved_msg = Msg(
+-                    name="user",
+-                    content=[
+-                        TextBlock(
+-                            type="text",
+-                            text=(
+-                                "<retrieved_knowledge>Use the following "
+-                                "content from the knowledge base(s) if it's "
+-                                "helpful:\n"
+-                            ),
+-                        ),
+-                        *[_.metadata.content for _ in docs],
+-                        TextBlock(
+-                            type="text",
+-                            text="</retrieved_knowledge>",
+-                        ),
+-                    ],
+-                    role="user",
+-                )
+-                if self.print_hint_msg:
+-                    await self.print(retrieved_msg, True)
+-                await self.memory.add(retrieved_msg)
+-
+-    async def _compress_memory_if_needed(self) -> None:
+-        """Compress the memory content if needed."""
+-        if (
+-            self.compression_config is None
+-            or not self.compression_config.enable
+-        ):
+-            return
+-
+-        # Obtain the messages that have not been compressed yet
+-        to_compressed_msgs = await self.memory.get_memory(
+-            exclude_mark=_MemoryMark.COMPRESSED,
+-        )
+-
+-        # keep the recent n messages uncompressed, note messages with tool
+-        #  use and result pairs should be kept together
+-        n_keep = 0
+-        accumulated_tool_call_ids = set()
+-        for i in range(len(to_compressed_msgs) - 1, -1, -1):
+-            msg = to_compressed_msgs[i]
+-            for block in msg.get_content_blocks("tool_result"):
+-                accumulated_tool_call_ids.add(block["id"])
+-
+-            for block in msg.get_content_blocks("tool_use"):
+-                if block["id"] in accumulated_tool_call_ids:
+-                    accumulated_tool_call_ids.remove(block["id"])
+-
+-            # Handle the tool use/result pairs
+-            if len(accumulated_tool_call_ids) == 0:
+-                n_keep += 1
+-
+-            # Break if reach the number of messages to keep
+-            if n_keep >= self.compression_config.keep_recent:
+-                # Remove the messages that should be kept uncompressed
+-                to_compressed_msgs = to_compressed_msgs[:i]
+-                break
+-
+-        # Skip compression if no messages to compress
+-        if not to_compressed_msgs:
+-            return
+-
+-        # Calculate the token
+-        prompt = await self.formatter.format(
+-            [
+-                Msg("system", self.sys_prompt, "system"),
+-                *to_compressed_msgs,
+-            ],
+-        )
+-        n_tokens = await self.compression_config.agent_token_counter.count(
+-            prompt,
+-        )
+-
+-        if n_tokens > self.compression_config.trigger_threshold:
+-            logger.info(
+-                "Memory compression is triggered (%d > "
+-                "threshold %d) for agent %s.",
+-                n_tokens,
+-                self.compression_config.trigger_threshold,
+-                self.name,
+-            )
+-
+-            # The formatter used for compression
+-            compression_formatter = (
+-                self.compression_config.compression_formatter or self.formatter
+-            )
+-
+-            # Prepare the prompt used to compress the memories
+-            compression_prompt = await compression_formatter.format(
+-                [
+-                    Msg("system", self.sys_prompt, "system"),
+-                    *to_compressed_msgs,
+-                    Msg(
+-                        "user",
+-                        self.compression_config.compression_prompt,
+-                        "user",
+-                    ),
+-                ],
+-            )
+-
+-            # TODO: What if the compressed messages include multimodal blocks?
+-            # Use the specified compression model if provided
+-            compression_model = (
+-                self.compression_config.compression_model or self.model
+-            )
+-            res = await compression_model(
+-                compression_prompt,
+-                structured_model=(self.compression_config.summary_schema),
+-            )
+-
+-            # Obtain the structured output from the model response
+-            last_chunk = None
+-            if compression_model.stream:
+-                async for chunk in res:
+-                    last_chunk = chunk
+-            else:
+-                last_chunk = res
+-
+-            # Format the compressed memory summary
+-            if last_chunk.metadata:
+-                # Update the compressed summary in the memory storage
+-                await self.memory.update_compressed_summary(
+-                    self.compression_config.summary_template.format(
+-                        **last_chunk.metadata,
+-                    ),
+-                )
+-
+-                # Mark the compressed messages in the memory storage
+-                await self.memory.update_messages_mark(
+-                    msg_ids=[_.id for _ in to_compressed_msgs],
+-                    new_mark=_MemoryMark.COMPRESSED,
+-                )
+-
+-                logger.info(
+-                    "Finished compressing %d messages in agent %s.",
+-                    len(to_compressed_msgs),
+-                    self.name,
+-                )
+-
+-            else:
+-                logger.warning(
+-                    "Failed to obtain compression summary from the model "
+-                    "structured output in agent %s.",
+-                    self.name,
+-                )
+diff --git a/src/agentscope/mcp/_http_stateful_client.py b/src/agentscope/mcp/_http_stateful_client.py
+index 9c13d8c8..610471e5 100644
+--- a/src/agentscope/mcp/_http_stateful_client.py
++++ b/src/agentscope/mcp/_http_stateful_client.py
+@@ -3,7 +3,7 @@
+ from typing import Any, Literal
+ 
+ from mcp.client.sse import sse_client
+-from mcp.client.streamable_http import streamablehttp_client
++from mcp.client.streamable_http import streamable_http_client
+ 
+ from ._stateful_client_base import StatefulClientBase
+ 
+@@ -67,7 +67,7 @@ class HttpStatefulClient(StatefulClientBase):
+         self.transport = transport
+ 
+         if self.transport == "streamable_http":
+-            self.client = streamablehttp_client(
++            self.client = streamable_http_client(
+                 url=url,
+                 headers=headers,
+                 timeout=timeout,
+diff --git a/src/agentscope/mcp/_http_stateless_client.py b/src/agentscope/mcp/_http_stateless_client.py
+index 0a0f3fc1..7c33772d 100644
+--- a/src/agentscope/mcp/_http_stateless_client.py
++++ b/src/agentscope/mcp/_http_stateless_client.py
+@@ -6,7 +6,7 @@ from typing import Any, Callable, Awaitable, Literal, List
+ import mcp.types
+ from mcp import ClientSession
+ from mcp.client.sse import sse_client
+-from mcp.client.streamable_http import streamablehttp_client
++from mcp.client.streamable_http import streamable_http_client
+ 
+ from . import MCPToolFunction
+ from ._client_base import MCPClientBase

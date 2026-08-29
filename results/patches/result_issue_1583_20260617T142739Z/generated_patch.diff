@@ -1,0 +1,143 @@
+diff --git a/aider/models.py b/aider/models.py
+index 744515336..29c3654ce 100644
+--- a/aider/models.py
++++ b/aider/models.py
+@@ -74,6 +74,7 @@ class ModelSettings:
+     reminder: str = "user"
+     examples_as_sys_msg: bool = False
+     extra_headers: Optional[dict] = None
++    extra_body: Optional[dict] = None
+     max_tokens: Optional[int] = None
+     cache_control: bool = False
+     caches_by_default: bool = False
+diff --git a/aider/sendchat.py b/aider/sendchat.py
+index 1ac34f9ab..946d2d4c1 100644
+--- a/aider/sendchat.py
++++ b/aider/sendchat.py
+@@ -1,51 +1,7 @@
++from aider.llm import litellm
+ import hashlib
+ import json
+ 
+-import backoff
+-
+-from aider.dump import dump  # noqa: F401
+-from aider.llm import litellm
+-
+-# from diskcache import Cache
+-
+-
+-CACHE_PATH = "~/.aider.send.cache.v1"
+-CACHE = None
+-# CACHE = Cache(CACHE_PATH)
+-
+-
+-def retry_exceptions():
+-    import httpx
+-
+-    return (
+-        httpx.ConnectError,
+-        httpx.RemoteProtocolError,
+-        httpx.ReadTimeout,
+-        litellm.exceptions.APIConnectionError,
+-        litellm.exceptions.APIError,
+-        litellm.exceptions.RateLimitError,
+-        litellm.exceptions.ServiceUnavailableError,
+-        litellm.exceptions.Timeout,
+-        litellm.exceptions.InternalServerError,
+-        litellm.llms.anthropic.chat.AnthropicError,
+-    )
+-
+-
+-def lazy_litellm_retry_decorator(func):
+-    def wrapper(*args, **kwargs):
+-        decorated_func = backoff.on_exception(
+-            backoff.expo,
+-            retry_exceptions(),
+-            max_time=60,
+-            on_backoff=lambda details: print(
+-                f"{details.get('exception', 'Exception')}\nRetry in {details['wait']:.1f} seconds."
+-            ),
+-        )(func)
+-        return decorated_func(*args, **kwargs)
+-
+-    return wrapper
+-
+-
+ def send_completion(
+     model_name,
+     messages,
+@@ -54,6 +10,7 @@ def send_completion(
+     temperature=0,
+     extra_headers=None,
+     max_tokens=None,
++    extra_body=None,
+ ):
+     from aider.llm import litellm
+ 
+@@ -62,6 +19,8 @@ def send_completion(
+         messages=messages,
+         stream=stream,
+     )
++    if extra_body is not None:
++        kwargs["extra_body"] = extra_body
+     if temperature is not None:
+         kwargs["temperature"] = temperature
+ 
+@@ -76,35 +35,31 @@ def send_completion(
+ 
+     key = json.dumps(kwargs, sort_keys=True).encode()
+ 
+-    # Generate SHA1 hash of kwargs and append it to chat_completion_call_hashes
+     hash_object = hashlib.sha1(key)
+ 
+-    if not stream and CACHE is not None and key in CACHE:
+-        return hash_object, CACHE[key]
+-
+-    # del kwargs['stream']
+-
+     res = litellm.completion(**kwargs)
+ 
+-    if not stream and CACHE is not None:
+-        CACHE[key] = res
+-
+     return hash_object, res
+ 
+ 
+-@lazy_litellm_retry_decorator
+-def simple_send_with_retries(model_name, messages, extra_headers=None):
+-    try:
+-        kwargs = {
+-            "model_name": model_name,
+-            "messages": messages,
+-            "functions": None,
+-            "stream": False,
+-        }
+-        if extra_headers is not None:
+-            kwargs["extra_headers"] = extra_headers
+-
+-        _hash, response = send_completion(**kwargs)
+-        return response.choices[0].message.content
+-    except (AttributeError, litellm.exceptions.BadRequestError):
+-        return
++def simple_send_with_retries(model_name, messages, extra_body=None):
++    from time import sleep
++    import random
++
++    max_retries = 3
++    delay = 1
++
++    for attempt in range(max_retries):
++        try:
++            _, response = send_completion(
++                model_name=model_name,
++                messages=messages,
++                functions=None,
++                stream=False,
++                extra_body=extra_body,
++            )
++        except Exception as e:
++            if attempt == max_retries - 1:
++                raise
++            sleep(delay * (2 ** attempt) + random.random())
++    return response.choices[0].message.content

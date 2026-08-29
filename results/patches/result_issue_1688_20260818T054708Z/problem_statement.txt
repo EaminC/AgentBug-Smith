@@ -1,0 +1,125 @@
+# Issue #1688: [FEATURE] Migrate Steering to Use Plugin Protocol
+
+# Overview
+Migrate the experimental `SteeringHandler` from `HookProvider` to the new `Plugin` protocol, serving as the first official Plugin implementation in the SDK.
+
+**Parent Issue**: #1636
+
+---
+
+## Problem Statement
+The `SteeringHandler` currently implements `HookProvider`, but as an experimental feature, it should be migrated to the new `Plugin` protocol to demonstrate the pattern and benefit from the cleaner API.
+
+## Proposed Solution
+Update `SteeringHandler` to implement the `Plugin` protocol instead of `HookProvider`.
+
+---
+
+## Implementation Requirements
+
+### Dependencies (Verified ✓)
+All dependencies from parent issue #1636 are in place:
+- **Plugin Protocol (1636.1)** ✓ - Defined at `src/strands/plugins/plugin.py`
+- **plugins Parameter (1636.2)** ✓ - `Agent.__init__` has `plugins: list[Plugin] | None = None`
+- **add_hook Method (1636.3)** ✓ - `Agent.add_hook(callback, event_type)` exists at line 593
+
+### Current Implementation
+**File**: `src/strands/experimental/steering/core/handler.py`
+```python
+class SteeringHandler(HookProvider, ABC):
+    def __init__(self, context_providers: list[SteeringContextProvider] | None = None):
+        super().__init__()
+        self.steering_context = SteeringContext()
+        self._context_callbacks = []
+        for provider in context_providers or []:
+            self._context_callbacks.extend(provider.context_providers())
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
+        # Register callbacks...
+        pass
+```
+
+### New Implementation
+```python
+from strands.hooks import Plugin
+
+class SteeringHandler(ABC):
+    """Base class for steering handlers that provide contextual guidance to agents.
+    
+    Steering handlers maintain local context and register hook callbacks
+    to populate context data as needed for guidance decisions.
+    """
+    
+    name: str = "steering"
+    
+    def __init__(self, context_providers: list[SteeringContextProvider] | None = None):
+        self.steering_context = SteeringContext()
+        self._context_callbacks = []
+        for provider in context_providers or []:
+            self._context_callbacks.extend(provider.context_providers())
+
+    def init_plugin(self, agent: Agent) -> None:
+        """Initialize the steering handler with an agent.
+        
+        Args:
+            agent: The agent instance to attach steering to.
+        """
+        # Use agent.add_hook() instead of registry.add_callback()
+        agent.add_hook(BeforeToolCallEvent, self._on_before_model_call)
+        # ... other hook registrations
+```
+
+### Migration Changes
+1. Remove `HookProvider` from class inheritance
+2. Add `name` class attribute
+3. Replace `register_hooks(registry)` with `init_plugin(agent)`
+4. Use `agent.add_hook(callback, event_type)` instead of `registry.add_callback(event_type, callback)` (note: parameter order differs)
+
+### Files to Modify
+| File | Change Required |
+|------|-----------------|
+| `src/strands/experimental/steering/core/handler.py` | Migrate to Plugin protocol |
+| `src/strands/experimental/steering/__init__.py` | Update docstring example (`hooks=` → `plugins=`) |
+| `tests/strands/experimental/steering/core/test_handler.py` | Update tests to test `init_plugin` instead of `register_hooks` |
+
+### Subclass Compatibility
+- `LLMSteeringHandler` extends `SteeringHandler` and only overrides `steer_before_tool`
+- Does NOT override `register_hooks`, so it will automatically inherit `init_plugin`
+- No changes needed to `LLMSteeringHandler` class itself
+
+### Example Usage After Migration
+```python
+from strands import Agent
+from strands.experimental.steering import MySteeringHandler
+
+# New way with plugins
+agent = Agent(
+    plugins=[MySteeringHandler(context_providers=[...])]
+)
+
+# Old way still works during deprecation period
+agent = Agent(
+    hooks=[MySteeringHandler(context_providers=[...])]  # Will show deprecation warning
+)
+```
+
+---
+
+## Acceptance Criteria
+- [ ] SteeringHandler implements Plugin protocol (has `name` and `init_plugin`)
+- [ ] SteeringHandler no longer inherits from HookProvider
+- [ ] All existing steering functionality is preserved
+- [ ] Unit tests pass with updated implementation
+- [ ] Works correctly with new `plugins` parameter
+- [ ] Subclasses of SteeringHandler continue to work (LLMSteeringHandler)
+- [ ] Integration tests pass (`tests_integ/steering/`)
+
+---
+
+## Technical Notes
+- This serves as the reference implementation for migrating HookProviders to Plugins
+- Since steering is experimental, this is a safe place to demonstrate the pattern
+- Document the migration in the PR as a guide for others
+
+## Dependencies
+- **Depends on**: Plugin Protocol (1636.1), plugins parameter (1636.2), add_hook method (1636.3)

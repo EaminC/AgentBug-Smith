@@ -1,0 +1,117 @@
+# Issue #1551: [BUG] Tool calls during model thinking are not displayed to users
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.23.0
+
+### Python Version
+
+3.12.3
+
+### Operating System
+
+Ubuntu
+
+### Installation Method
+
+pip
+
+### Description
+
+When using models with extended thinking/reasoning capabilities (I'm using `qwen.qwen3-next-80b-a3b`), some tool calls are executed during the model's internal reasoning phase before being announced in the streaming response. These "silent" tool calls are tracked in the agent's message history but are never displayed to users via the 
+PrintingCallbackHandler, creating confusion about which tools were actually executed.
+
+### Expected Behavior
+
+All tool executions should be visible to users through the callback handler, either:
+1. By emitting ToolUseStreamEvent with current_tool_use for all tool calls, OR
+2. By providing a configuration option to show/hide reasoning-phase tool calls, OR
+3. By emitting a different event type for reasoning-phase tools that can be optionally displayed
+
+### Actual Behavior
+
+Tools executed during the model's reasoning phase:
+- ✅ Are executed successfully
+- ✅ Appear in agent.messages
+- ❌ Never trigger callbacks with current_tool_use
+- ❌ Are never printed as `Tool #X: tool_name`
+- ❌ Are invisible to users watching the console output
+
+### Reproduction
+
+**Setup:**
+```python
+from strands import Agent
+from strands.models import BedrockModel
+
+@tool
+def get_user_info() -> dict:
+    """Get user information."""
+    return {"name": "Alice", "card": "LIB-456789"}
+
+@tool
+def get_book_status(book_id: str) -> dict:
+    """Get book status."""
+    return {"book_id": book_id, "status": "ACTIVE"}
+
+agent = Agent(
+    model=BedrockModel(model_id="qwen.qwen3-next-80b-a3b"),
+    tools=[get_user_info, get_book_status],
+    system_prompt="You are a helpful assistant."
+)
+
+result = agent("Please check the status of book BOOK-123")
+```
+
+**Observed Output:**
+```
+Tool #1: get_book_status
+```
+
+Actual Tool Execution (from logs):
+```
+2026-01-22 15:55:45 - TOOL EXECUTION START: get_user_info
+2026-01-22 15:55:46 - Callback with tool: get_book_status
+Tool #1: get_book_status
+2026-01-22 15:55:46 - TOOL EXECUTION START: get_book_status
+```
+
+Timeline:
+1. get_user_info executes (no callback, not printed)
+2. Model streams "I'm using get_book_status" (callback fires, printed as `Tool #1`)
+3. get_book_status executes
+
+### Root Cause
+
+From investigation in strands/tools/executors/_executor.py and strands/handlers/callback_handler.py:
+
+1. The callback handler only prints tools when it receives current_tool_use in the event
+2. current_tool_use is populated from ContentBlockStartEvent during model streaming (in strands/event_loop/streaming.py)
+3. Tools executed during reasoning phase don't generate ContentBlockStartEvent because the model hasn't announced them in its streaming response yet
+4. All tools return ToolResultEvent directly, but only tools announced in the model's streaming response get wrapped with current_tool_use context
+
+### Suggested Solutions
+
+**Option 1: Always emit tool use events**
+Before executing any tool, emit a ToolUseStreamEvent or similar event that triggers the callback with current_tool_use, regardless of whether the model announced it in streaming.
+
+**Option 2: Configuration flag**
+Add a flag to PrintingCallbackHandler or Agent:
+```python
+agent = Agent(
+    ...,
+    callback_handler=PrintingCallbackHandler(
+        verbose_tool_use=True,
+        show_reasoning_tools=True  # NEW FLAG
+    )
+)
+```
+
+**Option 3: Different event type**
+Emit a different event type (e.g., ReasoningToolUseEvent) for tools executed during reasoning, allowing developers to handle them differently.

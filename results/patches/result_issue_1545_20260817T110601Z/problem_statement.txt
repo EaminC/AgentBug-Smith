@@ -1,0 +1,59 @@
+# Issue #1545: [FEATURE] Improve tool result truncation strategy for graceful context reduction
+
+### Problem Statement
+
+The current `SlidingWindowConversationManager` truncation logic has several issues:
+
+1. **Truncates newest tool results first** - The `_find_last_message_with_tool_results` method searches from newest to oldest and truncates the most recent tool result. This is problematic because:
+   - The newest tool result is likely the most relevant to the current task
+   - Agent may interpret the truncated result (`"The tool result was too large!"` with `status: error`) as a tool failure
+   - This can cause the agent to repeatedly call the same tool or make incorrect decisions based on misleading error status
+
+2. **No size check before truncation** - Tool results are truncated regardless of their actual size. Small tool results may be unnecessarily truncated.
+
+3. **Complete content removal** - The entire tool result content is replaced, losing all context about what the result contained.
+
+
+### Proposed Solution
+
+Implement a more graceful truncation strategy:
+
+1. **Process older messages first** - Truncate oldest tool results before newest ones, as older results have likely already been processed and acted upon by the agent.
+
+2. **Size-based threshold** - Only truncate content blocks that exceed a configurable character threshold.
+
+3. **Partial truncation with context preservation** - Instead of removing entire content, preserve the beginning and end while truncating the middle:
+   ```
+   [first 200 chars of original content...]
+
+   ... [truncated: 15000 chars removed] ...
+
+   [...last 200 chars of original content]
+   ```
+
+4. **Image placeholder for older messages** - Replace images in older messages with descriptive placeholders:
+   ```
+   [image: filename.png, 1024x768]
+   ```
+
+### Use Case
+
+1. **Prevent agent confusion** - Agent won't misinterpret truncated recent results as failures
+2. **Maintain task continuity** - Recent tool results remain intact for ongoing work
+3. **Preserve partial context** - Truncated content still provides hints about what information was available
+4. **Reduce unnecessary retries** - Agent won't repeatedly call tools thinking previous calls failed
+
+
+### Alternatives Solutions
+
+**Separate into dedicated ConversationManager:**
+- Extract truncation/compaction logic into a new `CompactingConversationManager`
+- Keep `SlidingWindowConversationManager` focused solely on message count management (sliding window)
+- Users can combine both managers as needed, following Single Responsibility Principle
+
+
+### Additional Context
+
+I've implemented and tested this approach in a separate project with positive results (67% token reduction, improved retention). 
+
+Details: [Link](https://medium.com/towards-artificial-intelligence/long-context-compaction-for-ai-agents-part-2-implementation-and-evaluation-d708d2d2a6e5)

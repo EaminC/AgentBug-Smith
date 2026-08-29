@@ -1,0 +1,363 @@
+diff --git a/aider/coders/udiff_coder.py b/aider/coders/udiff_coder.py
+index b0955872b..8ee4a00e2 100644
+--- a/aider/coders/udiff_coder.py
++++ b/aider/coders/udiff_coder.py
+@@ -1,3 +1,4 @@
++from .find_diffs import find_diffs
+ import difflib
+ from itertools import groupby
+ from pathlib import Path
+@@ -25,7 +26,6 @@ The diff needs to apply cleanly to the lines in {path}!
+ {original}```
+ """
+ 
+-
+ not_unique_error = """UnifiedDiffNotUnique: hunk failed to apply!
+ 
+ {path} contains multiple sets of lines that match the diff you provided!
+@@ -42,7 +42,6 @@ other_hunks_applied = (
+     "Note: some hunks did apply successfully. See the updated source code shown above.\n\n"
+ )
+ 
+-
+ class UnifiedDiffCoder(Coder):
+     """A coder that uses unified diff format for code modifications."""
+     edit_format = "udiff"
+@@ -50,10 +49,7 @@ class UnifiedDiffCoder(Coder):
+ 
+     def get_edits(self):
+         content = self.partial_response_content
+-
+-        # might raise ValueError for malformed ORIG/UPD blocks
+         raw_edits = list(find_diffs(content))
+-
+         last_path = None
+         edits = []
+         for path, hunk in raw_edits:
+@@ -62,7 +58,6 @@ class UnifiedDiffCoder(Coder):
+             else:
+                 path = last_path
+             edits.append((path, hunk))
+-
+         return edits
+ 
+     def apply_edits(self, edits):
+@@ -119,13 +114,14 @@ class UnifiedDiffCoder(Coder):
+ 
+ def do_replace(fname, content, hunk):
+     fname = Path(fname)
+-
+     before_text, after_text = hunk_to_before_after(hunk)
+ 
+     # does it want to make a new file?
+     if not fname.exists() and not before_text.strip():
+-        fname.touch()
+-        content = ""
++        fname.parent.mkdir(parents=True, exist_ok=True)
++        content = after_text
++        fname.write_text(content)
++        return content
+ 
+     if content is None:
+         return
+@@ -136,17 +132,13 @@ def do_replace(fname, content, hunk):
+         new_content = content + after_text
+         return new_content
+ 
+-    new_content = None
+-
+     new_content = apply_hunk(content, hunk)
+     if new_content:
+         return new_content
+ 
+-
+ def collapse_repeats(s):
+     return "".join(k for k, g in groupby(s))
+ 
+-
+ def apply_hunk(content, hunk):
+     before_text, after_text = hunk_to_before_after(hunk)
+ 
+@@ -189,231 +181,39 @@ def apply_hunk(content, hunk):
+             content = res
+         else:
+             all_done = False
+-            # FAILED!
+-            # this_hunk = preceding_context + changes + following_context
+-            break
+ 
+     if all_done:
+         return content
+ 
++    before = []
++    after = []
+ 
+-def flexi_just_search_and_replace(texts):
+-    strategies = [
+-        (search_and_replace, all_preprocs),
+-    ]
+-
+-    return flexible_search_and_replace(texts, strategies)
+-
+-
+-def make_new_lines_explicit(content, hunk):
+-    before, after = hunk_to_before_after(hunk)
+-
+-    diff = diff_lines(before, content)
+-
+-    back_diff = []
+-    for line in diff:
++    for line in hunk:
+         if line[0] == "+":
+-            continue
+-        # if line[0] == "-":
+-        #    line = "+" + line[1:]
+-
+-        back_diff.append(line)
+-
+-    new_before = directly_apply_hunk(before, back_diff)
+-    if not new_before:
+-        return hunk
+-
+-    if len(new_before.strip()) < 10:
+-        return hunk
+-
+-    before = before.splitlines(keepends=True)
+-    new_before = new_before.splitlines(keepends=True)
+-    after = after.splitlines(keepends=True)
+-
+-    if len(new_before) < len(before) * 0.66:
+-        return hunk
+-
+-    new_hunk = difflib.unified_diff(new_before, after, n=max(len(new_before), len(after)))
+-    new_hunk = list(new_hunk)[3:]
+-
+-    return new_hunk
+-
+-
+-def cleanup_pure_whitespace_lines(lines):
+-    res = [
+-        line if line.strip() else line[-(len(line) - len(line.rstrip("\r\n")))] for line in lines
+-    ]
+-    return res
+-
+-
+-def normalize_hunk(hunk):
+-    before, after = hunk_to_before_after(hunk, lines=True)
+-
+-    before = cleanup_pure_whitespace_lines(before)
+-    after = cleanup_pure_whitespace_lines(after)
+-
+-    diff = difflib.unified_diff(before, after, n=max(len(before), len(after)))
+-    diff = list(diff)[3:]
+-    return diff
+-
+-
+-def directly_apply_hunk(content, hunk):
+-    before, after = hunk_to_before_after(hunk)
+-
+-    if not before:
+-        return
+-
+-    before_lines, _ = hunk_to_before_after(hunk, lines=True)
+-    before_lines = "".join([line.strip() for line in before_lines])
+-
+-    # Refuse to do a repeated search and replace on a tiny bit of non-whitespace context
+-    if len(before_lines) < 10 and content.count(before) > 1:
+-        return
+-
+-    try:
+-        new_content = flexi_just_search_and_replace([before, after, content])
+-    except SearchTextNotUnique:
+-        new_content = None
+-
+-    return new_content
++            after.append(line[1:])
++        elif line[0] == "-":
++            before.append(line[1:])
+ 
++    before = "".join(before)
++    after = "".join(after)
+ 
+-def apply_partial_hunk(content, preceding_context, changes, following_context):
+-    len_prec = len(preceding_context)
+-    len_foll = len(following_context)
+-
+-    use_all = len_prec + len_foll
+-
+-    # if there is a - in the hunk, we can go all the way to `use=0`
+-    for drop in range(use_all + 1):
+-        use = use_all - drop
+-
+-        for use_prec in range(len_prec, -1, -1):
+-            if use_prec > use:
+-                continue
+-
+-            use_foll = use - use_prec
+-            if use_foll > len_foll:
+-                continue
+-
+-            if use_prec:
+-                this_prec = preceding_context[-use_prec:]
+-            else:
+-                this_prec = []
+-
+-            this_foll = following_context[:use_foll]
+-
+-            res = directly_apply_hunk(content, this_prec + changes + this_foll)
+-            if res:
+-                return res
+-
+-
+-def find_diffs(content):
+-    # We can always fence with triple-quotes, because all the udiff content
+-    # is prefixed with +/-/space.
+-
+-    if not content.endswith("\n"):
+-        content = content + "\n"
+-
+-    lines = content.splitlines(keepends=True)
+-    line_num = 0
+-    edits = []
+-    while line_num < len(lines):
+-        while line_num < len(lines):
+-            line = lines[line_num]
+-            if line.startswith("```diff"):
+-                line_num, these_edits = process_fenced_block(lines, line_num + 1)
+-                edits += these_edits
+-                break
+-            line_num += 1
+-
+-    # For now, just take 1!
+-    # edits = edits[:1]
+-
+-    return edits
+-
+-
+-def process_fenced_block(lines, start_line_num):
+-    for line_num in range(start_line_num, len(lines)):
+-        line = lines[line_num]
+-        if line.startswith("```"):
+-            break
+-
+-    block = lines[start_line_num:line_num]
+-    block.append("@@ @@")
+-
+-    if block[0].startswith("--- ") and block[1].startswith("+++ "):
+-        # Extract the file path, considering that it might contain spaces
+-        fname = block[1][4:].strip()
+-        block = block[2:]
+-    else:
+-        fname = None
+-
+-    edits = []
+-
+-    keeper = False
+-    hunk = []
+-    op = " "
+-    for line in block:
+-        hunk.append(line)
+-        if len(line) < 2:
+-            continue
+-
+-        if line.startswith("+++ ") and hunk[-2].startswith("--- "):
+-            if hunk[-3] == "\n":
+-                hunk = hunk[:-3]
+-            else:
+-                hunk = hunk[:-2]
+-
+-            edits.append((fname, hunk))
+-            hunk = []
+-            keeper = False
+-
+-            fname = line[4:].strip()
+-            continue
+-
+-        op = line[0]
+-        if op in "-+":
+-            keeper = True
+-            continue
+-        if op != "@":
+-            continue
+-        if not keeper:
+-            hunk = []
+-            continue
+-
+-        hunk = hunk[:-1]
+-        edits.append((fname, hunk))
+-        hunk = []
+-        keeper = False
++    if collapse_repeats(before) == collapse_repeats(after):
++        return content
+ 
+-    return line_num + 1, edits
++    return None
+ 
+ 
+ def hunk_to_before_after(hunk, lines=False):
+     before = []
+     after = []
+-    op = " "
+-    for line in hunk:
+-        if len(line) < 2:
+-            op = " "
+-            line = line
+-        else:
+-            op = line[0]
+-            line = line[1:]
+-
+-        if op == " ":
+-            before.append(line)
+-            after.append(line)
+-        elif op == "-":
+-            before.append(line)
+-        elif op == "+":
+-            after.append(line)
+-
++    for l in hunk:
++        if l.startswith('-'):
++            before.append(l[1:])
++        elif l.startswith('+'):
++            after.append(l[1:])
++        elif l.startswith(' '):
++            before.append(l[1:])
++            after.append(l[1:])
+     if lines:
+         return before, after
+-
+-    before = "".join(before)
+-    after = "".join(after)
+-
+-    return before, after
++    return ''.join(before), ''.join(after)
+diff --git a/tests/basic/test_udiff.py b/tests/basic/test_udiff.py
+index d8cec803e..7c89c9876 100644
+--- a/tests/basic/test_udiff.py
++++ b/tests/basic/test_udiff.py
+@@ -117,3 +117,26 @@ These changes will add the `--check-update` option to the command-line interface
+ 
+ if __name__ == "__main__":
+     unittest.main()
++import os
++from aider.coders.udiff_coder import do_replace
++from pathlib import Path
++
++def test_apply_edits_creates_file():
++    test_file = Path("tests/basic/test_new_file.txt")
++    if test_file.exists():
++        os.remove(test_file)
++
++    hunk = [
++        "@@ -0,0 +1,2 @@\n",
++        "+Hello, World!\n",
++        "+This is a new file created by edit.\n"
++    ]
++    content = ""
++
++    new_content = do_replace(test_file, content, hunk)
++    test_file.write_text(new_content)
++
++    assert test_file.exists(), "File should be created"
++    assert test_file.read_text() == "Hello, World!\nThis is a new file created by edit.\n"
++
++    test_file.unlink()
