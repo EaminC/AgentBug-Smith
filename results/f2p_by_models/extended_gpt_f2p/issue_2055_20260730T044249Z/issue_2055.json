@@ -1,0 +1,31 @@
+{
+  "number": 2055,
+  "title": "[Bug]: LocalWorkspace.list_tools raises AttributeError on current main",
+  "url": "https://github.com/agentscope-ai/agentscope/issues/2055",
+  "state": "closed",
+  "created_at": "2026-07-12T08:42:46Z",
+  "closed_at": "2026-07-13T10:15:52Z",
+  "body": "## Description\n\n<img width=\"1076\" height=\"744\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/c5ec59df-e713-413e-9d10-a7cf378c71ac\" />\n\n`LocalWorkspace.list_tools()` raises the following exception on the current `main` branch:\n\n```text\nAttributeError: 'LocalWorkspace' object has no attribute '_glob_helper_path'\n```\n\nThis prevents the agent service from constructing the toolkit for a local workspace when a user starts a chat.\n\n## Reproduction\n\nEnvironment:\n\n- AgentScope: editable installation from current `main`\n- Python: 3.11.12\n- Workspace: `LocalWorkspace`\n\n```python\nimport asyncio\nimport tempfile\n\nfrom agentscope.workspace import LocalWorkspace\n\n\nasync def main() -> None:\n    with tempfile.TemporaryDirectory() as path:\n        workspace = LocalWorkspace(workdir=path)\n        await workspace.initialize()\n        try:\n            await workspace.list_tools()\n        finally:\n            await workspace.close()\n\n\nasyncio.run(main())\n```\n\n## Root cause\n\nThis appears to be a regression introduced by commit `81538d35`.\n\nThe v2.0.4 release and the parent of that commit both define the following default on `WorkspaceBase`:\n\n```python\n_glob_helper_path: str | None = None\n```\n\nThe commit removed that attribute while retaining the access in `WorkspaceBase.list_tools()`. `SandboxedWorkspaceBase` overrides `_glob_helper_path`, but `LocalWorkspace` inherits directly from `WorkspaceBase`, so the attribute is missing.\n\n## Suggested fix\n\nRestore the default `_glob_helper_path: str | None = None` class attribute on `WorkspaceBase` and add a regression test covering `LocalWorkspace.list_tools()`.\n\n@DavdGao, I would be happy to submit the small fix and regression test if this approach looks good.\n",
+  "labels": [],
+  "linked_prs": [
+    {
+      "number": 2056,
+      "state": "closed",
+      "title": "fix(workspace): restore default glob helper path",
+      "url": "https://github.com/agentscope-ai/agentscope/pull/2056",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "1aeb03d004292799091d437aaaf9486b424ecfa6",
+      "head_sha": "6395580cdd10ca262f3f7b22c19440c69d81d587",
+      "patch": "diff --git a/src/agentscope/workspace/_base.py b/src/agentscope/workspace/_base.py\nindex cb90f55ca5..9e5ee7d742 100644\n--- a/src/agentscope/workspace/_base.py\n+++ b/src/agentscope/workspace/_base.py\n@@ -149,6 +149,17 @@ class WorkspaceBase:\n     _skill_lock: asyncio.Lock\n     \"\"\"Guards mutation of the ``skills/`` directory.\"\"\"\n \n+    @property\n+    def _glob_helper_path(self) -> str | None:\n+        \"\"\"Optional path (backend-side) to the ``Glob`` helper script.\n+\n+        ``None`` means the :class:`Glob` builtin tool falls back to its\n+        default behaviour (suitable for :class:`LocalBackend`). Remote\n+        backends override this with a sandbox-/container-side script path\n+        so :class:`Glob` can run efficiently inside the workspace.\n+        \"\"\"\n+        return None\n+\n     def __init__(\n         self,\n         *,\ndiff --git a/tests/workspace_local_test.py b/tests/workspace_local_test.py\nindex 198a7dc4c3..d726a63357 100644\n--- a/tests/workspace_local_test.py\n+++ b/tests/workspace_local_test.py\n@@ -18,7 +18,18 @@\n from agentscope.agent import Agent, ContextConfig\n from agentscope.model import ChatResponse, StructuredResponse\n from agentscope.state import AgentState\n-from agentscope.tool import Toolkit, ToolBase, ToolChunk\n+from agentscope.tool import (\n+    Bash,\n+    Edit,\n+    Glob,\n+    Grep,\n+    LocalBackend,\n+    Read,\n+    Toolkit,\n+    ToolBase,\n+    ToolChunk,\n+    Write,\n+)\n from agentscope.permission import PermissionDecision, PermissionBehavior\n from agentscope.workspace import LocalWorkspace\n from agentscope.mcp import MCPClient, StdioMCPConfig\n@@ -81,6 +92,28 @@ async def __call__(self, **_kwargs: Any) -> ToolChunk:\n         )\n \n \n+class TestLocalWorkspaceTools(IsolatedAsyncioTestCase):\n+    \"\"\"Test cases for LocalWorkspace builtin tools.\"\"\"\n+\n+    async def test_list_tools_builtin(self) -> None:\n+        \"\"\"Return all six builtin tools backed by LocalBackend.\"\"\"\n+        with tempfile.TemporaryDirectory() as workdir:\n+            workspace = LocalWorkspace(workdir=workdir)\n+            await workspace.initialize()\n+            try:\n+                tools = await workspace.list_tools()\n+            finally:\n+                await workspace.close()\n+\n+        self.assertEqual(len(tools), 6)\n+        self.assertSetEqual(\n+            {type(tool) for tool in tools},\n+            {Bash, Edit, Glob, Grep, Read, Write},\n+        )\n+        for tool in tools:\n+            self.assertIsInstance(tool._backend, LocalBackend)\n+\n+\n class TestLocalWorkspaceOffload(IsolatedAsyncioTestCase):\n     \"\"\"Test cases for LocalWorkspace offload functionality.\"\"\"\n \n",
+      "test_paths_in_patch": [
+        "tests/workspace_local_test.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}
