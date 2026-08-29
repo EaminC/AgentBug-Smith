@@ -1,0 +1,249 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0, xdist-3.8.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 4 items
+
+tests/agentsmith_fail2pass_563.py::test_no_client_lock_attribute FAILED  [ 25%]
+tests/agentsmith_fail2pass_563.py::test_concurrent_run_workflow FAILED   [ 50%]
+tests/agentsmith_fail2pass_563.py::test_concurrent_schedule_and_wait FAILED [ 75%]
+tests/agentsmith_fail2pass_563.py::test_run_workflow_retry_on_transient_grpc_error 
+-------------------------------- live log call ---------------------------------
+FAILED                                                                   [100%]
+
+=================================== FAILURES ===================================
+________________________ test_no_client_lock_attribute _________________________
+
+    def test_no_client_lock_attribute():
+        """Ensure the WorkflowRunner does not have a _client_lock attribute."""
+        runner = _make_runner()
+>       assert not hasattr(runner, "_client_lock"), (
+            "_client_lock must not exist — it serializes all workflow operations (issue #563)"
+        )
+E       AssertionError: _client_lock must not exist — it serializes all workflow operations (issue #563)
+E       assert not True
+E        +  where True = hasattr(<dapr_agents.workflow.runners.base.WorkflowRunner object at 0x7c8a91cd3320>, '_client_lock')
+
+tests/agentsmith_fail2pass_563.py:29: AssertionError
+_________________________ test_concurrent_run_workflow _________________________
+
+    def test_concurrent_run_workflow():
+        """Three concurrent schedule calls must not be serialized by a lock."""
+        client = MagicMock()
+        call_count = 0
+    
+        def _slow_schedule(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            time.sleep(0.1)
+            return f"id-{call_count}"
+    
+        client.schedule_new_workflow.side_effect = _slow_schedule
+        runner = _make_runner(client)
+    
+        start = time.monotonic()
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(runner.run_workflow, _dummy_workflow) for _ in range(3)]
+            results = [f.result() for f in as_completed(futures)]
+        elapsed = time.monotonic() - start
+    
+        assert len(results) == 3
+        assert client.schedule_new_workflow.call_count == 3
+        # If serialized, would take ~0.3s; concurrent should be ~0.1s
+>       assert elapsed < 0.25, f"Scheduling was serialized (took {elapsed:.2f}s)"
+E       AssertionError: Scheduling was serialized (took 0.30s)
+E       assert 0.3017323568928987 < 0.25
+
+tests/agentsmith_fail2pass_563.py:57: AssertionError
+______________________ test_concurrent_schedule_and_wait _______________________
+
+    def test_concurrent_schedule_and_wait():
+        """Scheduling a new workflow must not block while another is being awaited."""
+        client = MagicMock()
+        client.schedule_new_workflow.return_value = "id-new"
+    
+        def _slow_wait(*args, **kwargs):
+            time.sleep(0.5)
+            return MagicMock(runtime_status="COMPLETED")
+    
+        client.wait_for_workflow_completion.side_effect = _slow_wait
+        runner = _make_runner(client)
+    
+        # Start a long-running wait in a background thread
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            wait_future = pool.submit(runner.wait_for_workflow_completion, "id-existing")
+            # Brief pause so the wait thread is actively blocking
+            time.sleep(0.05)
+    
+            # Schedule a new workflow — must not be blocked by the wait
+            start = time.monotonic()
+            schedule_future = pool.submit(runner.run_workflow, _dummy_workflow)
+            instance_id = schedule_future.result(timeout=1.0)
+            schedule_elapsed = time.monotonic() - start
+    
+            # Clean up the wait
+            wait_future.result(timeout=2.0)
+    
+        assert instance_id is not None
+>       assert schedule_elapsed < 0.2, (
+            f"Scheduling blocked by wait ({schedule_elapsed:.2f}s) — lock regression"
+        )
+E       AssertionError: Scheduling blocked by wait (0.45s) — lock regression
+E       assert 0.4525645701214671 < 0.2
+
+tests/agentsmith_fail2pass_563.py:88: AssertionError
+_______________ test_run_workflow_retry_on_transient_grpc_error ________________
+
+self = <dapr_agents.workflow.runners.base.WorkflowRunner object at 0x7c8a91cd3d40>
+workflow = <function _dummy_workflow at 0x7c8a91e622a0>, payload = None
+instance_id = None
+
+    def run_workflow(
+        self,
+        workflow: Callable[..., Any],
+        payload: Optional[Union[str, Dict[str, Any]]] = None,
+        instance_id: Optional[str] = None,
+    ) -> str:
+        """
+        Schedule a registered workflow and return its instance id.
+    
+        Args:
+            workflow: Callable pointing to a registered workflow.
+            payload: Workflow input (dict or serialized string).
+            instance_id: Optional explicit instance id; autogenerated if omitted.
+    
+        Returns:
+            str: The new workflow instance id.
+    
+        Raises:
+            ValueError: If `workflow` is not callable.
+            Exception: Any error bubbling up from the Dapr client while scheduling.
+        """
+        if not callable(workflow):
+            raise ValueError("workflow must be a callable (already registered).")
+    
+        chosen_id = instance_id or uuid.uuid4().hex
+        logger.debug(
+            f"[{self._name}] Scheduling workflow {getattr(workflow, '__name__', workflow)} id={chosen_id}",
+        )
+    
+        _max_retries = 3
+        _retry_delay = 1.0
+        for attempt in range(_max_retries + 1):
+            try:
+                with self._client_lock:
+>                   result = self._wf_client.schedule_new_workflow(
+                        workflow=workflow,
+                        input=payload,
+                        instance_id=chosen_id,
+                    )
+
+dapr_agents/workflow/runners/base.py:406: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.schedule_new_workflow' id='136934593482432'>
+args = ()
+kwargs = {'workflow': <function _dummy_workflow at 0x7c8a91e622a0>, 'input': None, 'instance_id': '0518a99e66f74bfca51b403edb183700'}
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+                raise effect
+            elif not _callable(effect):
+                result = next(effect)
+                if _is_exception(result):
+>                   raise result
+E                   tests.agentsmith_fail2pass_563.test_run_workflow_retry_on_transient_grpc_error.<locals>.FakeRpcError
+
+/usr/local/lib/python3.12/unittest/mock.py:1202: FakeRpcError
+
+During handling of the above exception, another exception occurred:
+
+    def test_run_workflow_retry_on_transient_grpc_error():
+        """Transient gRPC errors should trigger retries without a lock."""
+        import grpc
+    
+        client = MagicMock()
+    
+        class FakeRpcError(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+    
+            def details(self):
+                return "connection reset"
+    
+        client.schedule_new_workflow.side_effect = [FakeRpcError(), "id-retry-success"]
+        runner = _make_runner(client)
+    
+        with patch("dapr_agents.workflow.runners.base.time.sleep"):
+>           result = runner.run_workflow(_dummy_workflow)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_563.py:110: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+dapr_agents/workflow/runners/base.py:421: in run_workflow
+    logger.warning(
+/usr/local/lib/python3.12/logging/__init__.py:1551: in warning
+    self._log(WARNING, msg, args, **kwargs)
+/usr/local/lib/python3.12/logging/__init__.py:1684: in _log
+    self.handle(record)
+/usr/local/lib/python3.12/logging/__init__.py:1700: in handle
+    self.callHandlers(record)
+/usr/local/lib/python3.12/logging/__init__.py:1762: in callHandlers
+    hdlr.handle(record)
+/usr/local/lib/python3.12/logging/__init__.py:1028: in handle
+    self.emit(record)
+/usr/local/lib/python3.12/site-packages/_pytest/logging.py:399: in emit
+    super().emit(record)
+/usr/local/lib/python3.12/logging/__init__.py:1168: in emit
+    self.handleError(record)
+/usr/local/lib/python3.12/logging/__init__.py:1160: in emit
+    msg = self.format(record)
+          ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/logging/__init__.py:999: in format
+    return fmt.format(record)
+           ^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/_pytest/logging.py:137: in format
+    return super().format(record)
+           ^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/logging/__init__.py:703: in format
+    record.message = record.getMessage()
+                     ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <LogRecord: dapr_agents.workflow.runners.base, 30, /app/dapr_agents/workflow/runners/base.py, 421, "test-runner Transient gRPC error scheduling workflow (attempt %d/%d): %s — retrying in %.1fs">
+
+    def getMessage(self):
+        """
+        Return the message for this LogRecord.
+    
+        Return the message for this LogRecord after merging any user-supplied
+        arguments with the message.
+        """
+        msg = str(self.msg)
+        if self.args:
+>           msg = msg % self.args
+                  ^^^^^^^^^^^^^^^
+E           TypeError: %d format: a real number is required, not str
+
+/usr/local/lib/python3.12/logging/__init__.py:392: TypeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_563.py::test_no_client_lock_attribute - Ass...
+FAILED tests/agentsmith_fail2pass_563.py::test_concurrent_run_workflow - Asse...
+FAILED tests/agentsmith_fail2pass_563.py::test_concurrent_schedule_and_wait
+FAILED tests/agentsmith_fail2pass_563.py::test_run_workflow_retry_on_transient_grpc_error
+============================== 4 failed in 3.60s ===============================

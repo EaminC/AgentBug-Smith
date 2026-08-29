@@ -1,0 +1,1355 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0, xdist-3.8.0, timeout-2.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 17 items
+
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_multiple_middleware_types FAILED [  5%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_acting_middleware_intercepts_tool_execution FAILED [ 11%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware FAILED [ 17%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware_modify_instructions FAILED [ 23%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware_short_circuit FAILED [ 29%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_no_middleware FAILED [ 35%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_keeps_outer_messages_when_inner_omits_kwargs FAILED [ 41%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_keeps_outer_messages_with_partial_kwargs FAILED [ 47%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_modify_input FAILED [ 52%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_non_streaming FAILED [ 58%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_streaming FAILED [ 64%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reasoning_middleware_modify_input FAILED [ 70%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reasoning_middleware_pre_yield FAILED [ 76%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_keeps_outer_input_when_inner_omits_kwargs FAILED [ 82%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_middleware_modify_input FAILED [ 88%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_middleware_pre_post_yield FAILED [ 94%]
+tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_system_prompt_middleware FAILED [100%]
+
+=================================== FAILURES ===================================
+________________ TestMiddleware.test_multiple_middleware_types _________________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_multiple_middleware_types>
+
+    async def test_multiple_middleware_types(self) -> None:
+        """Test multiple middleware types working together."""
+    
+        class MultiMiddleware(MiddlewareBase):
+            """Middleware implementing multiple hooks."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the multi middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_reply(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[[], AsyncGenerator],
+            ) -> AsyncGenerator:
+                """The on_reply middleware logic."""
+                self.log.append(f"{self.name}_reply_pre")
+                async for item in next_handler():
+                    yield item
+                self.log.append(f"{self.name}_reply_post")
+    
+            async def on_reasoning(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[[], AsyncGenerator],
+            ) -> AsyncGenerator:
+                """The on_reasoning middleware logic."""
+                self.log.append(f"{self.name}_reasoning_pre")
+                async for item in next_handler():
+                    yield item
+                self.log.append(f"{self.name}_reasoning_post")
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable,
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                """The on_model_call middleware logic."""
+                self.log.append(f"{self.name}_model_call_pre")
+                result = await next_handler()
+                self.log.append(f"{self.name}_model_call_post")
+                return result
+    
+            async def on_system_prompt(
+                self,
+                agent: Agent,
+                current_prompt: str,
+            ) -> str:
+                """The on_system_prompt middleware logic."""
+                self.log.append(f"{self.name}_system_prompt")
+                return current_prompt
+    
+        middleware = MultiMiddleware(self.execution_log, "multi")
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:478: TypeError
+______ TestMiddleware.test_on_acting_middleware_intercepts_tool_execution ______
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_acting_middleware_intercepts_tool_execution>
+
+    async def test_on_acting_middleware_intercepts_tool_execution(
+        self,
+    ) -> None:
+        """Test that on_acting middleware intercepts raw tool execution.
+    
+        After the refactor, ``on_acting`` wraps only ``_acting_impl``
+        (i.e. ``toolkit.call_tool``).  Permission checking and context
+        writes are handled by ``_execute_tool_call`` *outside* the hook.
+        This test verifies that the middleware can observe and modify the
+        ``tool_call`` passed to the actual tool function.
+        """
+    
+        # ------------------------------------------------------------------ #
+        # A minimal tool that records the raw input it receives.              #
+        # ------------------------------------------------------------------ #
+        received_inputs: list[str] = []
+    
+        class _EchoParams(BaseModel):
+            value: str
+    
+        class EchoTool(ToolBase):
+            """Tool that echoes its input and records it."""
+    
+            name: str = "echo"
+            description: str = "Echo the value."
+            input_schema: dict = _EchoParams.model_json_schema()
+            is_concurrency_safe: bool = True
+            is_read_only: bool = True
+            is_state_injected: bool = False
+            is_external_tool: bool = False
+            is_mcp: bool = False
+            mcp_name: str | None = None
+    
+            async def check_permissions(
+                self,
+                tool_input: dict[str, Any],
+                context: PermissionContext,
+            ) -> PermissionDecision:
+                """Always allow."""
+                return PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="allowed",
+                )
+    
+            async def __call__(
+                self,
+                value: str,
+            ) -> ToolChunk:
+                """Record the value and return it."""
+                received_inputs.append(value)
+                return ToolChunk(
+                    content=[TextBlock(text=f"echo:{value}")],
+                )
+    
+        toolkit_with_tool = Toolkit(tools=[EchoTool()])
+    
+        # ------------------------------------------------------------------ #
+        # Middleware that renames the tool_call.input before forwarding.      #
+        # ------------------------------------------------------------------ #
+        intercepted_tool_calls: list[str] = []
+    
+        class ObserveActingMiddleware(MiddlewareBase):
+            """Middleware that records the tool_call seen at acting level."""
+    
+            async def on_acting(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., AsyncGenerator],
+            ) -> AsyncGenerator:
+                """Record the tool_call and forward to next handler."""
+                tool_call = input_kwargs["tool_call"]
+                intercepted_tool_calls.append(tool_call.input)
+                # Modify the input before execution
+                import json
+    
+                modified = ToolCallBlock(
+                    id=tool_call.id,
+                    name=tool_call.name,
+                    input=json.dumps({"value": "MODIFIED"}),
+                    state=tool_call.state,
+                )
+                async for chunk in next_handler(tool_call=modified):
+                    yield chunk
+    
+        middleware = ObserveActingMiddleware()
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="done")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=toolkit_with_tool,
+            middlewares=[middleware],
+        )
+    
+        # Call _execute_tool_call with a valid tool call.
+        tool_call = ToolCallBlock(
+            id="call_1",
+            name="echo",
+            input='{"value": "ORIGINAL"}',
+        )
+        events = []
+        # pylint: disable=protected-access
+>       async for evt in agent_instance._execute_tool_call(tool_call):
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Agent' object has no attribute '_execute_tool_call'
+
+tests/agentsmith_fail2pass_1965.py:808: AttributeError
+______________ TestMiddleware.test_on_compress_context_middleware ______________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_compress_context_middleware>
+
+    async def test_on_compress_context_middleware(self) -> None:
+        """Test on_compress_context middleware follows the onion chain pattern.
+    
+        Verifies that:
+        - Multiple middlewares are chained in onion order (mw1 wraps mw2).
+        - ``input_kwargs`` carries the correct ``context_config`` and
+          ``instructions``.
+        - The ``next_handler`` ultimately calls ``_compress_context_impl``.
+        - A middleware can short-circuit and skip the actual implementation.
+        """
+        seen_instructions = []
+    
+        # ------------------------------------------------------------------ #
+        # Middleware that records pre/post and forwards to next_handler.      #
+        # ------------------------------------------------------------------ #
+        class CompressContextMiddleware(MiddlewareBase):
+            """Middleware for testing on_compress_context hook."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the compress context middleware.
+    
+                Args:
+                    log (`list`):
+                        The execution log list.
+                    name (`str`):
+                        The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_compress_context(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> None:
+                """Forward to next handler, recording pre and post."""
+                self.log.append(f"{self.name}_pre")
+                seen_instructions.append(input_kwargs.get("instructions"))
+                await next_handler(**input_kwargs)
+                self.log.append(f"{self.name}_post")
+    
+        middleware1 = CompressContextMiddleware(self.execution_log, "mw1")
+        middleware2 = CompressContextMiddleware(self.execution_log, "mw2")
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        context_config = ContextConfig(trigger_ratio=0.8, reserve_ratio=0.1)
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+            context_config=context_config,
+        )
+    
+        # Patch _compress_context_impl to avoid real token counting.
+        instructions = HintBlock(
+            hint="Keep user requirements while compressing.",
+            source="user",
+        )
+>       with patch.object(
+            agent,
+            "_compress_context_impl",
+            new_callable=AsyncMock,
+        ) as mock_impl:
+
+tests/agentsmith_fail2pass_1965.py:1124: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x79d5aecfb9b0>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <agentscope.agent._agent.Agent object at 0x79d5af3642f0> does not have the attribute '_compress_context_impl'
+
+/usr/local/lib/python3.12/unittest/mock.py:1437: AttributeError
+____ TestMiddleware.test_on_compress_context_middleware_modify_instructions ____
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_compress_context_middleware_modify_instructions>
+
+    async def test_on_compress_context_middleware_modify_instructions(
+        self,
+    ) -> None:
+        """Test that middleware can replace compress_context instructions."""
+    
+        class ReplaceInstructionsMiddleware(MiddlewareBase):
+            """Middleware that replaces the compression instructions."""
+    
+            def __init__(self, replacement: HintBlock) -> None:
+                """Initialize the middleware with replacement instructions."""
+                self.replacement = replacement
+    
+            async def on_compress_context(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> None:
+                """Replace instructions before forwarding."""
+                input_kwargs["instructions"] = self.replacement
+                await next_handler(**input_kwargs)
+    
+        original = HintBlock(
+            hint="Keep all requirements.",
+            source="user",
+        )
+        replacement = HintBlock(
+            hint="Keep only unresolved requirements.",
+            source="middleware",
+        )
+        context_config = ContextConfig(trigger_ratio=0.8, reserve_ratio=0.1)
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[ReplaceInstructionsMiddleware(replacement)],
+            context_config=context_config,
+        )
+    
+>       with patch.object(
+            agent,
+            "_compress_context_impl",
+            new_callable=AsyncMock,
+        ) as mock_impl:
+
+tests/agentsmith_fail2pass_1965.py:1186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x79d5aeac8440>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <agentscope.agent._agent.Agent object at 0x79d5aeac83e0> does not have the attribute '_compress_context_impl'
+
+/usr/local/lib/python3.12/unittest/mock.py:1437: AttributeError
+_______ TestMiddleware.test_on_compress_context_middleware_short_circuit _______
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_compress_context_middleware_short_circuit>
+
+    async def test_on_compress_context_middleware_short_circuit(
+        self,
+    ) -> None:
+        """Test that a middleware can skip _compress_context_impl entirely."""
+    
+        class SkipCompressMiddleware(MiddlewareBase):
+            """Middleware that skips the actual compress_context call."""
+    
+            def __init__(self, log: list) -> None:
+                """Initialize the skip compress middleware.
+    
+                Args:
+                    log (`list`):
+                        The execution log list.
+                """
+                self.log = log
+    
+            async def on_compress_context(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> None:
+                """Record the call and skip forwarding to next_handler."""
+                self.log.append("skipped")
+                # Intentionally NOT calling next_handler.
+    
+        middleware = SkipCompressMiddleware(self.execution_log)
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware],
+        )
+    
+>       with patch.object(
+            agent,
+            "_compress_context_impl",
+            new_callable=AsyncMock,
+        ) as mock_impl:
+
+tests/agentsmith_fail2pass_1965.py:1247: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x79d5aecfb110>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <agentscope.agent._agent.Agent object at 0x79d5aecfb170> does not have the attribute '_compress_context_impl'
+
+/usr/local/lib/python3.12/unittest/mock.py:1437: AttributeError
+____________ TestMiddleware.test_on_compress_context_no_middleware _____________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_compress_context_no_middleware>
+
+    async def test_on_compress_context_no_middleware(self) -> None:
+        """Test that compress_context calls _compress_context_impl directly
+        when no middleware is registered."""
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        context_config = ContextConfig(trigger_ratio=0.8, reserve_ratio=0.1)
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            # No middlewares registered.
+            context_config=context_config,
+        )
+    
+>       with patch.object(
+            agent,
+            "_compress_context_impl",
+            new_callable=AsyncMock,
+        ) as mock_impl:
+
+tests/agentsmith_fail2pass_1965.py:1282: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/unittest/mock.py:1467: in __enter__
+    original, local = self.get_original()
+                      ^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <unittest.mock._patch object at 0x79d5aedabf80>
+
+    def get_original(self):
+        target = self.getter()
+        name = self.attribute
+    
+        original = DEFAULT
+        local = False
+    
+        try:
+            original = target.__dict__[name]
+        except (AttributeError, KeyError):
+            original = getattr(target, name, DEFAULT)
+        else:
+            local = True
+    
+        if name in _builtins and isinstance(target, ModuleType):
+            self.create = True
+    
+        if not self.create and original is DEFAULT:
+>           raise AttributeError(
+                "%s does not have the attribute %r" % (target, name)
+            )
+E           AttributeError: <agentscope.agent._agent.Agent object at 0x79d5aedabef0> does not have the attribute '_compress_context_impl'
+
+/usr/local/lib/python3.12/unittest/mock.py:1437: AttributeError
+_ TestMiddleware.test_on_model_call_keeps_outer_messages_when_inner_omits_kwargs _
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_model_call_keeps_outer_messages_when_inner_omits_kwargs>
+
+    async def test_on_model_call_keeps_outer_messages_when_inner_omits_kwargs(
+        self,
+    ) -> None:
+        """Transparent inner model-call middleware keeps outer messages."""
+    
+        class ModifyMessagesMiddleware(MiddlewareBase):
+            """Middleware that changes the messages."""
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                modified_messages = [
+                    SystemMsg(
+                        name="system",
+                        content="INJECTED SYSTEM MESSAGE",
+                    ),
+                ] + input_kwargs["messages"]
+                return await next_handler(messages=modified_messages)
+    
+        class TransparentMiddleware(MiddlewareBase):
+            """Middleware that calls next_handler() without passing kwargs."""
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                system_messages = [
+                    m for m in input_kwargs["messages"] if m.role == "system"
+                ]
+                assert any(
+                    "INJECTED SYSTEM MESSAGE" in m.get_text_content()
+                    for m in system_messages
+                )
+                return await next_handler()
+    
+        received_messages = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received messages."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                received_messages.extend(kwargs.get("messages", []))
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [ChatResponse(content=[TextBlock(text="response")], is_last=True)],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[
+                ModifyMessagesMiddleware(),
+                TransparentMiddleware(),
+            ],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:964: TypeError
+__ TestMiddleware.test_on_model_call_keeps_outer_messages_with_partial_kwargs __
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_model_call_keeps_outer_messages_with_partial_kwargs>
+
+    async def test_on_model_call_keeps_outer_messages_with_partial_kwargs(
+        self,
+    ) -> None:
+        """Partial next_handler kwargs keep outer model-call changes."""
+        injected_text = "INJECTED SYSTEM MESSAGE FROM OUTER MIDDLEWARE"
+        inner_saw_injected_message = False
+    
+        class ModifyMessagesMiddleware(MiddlewareBase):
+            """Middleware that changes the messages."""
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                modified_messages = [
+                    SystemMsg(
+                        name="system",
+                        content=injected_text,
+                    ),
+                ] + input_kwargs["messages"]
+                return await next_handler(messages=modified_messages)
+    
+        class PartialForwardMiddleware(MiddlewareBase):
+            """Middleware that forwards only one of the current kwargs."""
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                nonlocal inner_saw_injected_message
+                inner_saw_injected_message = any(
+                    injected_text in m.get_text_content()
+                    for m in input_kwargs["messages"]
+                )
+                return await next_handler(
+                    tool_choice=input_kwargs["tool_choice"],
+                )
+    
+        received_messages = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received messages."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                received_messages.extend(kwargs.get("messages", []))
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [ChatResponse(content=[TextBlock(text="response")], is_last=True)],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[
+                ModifyMessagesMiddleware(),
+                PartialForwardMiddleware(),
+            ],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:1045: TypeError
+__________ TestMiddleware.test_on_model_call_middleware_modify_input ___________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_model_call_middleware_modify_input>
+
+    async def test_on_model_call_middleware_modify_input(self) -> None:
+        """Test that on_model_call middleware can modify messages and model."""
+    
+        class ModifyMessagesMiddleware(MiddlewareBase):
+            """Middleware that modifies messages input."""
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., Any],
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                """Prepend a system message to the messages list."""
+                messages = input_kwargs["messages"]
+                modified_messages = [
+                    SystemMsg(
+                        name="system",
+                        content="INJECTED SYSTEM MESSAGE",
+                    ),
+                ] + messages
+    
+                # Pass modified messages to next handler
+                return await next_handler(
+                    current_model=input_kwargs["current_model"],
+                    messages=modified_messages,
+                    tools=input_kwargs["tools"],
+                    tool_choice=input_kwargs["tool_choice"],
+                )
+    
+        middleware = ModifyMessagesMiddleware()
+    
+        # Track what messages the model receives
+        received_messages = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received messages."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                """Track the messages and return mock response."""
+                messages = kwargs.get("messages", [])
+                received_messages.extend(messages)
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:884: TypeError
+__________ TestMiddleware.test_on_model_call_middleware_non_streaming __________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_model_call_middleware_non_streaming>
+
+    async def test_on_model_call_middleware_non_streaming(self) -> None:
+        """Test on_model_call middleware for non-streaming model."""
+    
+        class ModelCallMiddleware(MiddlewareBase):
+            """Middleware for testing on_model_call hook."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the model call middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable,
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                """The on_model_call middleware logic."""
+                self.log.append(f"{self.name}_pre")
+                result = await next_handler()
+                self.log.append(f"{self.name}_post")
+                return result
+    
+        middleware1 = ModelCallMiddleware(self.execution_log, "mw1")
+        middleware2 = ModelCallMiddleware(self.execution_log, "mw2")
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:239: TypeError
+____________ TestMiddleware.test_on_model_call_middleware_streaming ____________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_model_call_middleware_streaming>
+
+    async def test_on_model_call_middleware_streaming(self) -> None:
+        """Test on_model_call middleware for streaming model."""
+    
+        class ModelCallMiddleware(MiddlewareBase):
+            """Middleware for testing on_model_call hook with streaming."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the model call middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_model_call(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable,
+            ) -> Union[ChatResponse, AsyncGenerator[ChatResponse, None]]:
+                """The on_model_call middleware logic for streaming."""
+                self.log.append(f"{self.name}_pre")
+                result = await next_handler()
+    
+                async def wrapped_generator() -> AsyncGenerator[
+                    ChatResponse,
+                    None,
+                ]:
+                    """Wrap the generator to log yields."""
+                    async for chunk in result:
+                        self.log.append(f"{self.name}_chunk")
+                        yield chunk
+                    self.log.append(f"{self.name}_post")
+    
+                return wrapped_generator()
+    
+        middleware1 = ModelCallMiddleware(self.execution_log, "mw1")
+        middleware2 = ModelCallMiddleware(self.execution_log, "mw2")
+    
+        self.mock_model.set_responses(
+            [
+                [
+                    ChatResponse(
+                        content=[TextBlock(text="chunk1")],
+                        is_last=False,
+                    ),
+                    ChatResponse(
+                        content=[TextBlock(text="chunk2")],
+                        is_last=False,
+                    ),
+                    ChatResponse(
+                        content=[TextBlock(text="chunk3")],
+                        is_last=True,
+                    ),
+                ],
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:313: TypeError
+___________ TestMiddleware.test_on_reasoning_middleware_modify_input ___________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_reasoning_middleware_modify_input>
+
+    async def test_on_reasoning_middleware_modify_input(self) -> None:
+        """Test that on_reasoning middleware can modify tool_choice input."""
+    
+        class ModifyToolChoiceMiddleware(MiddlewareBase):
+            """Middleware that modifies the tool_choice input."""
+    
+            async def on_reasoning(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., AsyncGenerator],
+            ) -> AsyncGenerator:
+                """Force tool_choice to 'none' to prevent tool calls."""
+                # Override tool_choice to 'none'
+                async for item in next_handler(tool_choice="none"):
+                    yield item
+    
+        middleware = ModifyToolChoiceMiddleware()
+    
+        # Track what tool_choice the model receives
+        received_tool_choices = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received tool_choice."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                """Track the tool_choice and return mock response."""
+                tool_choice = kwargs.get("tool_choice")
+                received_tool_choices.append(tool_choice)
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="response without tools")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:692: TypeError
+____________ TestMiddleware.test_on_reasoning_middleware_pre_yield _____________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_reasoning_middleware_pre_yield>
+
+    async def test_on_reasoning_middleware_pre_yield(self) -> None:
+        """Test on_reasoning middleware pre and yield positions."""
+    
+        class ReasoningMiddleware(MiddlewareBase):
+            """Middleware for testing on_reasoning hook."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the reasoning middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_reasoning(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[[], AsyncGenerator],
+            ) -> AsyncGenerator:
+                """The on_reasoning middleware logic."""
+                self.log.append(f"{self.name}_pre")
+                async for item in next_handler():
+                    if isinstance(item, AgentEvent):
+                        self.log.append(f"{self.name}_{item.type}")
+                    elif isinstance(item, Msg):
+                        self.log.append(f"{self.name}_msg")
+                    yield item
+                self.log.append(f"{self.name}_post")
+    
+        middleware1 = ReasoningMiddleware(self.execution_log, "mw1")
+        middleware2 = ReasoningMiddleware(self.execution_log, "mw2")
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:170: TypeError
+____ TestMiddleware.test_on_reply_keeps_outer_input_when_inner_omits_kwargs ____
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_reply_keeps_outer_input_when_inner_omits_kwargs>
+
+    async def test_on_reply_keeps_outer_input_when_inner_omits_kwargs(
+        self,
+    ) -> None:
+        """Argumentless next_handler() keeps outer reply input changes."""
+    
+        class ModifyInputMiddleware(MiddlewareBase):
+            """Middleware that replaces the reply input."""
+    
+            async def on_reply(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., AsyncGenerator],
+            ) -> AsyncGenerator:
+                inputs = input_kwargs["inputs"]
+                modified = UserMsg(
+                    name=inputs.name,
+                    content="MODIFIED by outer middleware",
+                )
+                async for item in next_handler(inputs=modified):
+                    yield item
+    
+        class TransparentMiddleware(MiddlewareBase):
+            """Middleware that calls next_handler() without passing kwargs."""
+    
+            async def on_reply(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., AsyncGenerator],
+            ) -> AsyncGenerator:
+                assert (
+                    "MODIFIED by outer middleware"
+                    in input_kwargs["inputs"].get_text_content()
+                )
+                async for item in next_handler():
+                    yield item
+    
+        received_messages = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received messages."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                received_messages.extend(kwargs.get("messages", []))
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [ChatResponse(content=[TextBlock(text="response")], is_last=True)],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[
+                ModifyInputMiddleware(),
+                TransparentMiddleware(),
+            ],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "original message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:631: TypeError
+_____________ TestMiddleware.test_on_reply_middleware_modify_input _____________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_reply_middleware_modify_input>
+
+    async def test_on_reply_middleware_modify_input(self) -> None:
+        """Test that on_reply middleware can modify msgs input."""
+    
+        class ModifyMsgsMiddleware(MiddlewareBase):
+            """Middleware that modifies the msgs input."""
+    
+            async def on_reply(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[..., AsyncGenerator],
+            ) -> AsyncGenerator:
+                """Modify inputs before passing to next handler."""
+                # Modify the message content
+                inputs = input_kwargs["inputs"]
+                if isinstance(inputs, Msg):
+                    modified_msg = UserMsg(
+                        name=inputs.name,
+                        content="MODIFIED: " + inputs.get_text_content(),
+                    )
+                    async for item in next_handler(inputs=modified_msg):
+                        yield item
+                else:
+                    async for item in next_handler(**input_kwargs):
+                        yield item
+    
+        middleware = ModifyMsgsMiddleware()
+    
+        # Track what message the model receives
+        received_messages = []
+    
+        class TrackingModel(MockModel):
+            """Model that tracks received messages."""
+    
+            async def _call_api(
+                self,
+                *args: Any,
+                **kwargs: Any,
+            ) -> ChatResponse:
+                """Track the messages and return mock response."""
+                messages = kwargs.get("messages", [])
+                received_messages.extend(messages)
+                return await super()._call_api(*args, **kwargs)
+    
+        tracking_model = TrackingModel()
+        tracking_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent_instance = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=tracking_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware],
+        )
+    
+>       await agent_instance.reply(UserMsg("user", "original message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:554: TypeError
+____________ TestMiddleware.test_on_reply_middleware_pre_post_yield ____________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_reply_middleware_pre_post_yield>
+
+    async def test_on_reply_middleware_pre_post_yield(self) -> None:
+        """Test on_reply middleware pre, post and yield positions."""
+    
+        class ReplyMiddleware(MiddlewareBase):
+            """Middleware for testing on_reply hook."""
+    
+            def __init__(self, log: list, name: str) -> None:
+                """Initialize the reply middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                """
+                self.log = log
+                self.name = name
+    
+            async def on_reply(
+                self,
+                agent: Agent,
+                input_kwargs: dict,
+                next_handler: Callable[[], AsyncGenerator],
+            ) -> AsyncGenerator:
+                """The on_reply middleware logic."""
+                self.log.append(f"{self.name}_pre")
+                async for item in next_handler():
+                    if isinstance(item, AgentEvent):
+                        self.log.append(f"{self.name}_{item.type}")
+                    elif isinstance(item, Msg):
+                        self.log.append(f"{self.name}_msg")
+                    yield item
+                self.log.append(f"{self.name}_post")
+    
+        middleware1 = ReplyMiddleware(self.execution_log, "mw1")
+        middleware2 = ReplyMiddleware(self.execution_log, "mw2")
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:91: TypeError
+_______________ TestMiddleware.test_on_system_prompt_middleware ________________
+
+self = <tests.agentsmith_fail2pass_1965.TestMiddleware testMethod=test_on_system_prompt_middleware>
+
+    async def test_on_system_prompt_middleware(self) -> None:
+        """Test on_system_prompt middleware (transformer pattern)."""
+    
+        class SystemPromptMiddleware(MiddlewareBase):
+            """Middleware for testing on_system_prompt hook."""
+    
+            def __init__(self, log: list, name: str, suffix: str) -> None:
+                """Initialize the system prompt middleware.
+    
+                Args:
+                    log: The execution log list.
+                    name: The middleware name.
+                    suffix: The suffix to append to the prompt.
+                """
+                self.log = log
+                self.name = name
+                self.suffix = suffix
+    
+            async def on_system_prompt(
+                self,
+                agent: Agent,
+                current_prompt: str,
+            ) -> str:
+                """The on_system_prompt middleware logic."""
+                self.log.append(f"{self.name}_executed")
+                return f"{current_prompt} {self.suffix}"
+    
+        middleware1 = SystemPromptMiddleware(
+            self.execution_log,
+            "mw1",
+            "[MW1]",
+        )
+        middleware2 = SystemPromptMiddleware(
+            self.execution_log,
+            "mw2",
+            "[MW2]",
+        )
+    
+        self.mock_model.set_responses(
+            [
+                ChatResponse(
+                    content=[TextBlock(text="test response")],
+                    is_last=True,
+                ),
+            ],
+        )
+    
+        agent = Agent(
+            name="test_agent",
+            system_prompt="test prompt",
+            model=self.mock_model,
+            toolkit=self.toolkit,
+            middlewares=[middleware1, middleware2],
+        )
+    
+>       await agent.reply(UserMsg("user", "test message"))
+E       TypeError: object async_generator can't be used in 'await' expression
+
+tests/agentsmith_fail2pass_1965.py:385: TypeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_multiple_middleware_types
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_acting_middleware_intercepts_tool_execution
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware_modify_instructions
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_middleware_short_circuit
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_compress_context_no_middleware
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_keeps_outer_messages_when_inner_omits_kwargs
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_keeps_outer_messages_with_partial_kwargs
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_modify_input
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_non_streaming
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_model_call_middleware_streaming
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reasoning_middleware_modify_input
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reasoning_middleware_pre_yield
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_keeps_outer_input_when_inner_omits_kwargs
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_middleware_modify_input
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_reply_middleware_pre_post_yield
+FAILED tests/agentsmith_fail2pass_1965.py::TestMiddleware::test_on_system_prompt_middleware
+============================== 17 failed in 1.68s ==============================

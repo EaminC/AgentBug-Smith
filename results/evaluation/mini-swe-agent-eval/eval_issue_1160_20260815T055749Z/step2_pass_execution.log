@@ -1,0 +1,100 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/agentsmith_fail2pass_1160.py::test_generate_summary_disables_structured_output_on_summarization_agent FAILED [ 50%]
+tests/agentsmith_fail2pass_1160.py::test_dedicated_summarization_agent_with_structured_output SKIPPED [100%]
+
+=================================== FAILURES ===================================
+___ test_generate_summary_disables_structured_output_on_summarization_agent ____
+
+    def test_generate_summary_disables_structured_output_on_summarization_agent():
+        """Test that structured output is disabled during summarization to avoid toolUse in user messages.
+    
+        When a summarization agent has structured_output_model configured, the response contains toolUse blocks.
+        Since the summary is converted to a user message, toolUse blocks would violate the model API constraint
+        that user messages cannot contain tool uses. The fix disables structured output during summarization.
+        """
+        summary_agent = create_mock_agent()
+        structured_output_model = Mock()
+        summary_agent._default_structured_output_model = structured_output_model
+    
+        original_call = summary_agent.__class__.__call__
+        observed_values = []
+    
+        def tracking_call(self, prompt):
+            observed_values.append(self._default_structured_output_model)
+            return original_call(self, prompt)
+    
+        messages: Messages = [
+            {"role": "user", "content": [{"text": "Hello"}]},
+            {"role": "assistant", "content": [{"text": "Hi there"}]},
+        ]
+    
+        manager = SummarizingConversationManager(summarization_agent=summary_agent)
+    
+        with patch.object(MockAgent, "__call__", tracking_call):
+>           manager._generate_summary(messages, create_mock_agent())
+
+tests/agentsmith_fail2pass_1160.py:65: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/strands/agent/conversation_manager/summarizing_conversation_manager.py:200: in _generate_summary
+    return self._generate_summary_with_agent(messages)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.agent.conversation_manager.summarizing_conversation_manager.SummarizingConversationManager object at 0x7b1a424f9f40>
+messages = [{'role': 'user', 'content': [{'text': 'Hello'}]}, {'role': 'assistant', 'content': [{'text': 'Hi there'}]}]
+
+    def _generate_summary_with_agent(self, messages: list[Message]) -> Message:
+        """Generate a summary using the dedicated summarization agent.
+    
+        Args:
+            messages: The messages to summarize.
+    
+        Returns:
+            A message containing the conversation summary.
+        """
+        summarization_agent = self.summarization_agent
+        assert summarization_agent is not None  # guaranteed by caller
+    
+        original_system_prompt = summarization_agent.system_prompt
+        original_messages = summarization_agent.messages.copy()
+        original_tool_registry = summarization_agent.tool_registry
+    
+        try:
+            # Add no-op tool if agent has no tools to satisfy tool spec requirement
+            if not summarization_agent.tool_names:
+                tool_registry = ToolRegistry()
+                tool_registry.register_tool(cast(AgentTool, noop_tool))
+                summarization_agent.tool_registry = tool_registry
+    
+            summarization_agent.messages = messages
+    
+            result = summarization_agent("Please summarize this conversation.")
+            print(f"Debug summary result: {result}")
+            # Remove toolUse content to comply with AWS Bedrock User message rules
+            content = []
+>           for c in result["message"]["content"]:
+                     ^^^^^^^^^^^^^^^^^
+E           TypeError: 'Mock' object is not subscriptable
+
+src/strands/agent/conversation_manager/summarizing_conversation_manager.py:355: TypeError
+----------------------------- Captured stdout call -----------------------------
+Debug summary result: <Mock id='135352711880944'>
+=============================== warnings summary ===============================
+../usr/local/lib/python3.12/site-packages/_pytest/config/__init__.py:1464
+  /usr/local/lib/python3.12/site-packages/_pytest/config/__init__.py:1464: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+--------------- generated xml file: /app/build/test-results.xml ----------------
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_1160.py::test_generate_summary_disables_structured_output_on_summarization_agent
+=================== 1 failed, 1 skipped, 1 warning in 0.36s ====================

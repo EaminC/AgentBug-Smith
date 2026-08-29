@@ -1,0 +1,68 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_3623.py::test_retry_usage_accumulation FAILED [100%]
+
+=================================== FAILURES ===================================
+________________________ test_retry_usage_accumulation _________________________
+
+    @pytest.mark.asyncio
+    async def test_retry_usage_accumulation():
+        """
+        Test that when AfterModelCallEvent.retry is set, the usage of the discarded call is still accumulated.
+    
+        This test reproduces the bug described in issue #3623:
+        When a hook retries a model call after a short response, the usage of the first call is dropped.
+        After the fix, the usage of both calls should be accumulated.
+        """
+    
+        # Prepare scripted responses with different usage
+        responses = [
+            "Short",
+            "This is a much longer and more detailed response",
+        ]
+        usages = [
+            {"inputTokens": 1000, "outputTokens": 1000, "totalTokens": 2000},
+            {"inputTokens": 7, "outputTokens": 7, "totalTokens": 14},
+        ]
+    
+        model = ScriptedModel(responses, usages)
+    
+        class MinLengthRetryHook:
+            def __init__(self, min_length=10):
+                self.min_length = min_length
+                self.call_count = 0
+    
+            def register_hooks(self, registry):
+                registry.add_callback(strands.hooks.AfterModelCallEvent, self.handle_after_model_call)
+    
+            async def handle_after_model_call(self, event):
+                self.call_count += 1
+                if event.stop_response:
+                    message = event.stop_response.message
+                    text_content = "".join(block.get("text", "") for block in message.get("content", []))
+                    if len(text_content) < self.min_length:
+                        event.retry = True
+    
+        retry_hook = MinLengthRetryHook(min_length=10)
+        agent = Agent(model=model, hooks=[retry_hook])
+    
+        result = agent("Generate a response")
+    
+        # The hook should have been called twice: once for the short response, once for the longer response
+>       assert retry_hook.call_count == 2
+E       assert 0 == 2
+E        +  where 0 = <tests.agentsmith_fail2pass_3623.test_retry_usage_accumulation.<locals>.MinLengthRetryHook object at 0x73489f8abc80>.call_count
+
+tests/agentsmith_fail2pass_3623.py:91: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Short
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_3623.py::test_retry_usage_accumulation - as...
+============================== 1 failed in 0.62s ===============================

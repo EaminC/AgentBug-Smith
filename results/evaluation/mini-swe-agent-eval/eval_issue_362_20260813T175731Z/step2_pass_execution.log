@@ -1,0 +1,147 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 3 items
+
+tests/agentsmith_fail2pass_362.py::test_structured_output_passes_system_prompt_to_bedrock_model FAILED [ 33%]
+tests/agentsmith_fail2pass_362.py::test_structured_output_fails_without_system_prompt_passed FAILED [ 66%]
+tests/agentsmith_fail2pass_362.py::test_agent_structured_output_with_multimodal_input_and_system_prompt FAILED [100%]
+
+=================================== FAILURES ===================================
+_________ test_structured_output_passes_system_prompt_to_bedrock_model _________
+
+    @pytest.mark.asyncio
+    async def test_structured_output_passes_system_prompt_to_bedrock_model():
+        # Prepare a BedrockModel with a mock structured_output method that records the system_prompt argument
+        class TestBedrockModel(BedrockModel):
+            def __init__(self):
+                super().__init__(
+                    model_id="eu.amazon.nova-lite-v1:0",
+                    temperature=0.0,
+                    top_p=0.5,
+                    region_name="eu-central-1",
+                    streaming=False,
+                    cache_prompt="default",
+                )
+                self.last_system_prompt = None
+    
+            async def structured_output(self, output_model, prompt: Messages, system_prompt=None, **kwargs):
+                # Record the system_prompt argument
+                self.last_system_prompt = system_prompt
+                # Yield a dummy output event
+                yield {"output": output_model(result="ok")}
+    
+        system_prompt_text = "You are a helpful assistant."
+        prompt_text = "Please provide structured output."
+    
+        model = TestBedrockModel()
+        agent = Agent(model=model, system_prompt=system_prompt_text)
+    
+        # Call structured_output on the agent, which should pass system_prompt to model.structured_output
+        result = await agent.structured_output_async(DummyOutputModel, prompt_text)
+    
+        # Assert the output is as expected
+        assert result.result == "ok"
+    
+        # Assert that the model's structured_output received the system_prompt
+>       assert model.last_system_prompt == system_prompt_text
+E       AssertionError: assert None == 'You are a helpful assistant.'
+E        +  where None = <tests.agentsmith_fail2pass_362.test_structured_output_passes_system_prompt_to_bedrock_model.<locals>.TestBedrockModel object at 0x725b39c67fb0>.last_system_prompt
+
+tests/agentsmith_fail2pass_362.py:47: AssertionError
+__________ test_structured_output_fails_without_system_prompt_passed ___________
+
+    @pytest.mark.asyncio
+    async def test_structured_output_fails_without_system_prompt_passed():
+        # This test is designed to fail on buggy code where system_prompt is not passed to BedrockModel.structured_output
+        # We simulate this by patching BedrockModel.structured_output to raise if system_prompt is None
+    
+        class TestBedrockModel(BedrockModel):
+            async def structured_output(self, output_model, prompt: Messages, system_prompt=None, **kwargs):
+                if system_prompt is None:
+                    raise ValueError("system_prompt was not passed")
+                yield {"output": output_model(result="ok")}
+    
+        system_prompt_text = "System prompt required"
+        prompt_text = "Test prompt"
+    
+        model = TestBedrockModel()
+        agent = Agent(model=model, system_prompt=system_prompt_text)
+    
+        # The following call should NOT raise if system_prompt is passed correctly
+>       result = await agent.structured_output_async(DummyOutputModel, prompt_text)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_362.py:77: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/strands/agent/agent.py:461: in structured_output_async
+    async for event in events:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.agentsmith_fail2pass_362.test_structured_output_fails_without_system_prompt_passed.<locals>.TestBedrockModel object at 0x725b39127f20>
+output_model = <class 'tests.agentsmith_fail2pass_362.DummyOutputModel'>
+prompt = [{'role': 'user', 'content': [{'text': 'Test prompt'}]}]
+system_prompt = None, kwargs = {}
+
+    async def structured_output(self, output_model, prompt: Messages, system_prompt=None, **kwargs):
+        if system_prompt is None:
+>           raise ValueError("system_prompt was not passed")
+E           ValueError: system_prompt was not passed
+
+tests/agentsmith_fail2pass_362.py:67: ValueError
+_____ test_agent_structured_output_with_multimodal_input_and_system_prompt _____
+
+    @pytest.mark.asyncio
+    async def test_agent_structured_output_with_multimodal_input_and_system_prompt():
+        # Test that structured_output passes system_prompt correctly when prompt is multimodal (list of dicts)
+        class TestBedrockModel(BedrockModel):
+            def __init__(self):
+                super().__init__(
+                    model_id="eu.amazon.nova-lite-v1:0",
+                    temperature=0.0,
+                    top_p=0.5,
+                    region_name="eu-central-1",
+                    streaming=False,
+                    cache_prompt="default",
+                )
+                self.last_system_prompt = None
+                self.last_prompt = None
+    
+            async def structured_output(self, output_model, prompt: Messages, system_prompt=None, **kwargs):
+                self.last_system_prompt = system_prompt
+                self.last_prompt = prompt
+                yield {"output": output_model(result="ok")}
+    
+        system_prompt_text = "System prompt for multimodal test"
+        prompt = [
+            {"text": "Describe this image:"},
+            {
+                "image": {
+                    "format": "png",
+                    "source": {
+                        "bytes": b"\x89PNG\r\n\x1a\n",
+                    },
+                }
+            },
+        ]
+    
+        model = TestBedrockModel()
+        agent = Agent(model=model, system_prompt=system_prompt_text)
+    
+        result = await agent.structured_output_async(DummyOutputModel, prompt)
+    
+        assert result.result == "ok"
+>       assert model.last_system_prompt == system_prompt_text
+E       AssertionError: assert None == 'System prompt for multimodal test'
+E        +  where None = <tests.agentsmith_fail2pass_362.test_agent_structured_output_with_multimodal_input_and_system_prompt.<locals>.TestBedrockModel object at 0x725b3905a0f0>.last_system_prompt
+
+tests/agentsmith_fail2pass_362.py:129: AssertionError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_362.py::test_structured_output_passes_system_prompt_to_bedrock_model
+FAILED tests/agentsmith_fail2pass_362.py::test_structured_output_fails_without_system_prompt_passed
+FAILED tests/agentsmith_fail2pass_362.py::test_agent_structured_output_with_multimodal_input_and_system_prompt
+============================== 3 failed in 6.46s ===============================
