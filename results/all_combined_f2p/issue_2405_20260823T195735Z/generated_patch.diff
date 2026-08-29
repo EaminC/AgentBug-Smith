@@ -1,0 +1,324 @@
+diff --git a/strands-py/src/strands/models/openai_responses.py b/strands-py/src/strands/models/openai_responses.py
+index 8914fb01c..c1ece5f46 100644
+--- a/strands-py/src/strands/models/openai_responses.py
++++ b/strands-py/src/strands/models/openai_responses.py
+@@ -507,6 +507,8 @@ class OpenAIResponsesModel(Model):
+         else:
+             raise ValueError("No valid parsed output found in the OpenAI Responses API response.")
+ 
++
++    @classmethod
+     def _format_request(
+         self,
+         messages: Messages,
+@@ -549,8 +551,10 @@ class OpenAIResponsesModel(Model):
+ 
+         # Add tools if provided
+         if tool_specs:
+-            # Merge with any built-in tools (e.g. web_search) already in the request from params
+-            request.setdefault("tools", []).extend(
++            # Copy existing tools list to avoid mutating shared list in config
++            existing_tools = request.get("tools", [])
++            tools_copy = existing_tools.copy()
++            tools_copy.extend(
+                 {
+                     "type": "function",
+                     "name": tool_spec["name"],
+@@ -559,296 +563,7 @@ class OpenAIResponsesModel(Model):
+                 }
+                 for tool_spec in tool_specs
+             )
++            request["tools"] = tools_copy
+             request.update(self._format_request_tool_choice(tool_choice))
+ 
+         return request
+-
+-    @classmethod
+-    def _format_request_tool_choice(cls, tool_choice: ToolChoice | None) -> dict[str, Any]:
+-        """Format a tool choice for OpenAI Responses API compatibility.
+-
+-        Args:
+-            tool_choice: Tool choice configuration.
+-
+-        Returns:
+-            OpenAI Responses API compatible tool choice format.
+-        """
+-        if not tool_choice:
+-            return {}
+-
+-        match tool_choice:
+-            case {"auto": _}:
+-                return {"tool_choice": "auto"}
+-            case {"any": _}:
+-                return {"tool_choice": "required"}
+-            case {"tool": {"name": tool_name}}:
+-                return {"tool_choice": {"type": "function", "name": tool_name}}
+-            case _:
+-                # Default to auto for unknown formats
+-                return {"tool_choice": "auto"}
+-
+-    @classmethod
+-    def _format_request_messages(cls, messages: Messages) -> list[dict[str, Any]]:
+-        """Format an OpenAI compatible messages array.
+-
+-        Args:
+-            messages: List of message objects to be processed by the model.
+-
+-        Returns:
+-            An OpenAI compatible messages array.
+-        """
+-        formatted_messages: list[dict[str, Any]] = []
+-
+-        for message in messages:
+-            role = message["role"]
+-            contents = message["content"]
+-
+-            if any("reasoningContent" in content for content in contents):
+-                logger.warning(
+-                    "reasoningContent is not yet supported in multi-turn conversations with the Responses API"
+-                )
+-
+-            formatted_contents = [
+-                cls._format_request_message_content(content, role=role)
+-                for content in contents
+-                if not any(block_type in content for block_type in ["toolResult", "toolUse", "reasoningContent"])
+-            ]
+-
+-            formatted_tool_calls = [
+-                cls._format_request_message_tool_call(content["toolUse"])
+-                for content in contents
+-                if "toolUse" in content
+-            ]
+-
+-            formatted_tool_messages = [
+-                cls._format_request_tool_message(content["toolResult"])
+-                for content in contents
+-                if "toolResult" in content
+-            ]
+-
+-            if formatted_contents:
+-                formatted_messages.append(
+-                    {
+-                        "role": role,  # "user" | "assistant"
+-                        "content": formatted_contents,
+-                    }
+-                )
+-
+-            formatted_messages.extend(formatted_tool_calls)
+-            formatted_messages.extend(formatted_tool_messages)
+-
+-        return [
+-            message
+-            for message in formatted_messages
+-            if message.get("content") or message.get("type") in ["function_call", "function_call_output"]
+-        ]
+-
+-    @classmethod
+-    def _format_request_message_content(cls, content: ContentBlock, *, role: Role = "user") -> dict[str, Any]:
+-        """Format an OpenAI compatible content block.
+-
+-        Args:
+-            content: Message content.
+-            role: Message role ("user" or "assistant"). Controls text content
+-                type: "input_text" for user, "output_text" for assistant.
+-
+-        Returns:
+-            OpenAI compatible content block.
+-
+-        Raises:
+-            TypeError: If the content block type cannot be converted to an OpenAI-compatible format.
+-            ValueError: If the image or document size exceeds the maximum allowed size (20MB).
+-        """
+-        if "document" in content:
+-            doc = content["document"]
+-            data_url = _encode_media_to_data_url(doc["source"]["bytes"], doc["format"], "document")
+-            return {"type": "input_file", "file_url": data_url}
+-
+-        if "image" in content:
+-            img = content["image"]
+-            data_url = _encode_media_to_data_url(img["source"]["bytes"], img["format"], "image")
+-            return {"type": "input_image", "image_url": data_url}
+-
+-        if "text" in content:
+-            text_type = "output_text" if role == "assistant" else "input_text"
+-            return {"type": text_type, "text": content["text"]}
+-
+-        if "citationsContent" in content:
+-            text = "".join(c["text"] for c in content["citationsContent"].get("content", []) if "text" in c)
+-            text_type = "output_text" if role == "assistant" else "input_text"
+-            return {"type": text_type, "text": text}
+-
+-        raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+-
+-    @classmethod
+-    def _format_request_message_tool_call(cls, tool_use: ToolUse) -> dict[str, Any]:
+-        """Format an OpenAI compatible tool call.
+-
+-        Args:
+-            tool_use: Tool use requested by the model.
+-
+-        Returns:
+-            OpenAI compatible tool call.
+-        """
+-        return {
+-            "type": "function_call",
+-            "call_id": tool_use["toolUseId"],
+-            "name": tool_use["name"],
+-            "arguments": json.dumps(tool_use["input"]),
+-        }
+-
+-    @classmethod
+-    def _format_request_tool_message(cls, tool_result: ToolResult) -> dict[str, Any]:
+-        """Format an OpenAI compatible tool message.
+-
+-        Args:
+-            tool_result: Tool result collected from a tool execution.
+-
+-        Returns:
+-            OpenAI compatible tool message.
+-
+-        Raises:
+-            ValueError: If the image or document size exceeds the maximum allowed size (20MB).
+-
+-        Note:
+-            The Responses API's function_call_output can be either a string (typically JSON encoded)
+-            or an array of content objects when returning images/files.
+-            See: https://platform.openai.com/docs/guides/function-calling
+-        """
+-        output_parts: list[dict[str, Any]] = []
+-        has_media = False
+-
+-        for content in tool_result["content"]:
+-            if "json" in content:
+-                output_parts.append({"type": "input_text", "text": json.dumps(content["json"])})
+-            elif "text" in content:
+-                output_parts.append({"type": "input_text", "text": content["text"]})
+-            elif "image" in content:
+-                has_media = True
+-                img = content["image"]
+-                data_url = _encode_media_to_data_url(img["source"]["bytes"], img["format"], "image")
+-                output_parts.append({"type": "input_image", "image_url": data_url})
+-            elif "document" in content:
+-                has_media = True
+-                doc = content["document"]
+-                data_url = _encode_media_to_data_url(doc["source"]["bytes"], doc["format"], "document")
+-                output_parts.append({"type": "input_file", "file_url": data_url})
+-
+-        # Return array if has media content, otherwise join as string for simpler text-only cases
+-        output: list[dict[str, Any]] | str
+-        if has_media:
+-            output = output_parts
+-        else:
+-            output = "\n".join(part.get("text", "") for part in output_parts) if output_parts else ""
+-
+-        return {
+-            "type": "function_call_output",
+-            "call_id": tool_result["toolUseId"],
+-            "output": output,
+-        }
+-
+-    def _stream_switch_content(self, data_type: str, prev_data_type: str | None) -> tuple[list[StreamEvent], str]:
+-        """Handle switching to a new content stream.
+-
+-        Args:
+-            data_type: The next content data type.
+-            prev_data_type: The previous content data type.
+-
+-        Returns:
+-            Tuple containing:
+-            - Stop block for previous content and the start block for the next content.
+-            - Next content data type.
+-        """
+-        chunks: list[StreamEvent] = []
+-        if data_type != prev_data_type:
+-            if prev_data_type is not None:
+-                chunks.append(self._format_chunk({"chunk_type": "content_stop", "data_type": prev_data_type}))
+-            chunks.append(self._format_chunk({"chunk_type": "content_start", "data_type": data_type}))
+-
+-        return chunks, data_type
+-
+-    def _format_chunk(self, event: dict[str, Any]) -> StreamEvent:
+-        """Format an OpenAI response event into a standardized message chunk.
+-
+-        Args:
+-            event: A response event from the OpenAI compatible model.
+-
+-        Returns:
+-            The formatted chunk.
+-
+-        Raises:
+-            RuntimeError: If chunk_type is not recognized.
+-                This error should never be encountered as chunk_type is controlled in the stream method.
+-        """
+-        match event["chunk_type"]:
+-            case "message_start":
+-                return {"messageStart": {"role": "assistant"}}
+-
+-            case "content_start":
+-                if event["data_type"] == "tool":
+-                    return {
+-                        "contentBlockStart": {
+-                            "start": {
+-                                "toolUse": {
+-                                    "name": event["data"].function.name,
+-                                    "toolUseId": event["data"].id,
+-                                }
+-                            }
+-                        }
+-                    }
+-
+-                return {"contentBlockStart": {"start": {}}}
+-
+-            case "content_delta":
+-                if event["data_type"] == "tool":
+-                    return {
+-                        "contentBlockDelta": {"delta": {"toolUse": {"input": event["data"].function.arguments or ""}}}
+-                    }
+-
+-                if event["data_type"] == "reasoning_content":
+-                    return {"contentBlockDelta": {"delta": {"reasoningContent": {"text": event["data"]}}}}
+-
+-                if event["data_type"] == "citation":
+-                    web_location: WebLocationDict = {"web": {"url": event["data"].get("url", "")}}
+-                    return {
+-                        "contentBlockDelta": {
+-                            "delta": {
+-                                "citation": {
+-                                    "title": event["data"].get("title", ""),
+-                                    "location": web_location,
+-                                }
+-                            }
+-                        }
+-                    }
+-
+-                return {"contentBlockDelta": {"delta": {"text": event["data"]}}}
+-
+-            case "content_stop":
+-                return {"contentBlockStop": {}}
+-
+-            case "message_stop":
+-                match event["data"]:
+-                    case "tool_calls":
+-                        return {"messageStop": {"stopReason": "tool_use"}}
+-                    case "length":
+-                        return {"messageStop": {"stopReason": "max_tokens"}}
+-                    case _:
+-                        return {"messageStop": {"stopReason": "end_turn"}}
+-
+-            case "metadata":
+-                # Responses API uses input_tokens/output_tokens naming convention
+-                return {
+-                    "metadata": {
+-                        "usage": {
+-                            "inputTokens": getattr(event["data"], "input_tokens", 0),
+-                            "outputTokens": getattr(event["data"], "output_tokens", 0),
+-                            "totalTokens": getattr(event["data"], "total_tokens", 0),
+-                        },
+-                        "metrics": {
+-                            "latencyMs": 0,  # TODO
+-                        },
+-                    },
+-                }
+-
+-            case _:
+-                raise RuntimeError(f"chunk_type=<{event['chunk_type']}> | unknown type")

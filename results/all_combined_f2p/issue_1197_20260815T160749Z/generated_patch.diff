@@ -1,0 +1,196 @@
+diff --git a/src/strands/event_loop/event_loop.py b/src/strands/event_loop/event_loop.py
+index 374cfe129..c15394404 100644
+--- a/src/strands/event_loop/event_loop.py
++++ b/src/strands/event_loop/event_loop.py
+@@ -160,44 +160,61 @@ async def event_loop_cycle(
+             yield ModelMessageEvent(message=message)
+ 
+         try:
+-            if stop_reason == "max_tokens":
+-                """
+-                Handle max_tokens limit reached by the model.
+-
+-                When the model reaches its maximum token limit, this represents a potentially unrecoverable
+-                state where the model's response was truncated. By default, Strands fails hard with an
+-                MaxTokensReachedException to maintain consistency with other failure types.
+-                """
+-                raise MaxTokensReachedException(
+-                    message=(
+-                        "Agent has reached an unrecoverable state due to max_tokens limit. "
+-                        "For more information see: "
+-                        "https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+-                    )
+-                )
+-
+-            if stop_reason == "tool_use":
+-                # Handle tool execution
+-                tool_events = _handle_tool_execution(
+-                    stop_reason,
+-                    message,
+-                    agent=agent,
+-                    cycle_trace=cycle_trace,
+-                    cycle_span=cycle_span,
+-                    cycle_start_time=cycle_start_time,
+-                    invocation_state=invocation_state,
+-                    tracer=tracer,
+-                    structured_output_context=structured_output_context,
+-                )
+-                async for tool_event in tool_events:
+-                    yield tool_event
++            # Add message in trace and mark the end of the stream messages trace
++            stream_trace.add_message(message)
++            stream_trace.end()
++    
++            # Add the response message to the conversation
++            agent.messages.append(message)
++            await agent.hooks.invoke_callbacks_async(MessageAddedEvent(agent=agent, message=message))
++    
++            # Update metrics
++            agent_context_tokens = _calculate_context_tokens(agent.messages)
++            agent.event_loop_metrics.update_context_tokens(agent_context_tokens)
++            agent.event_loop_metrics.update_usage(usage)
++            agent.event_loop_metrics.update_metrics(metrics)
++    
++        except Exception as e:
++            yield ForceStopEvent(reason=e)
++            logger.exception("cycle failed")
++            raise EventLoopException(e, invocation_state["request_state"]) from e
++        
++    if stop_reason == "max_tokens":
++        """
++        Handle max_tokens limit reached by the model.
++        
++    When the model reaches its maximum token limit, this represents a potentially unrecoverable
++    state where the model's response was truncated. By default, Strands fails hard with an
++    MaxTokensReachedException to maintain consistency with other failure types.
++    """
++    raise MaxTokensReachedException(
++        message=(
++            "Agent has reached an unrecoverable state due to max_tokens limit. "
++            "For more information see: "
++            "https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
++        )
++    )
++    
++if stop_reason == "tool_use":
++    # Handle tool execution
++    tool_events = _handle_tool_execution(
++        stop_reason,
++        message,
++        agent=agent,
++        cycle_trace=cycle_trace,
++        cycle_span=cycle_span,
++    cycle_start_time=cycle_start_time,
++    invocation_state=invocation_state,
++    tracer=tracer,
++    structured_output_context=structured_output_context,
++)
++async for tool_event in tool_events:
+ 
+                 return
+ 
+-            # End the cycle and return results
+-            agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace, attributes)
+-            # Set attributes before span auto-closes
+-            tracer.end_event_loop_cycle_span(cycle_span, message)
++                # End the cycle and return results
++                # Set attributes before span auto-closes
++                tracer.end_event_loop_cycle_span(cycle_span, message)
+         except EventLoopException:
+             # Don't yield or log the exception - we already did it when we
+             # raised the exception and we don't need that duplication.
+@@ -330,6 +347,25 @@ async def _handle_model_execution(
+             else:
+                 tool_specs = agent.tool_registry.get_all_tool_specs()
+             try:
++    try:
++        # Add message in trace and mark the end of the stream messages trace
++        stream_trace.add_message(message)
++        stream_trace.end()
++
++        # Add the response message to the conversation
++        agent.messages.append(message)
++        await agent.hooks.invoke_callbacks_async(MessageAddedEvent(agent=agent, message=message))
++
++        # Update metrics
++        agent_context_tokens = _calculate_context_tokens(agent.messages)
++        agent.event_loop_metrics.update_context_tokens(agent_context_tokens)
++        agent.event_loop_metrics.update_usage(usage)
++        agent.event_loop_metrics.update_metrics(metrics)
++
++    except Exception as e:
++        yield ForceStopEvent(reason=e)
++        logger.exception("cycle failed")
++        raise EventLoopException(e, invocation_state["request_state"]) from e
+                 async for event in stream_messages(
+                     agent.model,
+                     agent.system_prompt,
+@@ -392,39 +428,8 @@ async def _handle_model_execution(
+ 
+                 # Check if hooks want to retry the model call
+                 if after_model_call_event.retry:
+-                    logger.debug(
+-                        "exception=<%s>, retry_requested=<True> | hook requested model retry",
+-                        type(e).__name__,
+-                    )
+-
+-                    continue  # Retry the model call
+-
+-                # No retry requested, raise the exception
+-                yield ForceStopEvent(reason=e)
+-                raise e
+-
+-    try:
+-        # Add message in trace and mark the end of the stream messages trace
+-        stream_trace.add_message(message)
+-        stream_trace.end()
+-
+-        # Add the response message to the conversation
+-        agent.messages.append(message)
+-        await agent.hooks.invoke_callbacks_async(MessageAddedEvent(agent=agent, message=message))
+-
+-        # Update metrics
+-        agent.event_loop_metrics.update_usage(usage)
+-        agent.event_loop_metrics.update_metrics(metrics)
+-
+-    except Exception as e:
+-        yield ForceStopEvent(reason=e)
+-        logger.exception("cycle failed")
+-        raise EventLoopException(e, invocation_state["request_state"]) from e
+-
+-
+-async def _handle_tool_execution(
+-    stop_reason: StopReason,
+-    message: Message,
++                        logger.debug(
++                            "exception=<%s>, retry_requested=<True> | hook requested model retry",
+     agent: "Agent",
+     cycle_trace: Trace,
+     cycle_span: Any,
+diff --git a/src/strands/telemetry/metrics.py b/src/strands/telemetry/metrics.py
+index 163df803a..4da6412da 100644
+--- a/src/strands/telemetry/metrics.py
++++ b/src/strands/telemetry/metrics.py
+@@ -182,6 +182,13 @@ class AgentInvocation:
+ 
+ @dataclass
+ class EventLoopMetrics:
++        self.event_loop_context_tokens = self.meter.create_histogram(
++            name=constants.STRANDS_EVENT_LOOP_CONTEXT_TOKENS, unit="token"
++        )
++    def update_context_tokens(self, context_tokens: int) -> None:
++        """Update context tokens metric."""
++        self._metrics_client.event_loop_context_tokens.record(context_tokens)
++        self.context_tokens = context_tokens
+     """Aggregated metrics for an event loop's execution.
+ 
+     Attributes:
+diff --git a/src/strands/telemetry/metrics_constants.py b/src/strands/telemetry/metrics_constants.py
+index 2e1047581..c95f2589c 100644
+--- a/src/strands/telemetry/metrics_constants.py
++++ b/src/strands/telemetry/metrics_constants.py
+@@ -16,3 +16,4 @@ STRANDS_EVENT_LOOP_OUTPUT_TOKENS = "strands.event_loop.output.tokens"
+ STRANDS_EVENT_LOOP_CACHE_READ_INPUT_TOKENS = "strands.event_loop.cache_read.input.tokens"
+ STRANDS_EVENT_LOOP_CACHE_WRITE_INPUT_TOKENS = "strands.event_loop.cache_write.input.tokens"
+ STRANDS_MODEL_TIME_TO_FIRST_TOKEN = "strands.model.time_to_first_token"
++STRANDS_EVENT_LOOP_CONTEXT_TOKENS = "strands.event_loop.context.tokens"
