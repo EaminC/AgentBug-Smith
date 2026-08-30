@@ -41,6 +41,8 @@ f2p_eval_results/
 
 import os
 import sys
+import re
+import ast
 import json
 import shutil
 import subprocess
@@ -50,11 +52,151 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 
+# ==========================================
+# Diff & AST Localization Extraction Utils
+# ==========================================
+
+def parse_patch_files_and_hunks(patch_text: str) -> dict[str, list[dict]]:
+    """
+    Parses a unified diff string and extracts modified file paths and line ranges.
+    Returns: { file_path: [ { "old_start": int, "old_count": int, "hunk_header": str } ] }
+    """
+    files_hunks = {}
+    current_file = None
+    
+    # Matches: diff --git a/src/module.py b/src/module.py
+    diff_file_pattern = re.compile(r"^diff --git a/(.+?) b/(.+?)$")
+    # Matches: @@ -old_start,old_count +new_start,new_count @@ optional_func_header
+    hunk_pattern = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
+
+    for line in patch_text.splitlines():
+        file_match = diff_file_pattern.match(line)
+        if file_match:
+            current_file = file_match.group(2)
+            if current_file not in files_hunks:
+                files_hunks[current_file] = []
+            continue
+        
+        if current_file:
+            hunk_match = hunk_pattern.match(line)
+            if hunk_match:
+                old_start = int(hunk_match.group(1))
+                old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                header = hunk_match.group(5).strip()
+                files_hunks[current_file].append({
+                    "old_start": old_start,
+                    "old_count": old_count,
+                    "hunk_header": header
+                })
+                
+    return files_hunks
+
+
+def extract_functions_from_ast(py_source: str) -> list[dict]:
+    """
+    Parses Python source code and extracts function/method line spans.
+    Returns: [ { "name": "Class.method" or "func", "start_line": int, "end_line": int } ]
+    """
+    try:
+        tree = ast.parse(py_source)
+    except SyntaxError:
+        return []
+
+    functions = []
+
+    def visit_node(node, parent_class=""):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func_name = f"{parent_class}.{child.name}" if parent_class else child.name
+                end_line = getattr(child, "end_lineno", child.lineno)
+                functions.append({
+                    "name": func_name,
+                    "start_line": child.lineno,
+                    "end_line": end_line
+                })
+                visit_node(child, parent_class=func_name)
+            elif isinstance(child, ast.ClassDef):
+                visit_node(child, parent_class=child.name)
+
+    visit_node(tree)
+    return functions
+
+
+def extract_modified_functions(workspace_repo: Path, patch_text: str) -> set[str]:
+    """
+    Maps modified lines in the diff back to function names in the workspace repository.
+    Returns a set of identifiers formatted as "filepath::FunctionName".
+    """
+    modified_functions = set()
+    files_hunks = parse_patch_files_and_hunks(patch_text)
+
+    for rel_file, hunks in files_hunks.items():
+        file_path = workspace_repo / rel_file
+        
+        if file_path.suffix == ".py" and file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+                ast_funcs = extract_functions_from_ast(content)
+                
+                for hunk in hunks:
+                    h_start = hunk["old_start"]
+                    h_end = h_start + max(1, hunk["old_count"]) - 1
+                    
+                    matched = False
+                    for f in ast_funcs:
+                        # Check overlap between hunk range and function span
+                        if not (h_end < f["start_line"] or h_start > f["end_line"]):
+                            modified_functions.add(f"{rel_file}::{f['name']}")
+                            matched = True
+                    
+                    # Fallback to hunk header signature if AST overlap finds no function
+                    if not matched and hunk["hunk_header"]:
+                        clean_hdr = hunk["hunk_header"].split("(")[0].strip()
+                        if clean_hdr.startswith("def ") or clean_hdr.startswith("class "):
+                            clean_hdr = clean_hdr.split(" ")[1]
+                        if clean_hdr:
+                            modified_functions.add(f"{rel_file}::{clean_hdr}")
+            except Exception:
+                pass
+        else:
+            # Fallback for non-python files or missing files: use hunk headers
+            for hunk in hunks:
+                if hunk["hunk_header"]:
+                    modified_functions.add(f"{rel_file}::{hunk['hunk_header']}")
+                else:
+                    modified_functions.add(f"{rel_file}::<module>")
+
+    return modified_functions
+
+
+def calculate_metrics(predicted: set, ground_truth: set) -> dict:
+    """Computes Precision, Recall, F1, and Binary Hit for set-based localization."""
+    if not ground_truth and not predicted:
+        return {"precision": 1.0, "recall": 1.0, "f1": 1.0, "hit": 1}
+    if not predicted:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "hit": 0}
+    if not ground_truth:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "hit": 0}
+
+    intersection = predicted.intersection(ground_truth)
+    precision = len(intersection) / len(predicted)
+    recall = len(intersection) / len(ground_truth)
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    hit = 1 if len(intersection) > 0 else 0
+
+    return {
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1": round(f1, 4),
+        "hit": hit
+    }
+
+
+# ==========================================
+# Build, Environment & Execution Utilities
+# ==========================================
+
 def get_normalized_package_name(workspace_repo: Path) -> str | None:
-    """
-    Extracts package name from pyproject.toml or setup.py and normalizes it
-    according to PEP 503 / setuptools-scm conventions (uppercase, hyphens to underscores).
-    """
     pyproject_path = workspace_repo / "pyproject.toml"
     if pyproject_path.exists():
         try:
@@ -75,12 +217,10 @@ def get_normalized_package_name(workspace_repo: Path) -> str | None:
                 return re.sub(r"[-_.]+", "_", match.group(1)).upper()
         except Exception:
             pass
-
     return None
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    """Runs a subprocess command with clean logging."""
     print(f"[EXEC] {' '.join(cmd)}")
     return subprocess.run(
         cmd,
@@ -96,9 +236,7 @@ def inject_real_env_keys(
     output_dockerfile_path: Path, 
     workspace_repo: Path | None = None
 ) -> None:
-    """Replaces placeholder API keys in env.dockerfile with host environment variables."""
     content = dockerfile_path.read_text(encoding="utf-8")
-
     key_mappings = {
         "FORGE_API_KEY": os.getenv("FORGE_API_KEY", "forge_key"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "openai_key"),
@@ -119,7 +257,6 @@ def inject_real_env_keys(
         "RUN git config --global --add safe.directory '*' || true",
     ]
 
-    # Dynamically resolve target repository name if available
     if workspace_repo and workspace_repo.exists():
         pkg_name = get_normalized_package_name(workspace_repo)
         if pkg_name:
@@ -129,9 +266,7 @@ def inject_real_env_keys(
     
     lines = []
     from_found = False
-
     for line in content.splitlines():
-        # Replace dummy env values
         replaced = False
         for env_var, real_val in key_mappings.items():
             if line.strip().startswith(f"ENV {env_var}=") or line.strip().startswith(f'ENV "{env_var}"='):
@@ -142,12 +277,10 @@ def inject_real_env_keys(
         if not replaced:
             lines.append(line)
 
-        # Inject right after the first FROM instruction
         if not from_found and line.strip().upper().startswith("FROM "):
             lines.extend(injected_flags)
             from_found = True
 
-    # Fallback if no FROM was detected for any reason
     if not from_found:
         lines = injected_flags + lines
 
@@ -160,7 +293,6 @@ def run_test_in_container(
     relative_test_path: str,
     timeout_seconds: int = 300
 ) -> tuple[int, str]:
-    """Runs pytest inside the Docker container and returns (exit_code, output_log)."""
     docker_cmd = [
         "docker", "run", "--rm",
         "-v", f"{workspace_repo.resolve()}:/app",
@@ -179,36 +311,28 @@ def run_test_in_container(
         )
         return proc.returncode, proc.stdout
     except subprocess.TimeoutExpired:
-        return -1, "Test execution timed out inside the container."
+        return -1, "Test execution timed out inside container."
     except Exception as e:
         return -2, f"Failed to execute test container: {str(e)}"
 
 
-def apply_patch_to_workspace(
-    workspace_repo: Path,
+def get_patch_content(
     patch_mode: str,
     issue_data: dict,
     custom_patches_dir: Path | None,
     issue_folder_name: str
-) -> tuple[bool, str]:
-    """
-    Applies either:
-    1. The ground-truth patch extracted from issue_*.json (linked_prs[0].patch)
-    2. A custom/generated patch from an external folder (e.g. mini-swe-agent output)
-    """
-    patch_content = ""
-
+) -> tuple[str, str]:
+    """Extracts raw patch text according to the selected mode."""
     if patch_mode == "issue_json":
         linked_prs = issue_data.get("linked_prs", [])
         if not linked_prs or not linked_prs[0].get("patch"):
-            return False, "No patch found inside linked_prs in issue JSON."
-        patch_content = linked_prs[0]["patch"]
+            return "", "No patch found inside linked_prs in issue JSON."
+        return linked_prs[0]["patch"], ""
 
     elif patch_mode == "generated_diff":
         if not custom_patches_dir:
-            return False, "--custom-patches-dir must be specified when using 'generated_diff' mode."
+            return "", "--custom-patches-dir must be specified when using 'generated_diff' mode."
         
-        # Look for patch files named generated_patch.diff, patch.diff, or *.diff
         candidate_dirs = [
             custom_patches_dir / f"result_{issue_folder_name}",
             custom_patches_dir / issue_folder_name,
@@ -226,21 +350,23 @@ def apply_patch_to_workspace(
                 break
 
         if not patch_file:
-            return False, f"Could not find patch diff in {custom_patches_dir} for {issue_folder_name}."
+            return "", f"Could not find patch diff in {custom_patches_dir} for {issue_folder_name}."
         
-        patch_content = patch_file.read_text(encoding="utf-8")
+        return patch_file.read_text(encoding="utf-8"), ""
 
+    return "", "Invalid patch mode"
+
+
+def apply_patch_text(workspace_repo: Path, patch_content: str) -> tuple[bool, str]:
     if not patch_content.strip():
         return False, "Patch content is empty."
 
-    # Normalize non-breaking spaces (\u00a0, \u200b) and line endings (\r\n -> \n)
     normalized_patch = (
         patch_content.replace("\u00a0", " ")
                      .replace("\u200b", "")
                      .replace("\r\n", "\n")
     )
 
-    # Write patch to a temporary file in workspace and apply via git apply
     temp_patch_path = workspace_repo / "temp_eval_patch.diff"
     temp_patch_path.write_text(normalized_patch, encoding="utf-8")
 
@@ -251,7 +377,6 @@ def apply_patch_to_workspace(
     )
 
     if apply_proc.returncode != 0:
-        # Fallback 1: 3-way merge apply
         apply_proc = run_cmd(
             ["git", "apply", "-3", "--ignore-space-change", "--ignore-whitespace", "--whitespace=nowarn", str(temp_patch_path.name)],
             cwd=workspace_repo,
@@ -259,21 +384,22 @@ def apply_patch_to_workspace(
         )
 
     if apply_proc.returncode != 0:
-        # Fallback 2: GNU patch utility with fuzz allowance
         apply_proc = run_cmd(
             ["patch", "-p1", "--ignore-whitespace", "-f", "-i", str(temp_patch_path.name)],
             cwd=workspace_repo,
             check=False
         )
 
-    # Clean up temp file
     temp_patch_path.unlink(missing_ok=True)
-
     if apply_proc.returncode != 0:
         return False, f"Git apply failed:\n{apply_proc.stderr or apply_proc.stdout}"
 
     return True, "Patch successfully applied."
 
+
+# ==========================================
+# Single Artifact Evaluation
+# ==========================================
 
 def evaluate_single_artifact(
     artifact_dir: Path,
@@ -282,7 +408,6 @@ def evaluate_single_artifact(
     patch_mode: str,
     custom_patches_dir: Path | None
 ) -> dict:
-    """Evaluates one issue folder for fail-to-pass status."""
     issue_folder_name = artifact_dir.name
     print("\n" + "=" * 60)
     print(f"[*] Testing Artifact: {issue_folder_name}")
@@ -312,6 +437,7 @@ def evaluate_single_artifact(
     issue_num = str(issue_data.get("number") or issue_folder_name)
     linked_prs = issue_data.get("linked_prs", [])
     base_sha = linked_prs[0].get("base_sha") if linked_prs else issue_data.get("base_sha")
+    gt_patch = linked_prs[0].get("patch", "") if linked_prs else ""
 
     raw_url = issue_data.get("url", "")
     repo_url = (raw_url.split("/issues/")[0] + ".git") if "/issues/" in raw_url else raw_url
@@ -326,8 +452,8 @@ def evaluate_single_artifact(
     image_tag = f"f2p-eval-env-{issue_num.lower()}:latest"
 
     try:
-        # STEP 1: CLONE & CHECKOUT BUGGY COMMIT
-        print(f"[1/5] Cloning repo and checking out base commit ({base_sha})...")
+        # STEP 1: CLONE & CHECKOUT
+        print(f"[1/6] Cloning repo and checking out base commit ({base_sha})...")
         if workspace_repo.exists():
             shutil.rmtree(workspace_repo)
 
@@ -348,8 +474,25 @@ def evaluate_single_artifact(
 
         relative_test_path = f"tests/{test_script_path.name}"
 
-        # STEP 2: BUILD DOCKER ENVIRONMENT
-        print(f"[2/5] Building Docker environment '{image_tag}'...")
+        # STEP 2: FAULT LOCALIZATION ANALYSIS (File & Function Level)
+        print(f"[2/6] Computing File-Level and Function-Level Localization...")
+        gen_patch, err_msg = get_patch_content(patch_mode, issue_data, custom_patches_dir, issue_folder_name)
+        
+        gt_files = set(parse_patch_files_and_hunks(gt_patch).keys())
+        gen_files = set(parse_patch_files_and_hunks(gen_patch).keys()) if gen_patch else set()
+
+        file_metrics = calculate_metrics(gen_files, gt_files)
+
+        gt_funcs = extract_modified_functions(workspace_repo, gt_patch)
+        gen_funcs = extract_modified_functions(workspace_repo, gen_patch) if gen_patch else set()
+
+        func_metrics = calculate_metrics(gen_funcs, gt_funcs)
+
+        print(f"    -> File Loc  : Precision={file_metrics['precision']}, Recall={file_metrics['recall']}, Hit={file_metrics['hit']}")
+        print(f"    -> Func Loc  : Precision={func_metrics['precision']}, Recall={func_metrics['recall']}, Hit={func_metrics['hit']}")
+
+        # STEP 3: BUILD DOCKER ENVIRONMENT
+        print(f"[3/6] Building Docker environment '{image_tag}'...")
         sanitized_dockerfile = eval_output_dir / "env.dockerfile"
         inject_real_env_keys(
             dockerfile_path=dockerfile_path,
@@ -365,46 +508,67 @@ def evaluate_single_artifact(
                 str(workspace_repo.resolve())
             ])
         except subprocess.CalledProcessError as e:
-            return {"issue": issue_folder_name, "verdict": "ERROR", "reason": "docker_build_failed", "details": e.stderr}
+            return {
+                "issue": issue_folder_name,
+                "verdict": "ERROR",
+                "reason": "docker_build_failed",
+                "file_localization": file_metrics,
+                "function_localization": func_metrics,
+                "details": e.stderr
+            }
 
-        # STEP 3: RUN TEST ON BUGGY REPO (MUST FAIL)
-        print(f"[3/5] Verifying FAIL state on buggy commit...")
+        # STEP 4: RUN TEST ON BUGGY REPO (MUST FAIL)
+        print(f"[4/6] Verifying FAIL state on buggy commit...")
         fail_code, fail_output = run_test_in_container(image_tag, workspace_repo, relative_test_path)
         fail_log_path.write_text(fail_output, encoding="utf-8")
 
         if fail_code == 0:
-            print("[-] FAIL Verification Failed: Test passed on the buggy commit (Expected Failure).")
+            print("[-] FAIL Verification Failed: Test unexpectedly passed on base commit.")
             return {
                 "issue": issue_folder_name,
                 "verdict": "FAIL_VERIFICATION_FAILED",
-                "reason": "Test unexpectedly passed on base commit (No bug detected)."
+                "reason": "Test unexpectedly passed on base commit (No bug detected).",
+                "file_localization": file_metrics,
+                "function_localization": func_metrics
             }
         print("[+] Test successfully FAILED on base commit as expected.")
 
-        # STEP 4: APPLY PATCH
-        print(f"[4/5] Applying patch using mode '{patch_mode}'...")
-        applied_ok, apply_msg = apply_patch_to_workspace(
-            workspace_repo=workspace_repo,
-            patch_mode=patch_mode,
-            issue_data=issue_data,
-            custom_patches_dir=custom_patches_dir,
-            issue_folder_name=issue_folder_name
-        )
+        # STEP 5: APPLY PATCH
+        print(f"[5/6] Applying patch using mode '{patch_mode}'...")
+        if not gen_patch:
+            print(f"[-] Patch retrieval failed: {err_msg}")
+            return {
+                "issue": issue_folder_name,
+                "verdict": "PATCH_APPLY_FAILED",
+                "reason": err_msg,
+                "file_localization": file_metrics,
+                "function_localization": func_metrics
+            }
+
+        applied_ok, apply_msg = apply_patch_text(workspace_repo, gen_patch)
         if not applied_ok:
             print(f"[-] Patch application failed: {apply_msg}")
-            return {"issue": issue_folder_name, "verdict": "PATCH_APPLY_FAILED", "reason": apply_msg}
+            return {
+                "issue": issue_folder_name,
+                "verdict": "PATCH_APPLY_FAILED",
+                "reason": apply_msg,
+                "file_localization": file_metrics,
+                "function_localization": func_metrics
+            }
 
-        # STEP 5: RUN TEST ON PATCHED REPO (MUST PASS)
-        print(f"[5/5] Verifying PASS state on patched codebase...")
+        # STEP 6: RUN TEST ON PATCHED REPO (MUST PASS)
+        print(f"[6/6] Verifying PASS state on patched codebase...")
         pass_code, pass_output = run_test_in_container(image_tag, workspace_repo, relative_test_path)
         pass_log_path.write_text(pass_output, encoding="utf-8")
 
         if pass_code != 0:
-            print("[-] PASS Verification Failed: Test failed after patch was applied.")
+            print("[-] PASS Verification Failed: Test failed after patch applied.")
             return {
                 "issue": issue_folder_name,
                 "verdict": "PASS_VERIFICATION_FAILED",
-                "reason": "Test still failing after patch applied."
+                "reason": "Test still failing after patch applied.",
+                "file_localization": file_metrics,
+                "function_localization": func_metrics
             }
 
         print("[✓] SUCCESS: Verified Fail-to-Pass (F2P) reproducibility.")
@@ -412,11 +576,16 @@ def evaluate_single_artifact(
             "issue": issue_folder_name,
             "verdict": "F2P_SUCCESS",
             "base_sha": base_sha,
-            "test_file": relative_test_path
+            "test_file": relative_test_path,
+            "file_localization": file_metrics,
+            "function_localization": func_metrics,
+            "gt_files": list(gt_files),
+            "gen_files": list(gen_files),
+            "gt_functions": list(gt_funcs),
+            "gen_functions": list(gen_funcs)
         }
 
     finally:
-        # CLEANUP
         print(f"[*] Cleaning up workspace and image for {issue_folder_name}...")
         if workspace_repo.exists():
             shutil.rmtree(workspace_repo, ignore_errors=True)
@@ -426,8 +595,12 @@ def evaluate_single_artifact(
             pass
 
 
+# ==========================================
+# Main CLI & Aggregator
+# ==========================================
+
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Fail-to-Pass (F2P) behavior across saved SWE issue artifacts.")
+    parser = argparse.ArgumentParser(description="Evaluate Fail-to-Pass (F2P) behavior and Fault Localization across SWE issue artifacts.")
     parser.add_argument(
         "--artifacts-dir",
         type=Path,
@@ -486,13 +659,36 @@ def main():
         if args.repos_cache.exists():
             shutil.rmtree(args.repos_cache, ignore_errors=True)
 
-    # Compile Summary
+    # Compile Summary Metrics
+    total = len(results)
     success_count = sum(1 for r in results if r.get("verdict") == "F2P_SUCCESS")
+    
+    # Macro-averaged Localization Metrics
+    file_precisions = [r["file_localization"]["precision"] for r in results if "file_localization" in r]
+    file_recalls = [r["file_localization"]["recall"] for r in results if "file_localization" in r]
+    file_hits = [r["file_localization"]["hit"] for r in results if "file_localization" in r]
+
+    func_precisions = [r["function_localization"]["precision"] for r in results if "function_localization" in r]
+    func_recalls = [r["function_localization"]["recall"] for r in results if "function_localization" in r]
+    func_hits = [r["function_localization"]["hit"] for r in results if "function_localization" in r]
+
     summary = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "total_evaluated": len(artifact_folders),
+        "total_evaluated": total,
         "f2p_success_count": success_count,
-        "f2p_success_rate": f"{(success_count / len(artifact_folders) * 100):.2f}%" if artifact_folders else "0%",
+        "f2p_success_rate": f"{(success_count / total * 100):.2f}%" if total else "0%",
+        "aggregate_localization": {
+            "file_level": {
+                "macro_precision": round(sum(file_precisions) / len(file_precisions), 4) if file_precisions else 0.0,
+                "macro_recall": round(sum(file_recalls) / len(file_recalls), 4) if file_recalls else 0.0,
+                "hit_rate": round(sum(file_hits) / len(file_hits), 4) if file_hits else 0.0
+            },
+            "function_level": {
+                "macro_precision": round(sum(func_precisions) / len(func_precisions), 4) if func_precisions else 0.0,
+                "macro_recall": round(sum(func_recalls) / len(func_recalls), 4) if func_recalls else 0.0,
+                "hit_rate": round(sum(func_hits) / len(func_hits), 4) if func_hits else 0.0
+            }
+        },
         "results": results
     }
 
@@ -500,9 +696,11 @@ def main():
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print("\n" + "=" * 60)
-    print(f"[✓] F2P Evaluation Complete!")
-    print(f"[✓] Success Rate: {summary['f2p_success_rate']} ({success_count}/{len(artifact_folders)})")
-    print(f"[✓] Detailed summary written to: {summary_file}")
+    print(f"[✓] Evaluation Complete!")
+    print(f"[✓] F2P Resolution Rate : {summary['f2p_success_rate']} ({success_count}/{total})")
+    print(f"[✓] File Loc Hit Rate   : {summary['aggregate_localization']['file_level']['hit_rate'] * 100:.2f}%")
+    print(f"[✓] Func Loc Hit Rate   : {summary['aggregate_localization']['function_level']['hit_rate'] * 100:.2f}%")
+    print(f"[✓] Summary written to   : {summary_file}")
     print("=" * 60)
 
 
