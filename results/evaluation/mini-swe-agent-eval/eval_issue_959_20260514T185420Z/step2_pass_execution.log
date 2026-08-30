@@ -1,0 +1,201 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0, xdist-3.8.0, timeout-2.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_959.py::TestResetEquippedToolsFail2Pass::test_reset_equipped_tools_resets_groups FAILED [100%]
+
+=================================== FAILURES ===================================
+___ TestResetEquippedToolsFail2Pass.test_reset_equipped_tools_resets_groups ____
+
+self = <tests.agentsmith_fail2pass_959.TestResetEquippedToolsFail2Pass testMethod=test_reset_equipped_tools_resets_groups>
+
+    async def test_reset_equipped_tools_resets_groups(self) -> None:
+        # 1. Activate group_a only
+        res = await self.toolkit.call_tool_function(
+            ToolUseBlock(
+                type="tool_use",
+                id="1",
+                name="reset_equipped_tools",
+                input={"group_a": True},
+            ),
+        )
+        texts = []
+        async for chunk in res:
+            texts.append(chunk.content[0]["text"])
+        self.assertTrue(any("group_a" in t for t in texts))
+    
+        schemas = self.toolkit.get_json_schemas()
+        tool_names = {schema["function"]["name"] for schema in schemas}
+        self.assertIn("reset_equipped_tools", tool_names)
+        self.assertIn("tool_a", tool_names)
+        self.assertNotIn("tool_b", tool_names)
+    
+        # 2. Activate group_b only (second call)
+        # Pre-patch: group_a was NOT deactivated, so tool_a remained in schemas (FAILS rc1=1)
+        # Post-patch: group_a IS deactivated, so only tool_b and meta tool are active (PASSES rc2=0)
+        res = await self.toolkit.call_tool_function(
+            ToolUseBlock(
+                type="tool_use",
+                id="2",
+                name="reset_equipped_tools",
+                input={"group_b": True},
+            ),
+        )
+        texts = []
+        async for chunk in res:
+            texts.append(chunk.content[0]["text"])
+        self.assertTrue(any("group_b" in t for t in texts))
+    
+        schemas = self.toolkit.get_json_schemas()
+        tool_names = {schema["function"]["name"] for schema in schemas}
+        self.assertIn("reset_equipped_tools", tool_names)
+        self.assertIn("tool_b", tool_names)
+        self.assertNotIn("tool_a", tool_names)
+    
+        # 3. Calling an inactive group's tool function returns FunctionInactiveError
+>       res = await self.toolkit.call_tool_function(
+            ToolUseBlock(
+                type="tool_use",
+                id="3",
+                name="tool_a",
+                input={},
+            ),
+        )
+
+tests/agentsmith_fail2pass_959.py:111: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/agentscope/tracing/_trace.py:313: in wrapper
+    return await func(self, tool_call=tool_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <agentscope.tool._toolkit.Toolkit object at 0x74de22834f80>
+tool_call = {'type': 'tool_use', 'id': '3', 'name': 'tool_a', 'input': {}}
+
+    @trace_toolkit
+    async def call_tool_function(
+        self,
+        tool_call: ToolUseBlock,
+    ) -> AsyncGenerator[ToolResponse, None]:
+        """Execute the tool function by the `ToolUseBlock` and return the
+        tool response chunk in unified streaming mode, i.e. an async
+        generator of `ToolResponse` objects.
+    
+        .. note:: The tool response chunk is **accumulated**.
+    
+        Args:
+            tool_call (`ToolUseBlock`):
+                A tool call block.
+    
+        Yields:
+            `ToolResponse`:
+                The tool response chunk, in accumulative manner.
+        """
+    
+        # Check
+        if tool_call["name"] not in self.tools:
+            return _object_wrapper(
+                ToolResponse(
+                    content=[
+                        TextBlock(
+                            type="text",
+                            text="FunctionNotFoundError: Cannot find the "
+                            f"function named {tool_call['name']}",
+                        ),
+                    ],
+                ),
+                None,
+            )
+    
+        # Prepare function and keyword arguments
+        tool_func = self.tools[tool_call["name"]]
+        kwargs = {
+            **tool_func.preset_kwargs,
+            **(tool_call.get("input", {}) or {}),
+        }
+    
+        # Prepare postprocess function
+        if tool_func.postprocess_func:
+            # Type: partial wraps the postprocess_func with tool_call bound,
+            # reducing it from (ToolUseBlock, ToolResponse) to (ToolResponse)
+            partial_postprocess_func: (
+                Callable[[ToolResponse], ToolResponse | None]
+                | Callable[[ToolResponse], Awaitable[ToolResponse | None]]
+            ) | None = partial(
+                tool_func.postprocess_func,
+                tool_call,
+            )
+        else:
+            partial_postprocess_func = None
+    
+        # Async function
+        try:
+            if inspect.iscoroutinefunction(tool_func.original_func):
+                try:
+                    res = await tool_func.original_func(**kwargs)
+                except asyncio.CancelledError:
+                    res = ToolResponse(
+                        content=[
+                            TextBlock(
+                                type="text",
+                                text="<system-info>"
+                                "The tool call has been interrupted "
+                                "by the user."
+                                "</system-info>",
+                            ),
+                        ],
+                        stream=True,
+                        is_last=True,
+                        is_interrupted=True,
+                    )
+    
+            else:
+                # When `tool_func.original_func` is Async generator function or
+                # Sync function
+                res = tool_func.original_func(**kwargs)
+    
+        except Exception as e:
+            res = ToolResponse(
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=f"Error: {e}",
+                    ),
+                ],
+            )
+    
+        # Handle different return type
+    
+        # If return an async generator
+        if isinstance(res, AsyncGenerator):
+            return _async_generator_wrapper(res, partial_postprocess_func)
+    
+        # If return a sync generator
+        if isinstance(res, Generator):
+            return _sync_generator_wrapper(res, partial_postprocess_func)
+    
+        if isinstance(res, ToolResponse):
+            return _object_wrapper(res, partial_postprocess_func)
+    
+>       raise TypeError(
+            "The tool function must return a ToolResponse object, or an "
+            "AsyncGenerator/Generator of ToolResponse objects, "
+            f"but got {type(res)}.",
+        )
+E       TypeError: The tool function must return a ToolResponse object, or an AsyncGenerator/Generator of ToolResponse objects, but got <class 'NoneType'>.
+
+src/agentscope/tool/_toolkit.py:697: TypeError
+=============================== warnings summary ===============================
+../usr/local/lib/python3.12/site-packages/dashscope/__init__.py:60
+  /usr/local/lib/python3.12/site-packages/dashscope/__init__.py:60: DeprecationWarning: The Assistants API (dashscope.assistants) is deprecated and will be removed in a future release. Please migrate to the Responses API. See https://help.aliyun.com/zh/model-studio/synchronous-call-api-reference for migration details.
+    from dashscope.assistants import Assistant, AssistantList, Assistants
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_959.py::TestResetEquippedToolsFail2Pass::test_reset_equipped_tools_resets_groups
+========================= 1 failed, 1 warning in 0.62s =========================
