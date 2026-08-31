@@ -1,0 +1,168 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/agentsmith_fail2pass_3494.py::test_filestorage_retrieve_accepts_bare_filename_and_stem FAILED [ 50%]
+tests/agentsmith_fail2pass_3494.py::test_run_asyncio_test FAILED         [100%]
+
+=================================== FAILURES ===================================
+___________ test_filestorage_retrieve_accepts_bare_filename_and_stem ___________
+
+    async def test_filestorage_retrieve_accepts_bare_filename_and_stem():
+        """Test that FileStorage.retrieve accepts bare filenames and stems as references.
+    
+        This test reproduces the bug where sandbox-bound FileStorage rejects bare filenames,
+        and the retrieve method does not accept stems without extensions as promised.
+    
+        The test will fail on the buggy codebase (raises KeyError) and pass after the fix.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Host storage (no sandbox)
+            host = FileStorage(tmpdir)
+            # Store content and get full reference path
+            reference = await host.store("tooluse_abc123_0", b"payload", "text/plain")
+            # Extract bare filename (with extension)
+            filename = Path(reference).name
+            # Extract stem (filename without extension)
+            stem = Path(reference).stem
+    
+            # Retrieve by full reference (should always succeed)
+            content_full, ctype_full = await host.retrieve(reference)
+            assert content_full == b"payload"
+            assert ctype_full == "text/plain"
+    
+            # Retrieve by bare filename (should succeed per docstring)
+            content_file, ctype_file = await host.retrieve(filename)
+            assert content_file == b"payload"
+            assert ctype_file == "text/plain"
+    
+            # Retrieve by stem (filename without extension) (should succeed per docstring)
+            content_stem, ctype_stem = await host.retrieve(stem)
+            assert content_stem == b"payload"
+            assert ctype_stem == "text/plain"
+    
+            # Now test sandbox-bound storage
+            sandbox = NotASandboxLocalEnvironment()
+            sandboxed = host.for_sandbox(sandbox)
+            sandbox_reference = await sandboxed.store("tooluse_abc123_1", b"payload2", "text/plain")
+            sandbox_filename = Path(sandbox_reference).name
+            sandbox_stem = Path(sandbox_reference).stem
+    
+            # Retrieve by full reference path (should succeed)
+            content_sandbox_full, ctype_sandbox_full = await sandboxed.retrieve(sandbox_reference)
+            assert content_sandbox_full == b"payload2"
+            assert ctype_sandbox_full == "text/plain"
+    
+            # Retrieve by bare filename (should succeed after fix)
+            content_sandbox_file, ctype_sandbox_file = await sandboxed.retrieve(sandbox_filename)
+            assert content_sandbox_file == b"payload2"
+            assert ctype_sandbox_file == "text/plain"
+    
+            # Retrieve by stem (should succeed after fix)
+>           content_sandbox_stem, ctype_sandbox_stem = await sandboxed.retrieve(sandbox_stem)
+                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_3494.py:60: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.vended_plugins.context_offloader.storage.FileStorage object at 0x76ed77c5c9b0>
+reference = '1788180787176_1_tooluse_abc123_1'
+
+    async def retrieve(self, reference: str) -> tuple[bytes, str]:
+        """Retrieve content from a stored file.
+    
+        Accepts both full paths (as returned by ``store()``) and bare
+        filenames for backward compatibility.
+    
+        Args:
+            reference: The file path or filename returned by store().
+    
+        Returns:
+            A tuple of (content bytes, content type).
+    
+        Raises:
+            KeyError: If the file does not exist.
+        """
+        # Normalize reference to a filename with extension if needed
+        basename = reference.split("/")[-1]
+        if "." not in basename:
+            # No extension - try to find one in known content types keys by stem match
+            stem = basename
+            matches = [key for key in self._content_types if key.startswith(stem + ".")]
+            if matches:
+                basename = matches[0]
+    
+        if self._sandbox is not None:
+            await self._ensure_sandbox_metadata()
+            prefix = f"{str(self._artifact_dir).rstrip('/')}/"
+            if not reference.startswith(prefix) and reference != basename or ".." in reference:
+>               raise KeyError(f"Reference not found: {reference}")
+E               KeyError: 'Reference not found: 1788180787176_1_tooluse_abc123_1'
+
+strands-py/src/strands/vended_plugins/context_offloader/storage.py:244: KeyError
+____________________________ test_run_asyncio_test _____________________________
+
+    def test_run_asyncio_test():
+        # Run the async test function in the event loop
+>       asyncio.run(test_filestorage_retrieve_accepts_bare_filename_and_stem())
+
+tests/agentsmith_fail2pass_3494.py:67: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/agentsmith_fail2pass_3494.py:60: in test_filestorage_retrieve_accepts_bare_filename_and_stem
+    content_sandbox_stem, ctype_sandbox_stem = await sandboxed.retrieve(sandbox_stem)
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.vended_plugins.context_offloader.storage.FileStorage object at 0x76ed79499010>
+reference = '1788180787234_1_tooluse_abc123_1'
+
+    async def retrieve(self, reference: str) -> tuple[bytes, str]:
+        """Retrieve content from a stored file.
+    
+        Accepts both full paths (as returned by ``store()``) and bare
+        filenames for backward compatibility.
+    
+        Args:
+            reference: The file path or filename returned by store().
+    
+        Returns:
+            A tuple of (content bytes, content type).
+    
+        Raises:
+            KeyError: If the file does not exist.
+        """
+        # Normalize reference to a filename with extension if needed
+        basename = reference.split("/")[-1]
+        if "." not in basename:
+            # No extension - try to find one in known content types keys by stem match
+            stem = basename
+            matches = [key for key in self._content_types if key.startswith(stem + ".")]
+            if matches:
+                basename = matches[0]
+    
+        if self._sandbox is not None:
+            await self._ensure_sandbox_metadata()
+            prefix = f"{str(self._artifact_dir).rstrip('/')}/"
+            if not reference.startswith(prefix) and reference != basename or ".." in reference:
+>               raise KeyError(f"Reference not found: {reference}")
+E               KeyError: 'Reference not found: 1788180787234_1_tooluse_abc123_1'
+
+strands-py/src/strands/vended_plugins/context_offloader/storage.py:244: KeyError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_3494.py::test_filestorage_retrieve_accepts_bare_filename_and_stem
+FAILED tests/agentsmith_fail2pass_3494.py::test_run_asyncio_test - KeyError: ...
+============================== 2 failed in 0.52s ===============================

@@ -1,0 +1,157 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, syrupy-6.0.0, mock-3.15.1, asyncio-1.4.0, xdist-3.8.0, respx-0.23.1, langsmith-0.11.2, timeout-2.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_2135.py::TestAnthropicExtendedThinkingFail2Pass::test_redacted_thinking_block_preserved_across_calls FAILED [100%]
+
+=================================== FAILURES ===================================
+_ TestAnthropicExtendedThinkingFail2Pass.test_redacted_thinking_block_preserved_across_calls _
+
+self = <tests.agentsmith_fail2pass_2135.TestAnthropicExtendedThinkingFail2Pass testMethod=test_redacted_thinking_block_preserved_across_calls>
+mock_client_cls = <MagicMock name='AsyncAnthropic' id='138518659366640'>
+
+    @patch("anthropic.AsyncAnthropic")
+    async def test_redacted_thinking_block_preserved_across_calls(
+        self,
+        mock_client_cls: MagicMock,
+    ) -> None:
+        # Prepare the first mocked response with a redacted_thinking block
+        redacted_block = MagicMock()
+        redacted_block.type = "redacted_thinking"
+        redacted_block.data = "encrypted_payload_123"
+    
+        thinking_block = MagicMock()
+        thinking_block.type = "thinking"
+        thinking_block.thinking = "visible thought"
+        thinking_block.signature = "sig_visible"
+    
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "Hello from assistant."
+    
+        first_response = MagicMock()
+        first_response.id = "msg-1"
+        first_response.content = [thinking_block, redacted_block, text_block]
+        first_response.usage = MagicMock()
+        first_response.usage.input_tokens = 10
+        first_response.usage.output_tokens = 15
+        first_response.usage.cache_creation_input_tokens = 0
+        first_response.usage.cache_read_input_tokens = 0
+    
+        # The second mocked response to simulate a successful follow-up call
+        second_response = MagicMock()
+        second_response.id = "msg-2"
+        second_response.content = [text_block]
+        second_response.usage = MagicMock()
+        second_response.usage.input_tokens = 20
+        second_response.usage.output_tokens = 10
+        second_response.usage.cache_creation_input_tokens = 0
+        second_response.usage.cache_read_input_tokens = 0
+    
+        # Mock the messages.create method to return first_response on first call,
+        # and second_response on second call.
+        mock_create = AsyncMock(side_effect=[first_response, second_response])
+        mock_client = MagicMock()
+        mock_client.messages.create = mock_create
+        mock_client_cls.return_value = mock_client
+    
+        # First call: no history, get initial response with redacted_thinking block
+>       result1 = await self.model([])
+                  ^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_2135.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/agentscope/model/_base.py:186: in __call__
+    res = await self._call_api(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <agentscope.model._anthropic._model.AnthropicChatModel object at 0x7dfb64af9c70>
+model_name = 'claude-2', messages = [], tools = None, tool_choice = None
+generate_kwargs = {}
+
+    async def _call_api(
+        self,
+        model_name: str,
+        messages: list[Msg],
+        tools: list[dict] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **generate_kwargs: Any,
+    ) -> ChatResponse | AsyncGenerator[ChatResponse, None]:
+        """Get the response from Anthropic chat completions API by the given
+        arguments.
+    
+        Args:
+            model_name (`str`):
+                The model name to use for this call.
+            messages (`list[dict]`):
+                A list of dictionaries, where `role` and `content` fields are
+                required, and `name` field is optional.
+            tools (`list[dict]`, default `None`):
+                The tools JSON schemas.
+            tool_choice (`ToolChoice | None`, optional):
+                Controls which (if any) tool is called by the model.
+            **generate_kwargs (`Any`):
+                The keyword arguments for Anthropic chat completions API.
+    
+        Returns:
+            `ChatResponse | AsyncGenerator[ChatResponse, None]`:
+                A ``ChatResponse`` when streaming is disabled, or an async
+                generator of ``ChatResponse`` objects when streaming is
+                enabled.
+        """
+    
+        import anthropic
+    
+        client = anthropic.AsyncAnthropic(
+            **{
+                "api_key": self.credential.api_key.get_secret_value(),
+                "base_url": self.credential.base_url,
+                **self.client_kwargs,
+            },
+        )
+    
+        # Anthropic requires max_tokens; fall back to a safe default when
+        # the user hasn't configured one explicitly.
+        max_tokens = self.parameters.max_tokens or 8192
+    
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "max_tokens": max_tokens,
+            "stream": self.stream,
+            **generate_kwargs,
+        }
+    
+        # Anthropic extended thinking — only set when explicitly enabled.
+        # Anthropic requires max_tokens > budget_tokens strictly.
+        if self.parameters.thinking_enable and "thinking" not in kwargs:
+            budget = self.parameters.thinking_budget or (max_tokens // 2)
+            if budget >= max_tokens:
+                # Auto-expand max_tokens to satisfy the strict inequality.
+                max_tokens = budget + 1024
+                kwargs["max_tokens"] = max_tokens
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget,
+            }
+    
+        fmt_tools, fmt_tool_choice = self._format_tools(tools, tool_choice)
+        if fmt_tools:
+            kwargs["tools"] = fmt_tools
+        if fmt_tool_choice is not None:
+            kwargs["tool_choice"] = fmt_tool_choice
+    
+>       formatted_messages = await self.formatter.format(messages, preserve_thinking_blocks=self.parameters.thinking_enable)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: AnthropicChatFormatter.format() got an unexpected keyword argument 'preserve_thinking_blocks'
+
+src/agentscope/model/_anthropic/_model.py:193: TypeError
+------------------------------ Captured log call -------------------------------
+WARNING  asyncio:base_events.py:1994 Executing <Task finished name='Task-2' coro=<TestAnthropicExtendedThinkingFail2Pass.test_redacted_thinking_block_preserved_across_calls() done, defined at /usr/local/lib/python3.12/unittest/mock.py:1408> exception=TypeError("AnthropicChatFormatter.format() got an unexpected keyword argument 'preserve_thinking_blocks'") created at /usr/local/lib/python3.12/asyncio/runners.py:100> took 1.147 seconds
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_2135.py::TestAnthropicExtendedThinkingFail2Pass::test_redacted_thinking_block_preserved_across_calls
+============================== 1 failed in 1.90s ===============================

@@ -1,0 +1,225 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_2652.py::test_format_request_message_content_empty_block_raises_type_error FAILED [100%]
+
+=================================== FAILURES ===================================
+______ test_format_request_message_content_empty_block_raises_type_error _______
+
+    def test_format_request_message_content_empty_block_raises_type_error():
+        model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        messages = [{"role": "user", "content": [{}]}]
+    
+        with pytest.raises(TypeError, match="content_type=<None> \\| unsupported type"):
+>           model._format_bedrock_messages(messages)
+
+tests/agentsmith_fail2pass_2652.py:11: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+strands-py/src/strands/models/bedrock.py:489: in _format_bedrock_messages
+    formatted_content = self._format_request_message_content(content_block)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.models.bedrock.BedrockModel object at 0x752d61f23410>
+content = {}
+
+    def _format_request_message_content(self, content: ContentBlock) -> dict[str, Any] | None:
+        """Format a Bedrock content block.
+    
+        Bedrock strictly validates content blocks and throws exceptions for unknown fields.
+        This function extracts only the fields that Bedrock supports for each content type.
+    
+        Args:
+            content: Content block to format.
+    
+        Returns:
+            Bedrock formatted content block.
+    
+        Raises:
+            TypeError: If the content block type is not supported by Bedrock.
+        """
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CachePointBlock.html
+        if "cachePoint" in content:
+            cache_point = content["cachePoint"]
+            result: dict[str, Any] = {"type": cache_point["type"]}
+            if "ttl" in cache_point:
+                result["ttl"] = cache_point["ttl"]
+            return {"cachePoint": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentBlock.html
+        if "document" in content:
+            document = content["document"]
+            result = {}
+    
+            # Handle required fields (all optional due to total=False)
+            if "name" in document:
+                result["name"] = document["name"]
+            if "format" in document:
+                result["format"] = document["format"]
+    
+            # Handle source - supports bytes or location
+            if "source" in document:
+                source = document["source"]
+                formatted_document_source: dict[str, Any] | None
+                if "location" in source:
+                    formatted_document_source = self._handle_location(source["location"])
+                    if formatted_document_source is None:
+                        return None
+                elif "bytes" in source:
+                    formatted_document_source = {"bytes": source["bytes"]}
+                result["source"] = formatted_document_source
+    
+            # Handle optional fields
+            if "citations" in document and document["citations"] is not None:
+                result["citations"] = {"enabled": document["citations"]["enabled"]}
+            if "context" in document:
+                result["context"] = document["context"]
+    
+            return {"document": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_GuardrailConverseContentBlock.html
+        if "guardContent" in content:
+            guard = content["guardContent"]
+            guard_text = guard["text"]
+            result = {"text": {"text": guard_text["text"], "qualifiers": guard_text["qualifiers"]}}
+            return {"guardContent": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageBlock.html
+        if "image" in content:
+            image = content["image"]
+            source = image["source"]
+            formatted_image_source: dict[str, Any] | None
+            if "location" in source:
+                formatted_image_source = self._handle_location(source["location"])
+                if formatted_image_source is None:
+                    return None
+            elif "bytes" in source:
+                formatted_image_source = {"bytes": source["bytes"]}
+            result = {"format": image["format"], "source": formatted_image_source}
+            return {"image": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ReasoningContentBlock.html
+        if "reasoningContent" in content:
+            reasoning = content["reasoningContent"]
+            result = {}
+    
+            if "reasoningText" in reasoning:
+                reasoning_text = reasoning["reasoningText"]
+                result["reasoningText"] = {}
+                if "text" in reasoning_text:
+                    result["reasoningText"]["text"] = reasoning_text["text"]
+                # Only include signature if truthy (avoid empty strings)
+                if reasoning_text.get("signature"):
+                    result["reasoningText"]["signature"] = reasoning_text["signature"]
+    
+            if "redactedContent" in reasoning:
+                result["redactedContent"] = reasoning["redactedContent"]
+    
+            return {"reasoningContent": result}
+    
+        # Pass through text and other simple content types
+        if "text" in content:
+            return {"text": content["text"]}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html
+        if "toolResult" in content:
+            tool_result = content["toolResult"]
+            # Normalize empty toolResult content arrays.
+            # Some model providers (e.g., Nemotron) reject toolResult blocks with
+            # content: [] via the Converse API, while others (e.g., Claude) accept
+            # them. Replace empty content with a minimal text block to ensure
+            # cross-model compatibility. This follows the same pattern as the
+            # TypeScript SDK's _formatMessages in bedrock.ts.
+            tool_result_content_list = tool_result.get("content") or [{"text": ""}]
+            formatted_content: list[dict[str, Any]] = []
+            for tool_result_content in tool_result_content_list:
+                if "json" in tool_result_content:
+                    # Handle json field since not in ContentBlock but valid in ToolResultContent
+                    formatted_content.append({"json": tool_result_content["json"]})
+                else:
+                    formatted_message_content = self._format_request_message_content(
+                        cast(ContentBlock, tool_result_content)
+                    )
+                    if formatted_message_content is None:
+                        continue
+                    formatted_content.append(formatted_message_content)
+    
+            result = {
+                "content": formatted_content,
+                "toolUseId": tool_result["toolUseId"],
+            }
+            if "status" in tool_result and self._should_include_tool_result_status():
+                result["status"] = tool_result["status"]
+            return {"toolResult": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolUseBlock.html
+        if "toolUse" in content:
+            tool_use = content["toolUse"]
+            return {
+                "toolUse": {
+                    "input": tool_use["input"],
+                    "name": tool_use["name"],
+                    "toolUseId": tool_use["toolUseId"],
+                }
+            }
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_VideoBlock.html
+        if "video" in content:
+            video = content["video"]
+            source = video["source"]
+            formatted_video_source: dict[str, Any] | None
+            if "location" in source:
+                formatted_video_source = self._handle_location(source["location"])
+                if formatted_video_source is None:
+                    return None
+            elif "bytes" in source:
+                formatted_video_source = {"bytes": source["bytes"]}
+            result = {"format": video["format"], "source": formatted_video_source}
+            return {"video": result}
+    
+        # https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsContentBlock.html
+        if "citationsContent" in content:
+            citations = content["citationsContent"]
+            result = {}
+    
+            if "citations" in citations:
+                result["citations"] = []
+                for citation in citations["citations"]:
+                    filtered_citation: dict[str, Any] = {}
+                    if "location" in citation:
+                        filtered_citation["location"] = citation["location"]
+                    if "sourceContent" in citation:
+                        filtered_source_content: list[dict[str, Any]] = []
+                        for source_content in citation["sourceContent"]:
+                            if "text" in source_content:
+                                filtered_source_content.append({"text": source_content["text"]})
+                        if filtered_source_content:
+                            filtered_citation["sourceContent"] = filtered_source_content
+                    if "title" in citation:
+                        filtered_citation["title"] = citation["title"]
+                    result["citations"].append(filtered_citation)
+    
+            if "content" in citations:
+                filtered_content: list[dict[str, Any]] = []
+                for generated_content in citations["content"]:
+                    if "text" in generated_content:
+                        filtered_content.append({"text": generated_content["text"]})
+                if filtered_content:
+                    result["content"] = filtered_content
+    
+            return {"citationsContent": result}
+    
+>       raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+                                         ^^^^^^^^^^^^^^^^^^^
+E       StopIteration
+
+strands-py/src/strands/models/bedrock.py:740: StopIteration
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_2652.py::test_format_request_message_content_empty_block_raises_type_error
+============================== 1 failed in 0.80s ===============================

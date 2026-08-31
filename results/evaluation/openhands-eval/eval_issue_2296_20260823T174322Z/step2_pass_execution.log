@@ -1,0 +1,490 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 5 items
+
+tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_removes_stale_tool_results FAILED [ 20%]
+tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_adds_exact_number_of_tool_results FAILED [ 40%]
+tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_does_not_add_extra_tool_results FAILED [ 60%]
+tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_inserts_tool_result_message_when_missing FAILED [ 80%]
+tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_leaves_last_tool_use_untouched FAILED [100%]
+
+=================================== FAILURES ===================================
+_____________ test_fix_broken_tool_use_removes_stale_tool_results ______________
+
+session_manager = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd87ac90>
+
+    def test_fix_broken_tool_use_removes_stale_tool_results(session_manager):
+        """Test that toolResults with IDs not matching any preceding toolUse are dropped (#2296)."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "valid-123", "name": "test_tool", "input": {"input": "test"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"toolResult": {"toolUseId": "stale-999", "status": "success", "content": [{"text": "stale"}]}},
+                    {"toolResult": {"toolUseId": "valid-123", "status": "success", "content": [{"text": "result"}]}},
+                ],
+            },
+            {"role": "user", "content": [{"text": "Final message"}]},
+        ]
+    
+>       fixed_messages = session_manager._fix_broken_tool_use(copy.deepcopy(messages))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_2296.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd87ac90>
+messages = [{'role': 'assistant', 'content': [{'toolUse': {'toolUseId': 'valid-123', 'name': 'test_tool', 'input': {'input': 'tes...d': 'valid-123', 'status': 'success', 'content': [{...}]}}]}, {'role': 'user', 'content': [{'text': 'Final message'}]}]
+
+    def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+        """Fix broken tool use/result pairs in message history.
+    
+        This method handles two issues:
+        1. Orphaned toolUse messages without corresponding toolResult.
+           Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+           This method retroactively fixes that issue by adding a tool_result outside of session management.
+           After 1.15.0, this bug is no longer present.
+        2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+    
+        Args:
+            messages: The list of messages to fix
+            agent_id: The agent ID for fetching previous messages
+            removed_message_count: Number of messages removed by the conversation manager
+    
+        Returns:
+            Fixed list of messages with proper tool use/result pairs
+        """
+        # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+        if messages:
+            first_message = messages[0]
+            if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+                logger.warning(
+                    "Session message history starts with orphaned toolResult with no preceding toolUse. "
+                    "This typically happens when messages are truncated due to pagination limits. "
+                    "Removing orphaned toolResult message to maintain valid conversation structure."
+                )
+                messages.pop(0)
+    
+        # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+        # iterating so that inserting a toolResult (which shifts later indices) does not
+        # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+        # excluded from the snapshot because that case is handled in the agent class when
+        # a new prompt arrives, so we do not synthesize a toolResult into persisted
+        # history for it here. Walking in reverse means each insert only shifts already-
+        # processed positions, so the original snapshot indices remain valid.
+        original_last_index = len(messages) - 1
+        tool_use_indices = [
+            index
+            for index, message in enumerate(messages)
+            if index < original_last_index and any("toolUse" in content for content in message["content"])
+        ]
+        for index in reversed(tool_use_indices):
+            message = messages[index]
+            tool_use_ids = [
+                content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+            ]
+    
+            # Check the toolResult ids already present in the next message.
+            tool_result_ids = [
+                content["toolResult"]["toolUseId"]
+                for content in messages[index + 1]["content"]
+                if "toolResult" in content
+            ]
+    
+            missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+            if not missing_tool_use_ids:
+                continue
+    
+            logger.warning(
+                "Session message history has an orphaned toolUse with no toolResult. "
+                "Adding toolResult content blocks to create valid conversation."
+            )
+            missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+    
+            if tool_result_ids:
+                # If there were any toolResult ids, that means only some of the content blocks are missing
+                existing_non_tool_results = [c for c in messages[index + 1]["content"] if "toolResult" not in c]
+    
+            messages[index + 1]["content"] = existing_non_tool_results + missing_content_blocks
+        else:
+            # The message following the toolUse was not a toolResult, so lets insert it
+>           messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+                                                                   ^^^^^^^^^^^^^^^^^^^^^^
+E           UnboundLocalError: cannot access local variable 'missing_content_blocks' where it is not associated with a value
+
+strands-py/src/strands/session/repository_session_manager.py:317: UnboundLocalError
+__________ test_fix_broken_tool_use_adds_exact_number_of_tool_results __________
+
+session_manager = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd87b800>
+
+    def test_fix_broken_tool_use_adds_exact_number_of_tool_results(session_manager):
+        """Test that the fix adds exactly one toolResult per toolUse, no extras."""
+    
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "tooluse-1", "name": "tool1", "input": {"input": "data1"}}},
+                    {"toolUse": {"toolUseId": "tooluse-2", "name": "tool2", "input": {"input": "data2"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    # Only one toolResult present, missing for tooluse-2
+                    {"toolResult": {"toolUseId": "tooluse-1", "status": "success", "content": [{"text": "result1"}]}},
+                ],
+            },
+            {"role": "user", "content": [{"text": "Another message"}]},
+        ]
+    
+        fixed_messages = session_manager._fix_broken_tool_use(copy.deepcopy(messages))
+    
+        # There should be exactly one toolResult per toolUse in the next message after assistant message
+        # So second message content should have two toolResults, one existing success, one error for missing
+>       assert len(fixed_messages) == 3
+E       AssertionError: assert 4 == 3
+E        +  where 4 = len([{'role': 'assistant', 'content': [{'toolUse': {'toolUseId': 'tooluse-1', 'name': 'tool1', 'input': {'input': 'data1'}}}, {'toolUse': {'toolUseId': 'tooluse-2', 'name': 'tool2', 'input': {'input': 'data2'}}}]}, {'role': 'user', 'content': [{'toolResult': {'toolUseId': 'tooluse-2', 'status': 'error', 'content': [{...}]}}]}, {'role': 'user', 'content': [{'toolResult': {'toolUseId': 'tooluse-2', 'status': 'error', 'content': [{...}]}}]}, {'role': 'user', 'content': [{'text': 'Another message'}]}])
+
+tests/agentsmith_fail2pass_2296.py:108: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  strands.session.repository_session_manager:repository_session_manager.py:304 Session message history has an orphaned toolUse with no toolResult. Adding toolResult content blocks to create valid conversation.
+___________ test_fix_broken_tool_use_does_not_add_extra_tool_results ___________
+
+session_manager = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbdd0d7f0>
+
+    def test_fix_broken_tool_use_does_not_add_extra_tool_results(session_manager):
+        """Test that no extra toolResult blocks are added beyond the number of toolUse blocks."""
+    
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "tu-1", "name": "tool1", "input": {"input": "data"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"toolResult": {"toolUseId": "tu-1", "status": "success", "content": [{"text": "result"}]}},
+                    # Extra toolResult that does not correspond to any toolUse
+                    {"toolResult": {"toolUseId": "extra-999", "status": "success", "content": [{"text": "extra"}]}},
+                ],
+            },
+            {"role": "user", "content": [{"text": "End"}]},
+        ]
+    
+>       fixed_messages = session_manager._fix_broken_tool_use(copy.deepcopy(messages))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_2296.py:146: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbdd0d7f0>
+messages = [{'role': 'assistant', 'content': [{'toolUse': {'toolUseId': 'tu-1', 'name': 'tool1', 'input': {'input': 'data'}}}]}, ...{'toolUseId': 'extra-999', 'status': 'success', 'content': [{...}]}}]}, {'role': 'user', 'content': [{'text': 'End'}]}]
+
+    def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+        """Fix broken tool use/result pairs in message history.
+    
+        This method handles two issues:
+        1. Orphaned toolUse messages without corresponding toolResult.
+           Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+           This method retroactively fixes that issue by adding a tool_result outside of session management.
+           After 1.15.0, this bug is no longer present.
+        2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+    
+        Args:
+            messages: The list of messages to fix
+            agent_id: The agent ID for fetching previous messages
+            removed_message_count: Number of messages removed by the conversation manager
+    
+        Returns:
+            Fixed list of messages with proper tool use/result pairs
+        """
+        # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+        if messages:
+            first_message = messages[0]
+            if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+                logger.warning(
+                    "Session message history starts with orphaned toolResult with no preceding toolUse. "
+                    "This typically happens when messages are truncated due to pagination limits. "
+                    "Removing orphaned toolResult message to maintain valid conversation structure."
+                )
+                messages.pop(0)
+    
+        # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+        # iterating so that inserting a toolResult (which shifts later indices) does not
+        # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+        # excluded from the snapshot because that case is handled in the agent class when
+        # a new prompt arrives, so we do not synthesize a toolResult into persisted
+        # history for it here. Walking in reverse means each insert only shifts already-
+        # processed positions, so the original snapshot indices remain valid.
+        original_last_index = len(messages) - 1
+        tool_use_indices = [
+            index
+            for index, message in enumerate(messages)
+            if index < original_last_index and any("toolUse" in content for content in message["content"])
+        ]
+        for index in reversed(tool_use_indices):
+            message = messages[index]
+            tool_use_ids = [
+                content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+            ]
+    
+            # Check the toolResult ids already present in the next message.
+            tool_result_ids = [
+                content["toolResult"]["toolUseId"]
+                for content in messages[index + 1]["content"]
+                if "toolResult" in content
+            ]
+    
+            missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+            if not missing_tool_use_ids:
+                continue
+    
+            logger.warning(
+                "Session message history has an orphaned toolUse with no toolResult. "
+                "Adding toolResult content blocks to create valid conversation."
+            )
+            missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+    
+            if tool_result_ids:
+                # If there were any toolResult ids, that means only some of the content blocks are missing
+                existing_non_tool_results = [c for c in messages[index + 1]["content"] if "toolResult" not in c]
+    
+            messages[index + 1]["content"] = existing_non_tool_results + missing_content_blocks
+        else:
+            # The message following the toolUse was not a toolResult, so lets insert it
+>           messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+                                                                   ^^^^^^^^^^^^^^^^^^^^^^
+E           UnboundLocalError: cannot access local variable 'missing_content_blocks' where it is not associated with a value
+
+strands-py/src/strands/session/repository_session_manager.py:317: UnboundLocalError
+______ test_fix_broken_tool_use_inserts_tool_result_message_when_missing _______
+
+session_manager = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd952660>
+
+    def test_fix_broken_tool_use_inserts_tool_result_message_when_missing(session_manager):
+        """Test that if the next message after toolUse is not a toolResult message, one is inserted."""
+    
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "tu-1", "name": "tool1", "input": {"input": "data"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"text": "Some unrelated user message"},
+                ],
+            },
+            {"role": "user", "content": [{"text": "End"}]},
+        ]
+    
+>       fixed_messages = session_manager._fix_broken_tool_use(copy.deepcopy(messages))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_2296.py:174: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd952660>
+messages = [{'role': 'assistant', 'content': [{'toolUse': {'toolUseId': 'tu-1', 'name': 'tool1', 'input': {'input': 'data'}}}]}, {'role': 'user', 'content': [{'text': 'Some unrelated user message'}]}, {'role': 'user', 'content': [{'text': 'End'}]}]
+
+    def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+        """Fix broken tool use/result pairs in message history.
+    
+        This method handles two issues:
+        1. Orphaned toolUse messages without corresponding toolResult.
+           Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+           This method retroactively fixes that issue by adding a tool_result outside of session management.
+           After 1.15.0, this bug is no longer present.
+        2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+    
+        Args:
+            messages: The list of messages to fix
+            agent_id: The agent ID for fetching previous messages
+            removed_message_count: Number of messages removed by the conversation manager
+    
+        Returns:
+            Fixed list of messages with proper tool use/result pairs
+        """
+        # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+        if messages:
+            first_message = messages[0]
+            if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+                logger.warning(
+                    "Session message history starts with orphaned toolResult with no preceding toolUse. "
+                    "This typically happens when messages are truncated due to pagination limits. "
+                    "Removing orphaned toolResult message to maintain valid conversation structure."
+                )
+                messages.pop(0)
+    
+        # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+        # iterating so that inserting a toolResult (which shifts later indices) does not
+        # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+        # excluded from the snapshot because that case is handled in the agent class when
+        # a new prompt arrives, so we do not synthesize a toolResult into persisted
+        # history for it here. Walking in reverse means each insert only shifts already-
+        # processed positions, so the original snapshot indices remain valid.
+        original_last_index = len(messages) - 1
+        tool_use_indices = [
+            index
+            for index, message in enumerate(messages)
+            if index < original_last_index and any("toolUse" in content for content in message["content"])
+        ]
+        for index in reversed(tool_use_indices):
+            message = messages[index]
+            tool_use_ids = [
+                content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+            ]
+    
+            # Check the toolResult ids already present in the next message.
+            tool_result_ids = [
+                content["toolResult"]["toolUseId"]
+                for content in messages[index + 1]["content"]
+                if "toolResult" in content
+            ]
+    
+            missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+            if not missing_tool_use_ids:
+                continue
+    
+            logger.warning(
+                "Session message history has an orphaned toolUse with no toolResult. "
+                "Adding toolResult content blocks to create valid conversation."
+            )
+            missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+    
+            if tool_result_ids:
+                # If there were any toolResult ids, that means only some of the content blocks are missing
+                existing_non_tool_results = [c for c in messages[index + 1]["content"] if "toolResult" not in c]
+    
+>           messages[index + 1]["content"] = existing_non_tool_results + missing_content_blocks
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+E           UnboundLocalError: cannot access local variable 'existing_non_tool_results' where it is not associated with a value
+
+strands-py/src/strands/session/repository_session_manager.py:314: UnboundLocalError
+------------------------------ Captured log call -------------------------------
+WARNING  strands.session.repository_session_manager:repository_session_manager.py:304 Session message history has an orphaned toolUse with no toolResult. Adding toolResult content blocks to create valid conversation.
+___________ test_fix_broken_tool_use_leaves_last_tool_use_untouched ____________
+
+session_manager = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd952570>
+
+    def test_fix_broken_tool_use_leaves_last_tool_use_untouched(session_manager):
+        """Test that toolUse in the last message is not fixed (no toolResult added)."""
+    
+        messages = [
+            {"role": "user", "content": [{"text": "Hello"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "last-123", "name": "tool", "input": {"input": "data"}}}
+                ],
+            },
+        ]
+    
+>       fixed_messages = session_manager._fix_broken_tool_use(copy.deepcopy(messages))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/agentsmith_fail2pass_2296.py:208: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <strands.session.repository_session_manager.RepositorySessionManager object at 0x7facbd952570>
+messages = [{'role': 'user', 'content': [{'text': 'Hello'}]}, {'role': 'assistant', 'content': [{'toolUse': {'toolUseId': 'last-123', 'name': 'tool', 'input': {'input': 'data'}}}]}]
+
+    def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+        """Fix broken tool use/result pairs in message history.
+    
+        This method handles two issues:
+        1. Orphaned toolUse messages without corresponding toolResult.
+           Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+           This method retroactively fixes that issue by adding a tool_result outside of session management.
+           After 1.15.0, this bug is no longer present.
+        2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+    
+        Args:
+            messages: The list of messages to fix
+            agent_id: The agent ID for fetching previous messages
+            removed_message_count: Number of messages removed by the conversation manager
+    
+        Returns:
+            Fixed list of messages with proper tool use/result pairs
+        """
+        # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+        if messages:
+            first_message = messages[0]
+            if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+                logger.warning(
+                    "Session message history starts with orphaned toolResult with no preceding toolUse. "
+                    "This typically happens when messages are truncated due to pagination limits. "
+                    "Removing orphaned toolResult message to maintain valid conversation structure."
+                )
+                messages.pop(0)
+    
+        # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+        # iterating so that inserting a toolResult (which shifts later indices) does not
+        # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+        # excluded from the snapshot because that case is handled in the agent class when
+        # a new prompt arrives, so we do not synthesize a toolResult into persisted
+        # history for it here. Walking in reverse means each insert only shifts already-
+        # processed positions, so the original snapshot indices remain valid.
+        original_last_index = len(messages) - 1
+        tool_use_indices = [
+            index
+            for index, message in enumerate(messages)
+            if index < original_last_index and any("toolUse" in content for content in message["content"])
+        ]
+        for index in reversed(tool_use_indices):
+            message = messages[index]
+            tool_use_ids = [
+                content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+            ]
+    
+            # Check the toolResult ids already present in the next message.
+            tool_result_ids = [
+                content["toolResult"]["toolUseId"]
+                for content in messages[index + 1]["content"]
+                if "toolResult" in content
+            ]
+    
+            missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+            if not missing_tool_use_ids:
+                continue
+    
+            logger.warning(
+                "Session message history has an orphaned toolUse with no toolResult. "
+                "Adding toolResult content blocks to create valid conversation."
+            )
+            missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+    
+            if tool_result_ids:
+                # If there were any toolResult ids, that means only some of the content blocks are missing
+                existing_non_tool_results = [c for c in messages[index + 1]["content"] if "toolResult" not in c]
+    
+            messages[index + 1]["content"] = existing_non_tool_results + missing_content_blocks
+        else:
+            # The message following the toolUse was not a toolResult, so lets insert it
+>           messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+                            ^^^^^
+E           UnboundLocalError: cannot access local variable 'index' where it is not associated with a value
+
+strands-py/src/strands/session/repository_session_manager.py:317: UnboundLocalError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_removes_stale_tool_results
+FAILED tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_adds_exact_number_of_tool_results
+FAILED tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_does_not_add_extra_tool_results
+FAILED tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_inserts_tool_result_message_when_missing
+FAILED tests/agentsmith_fail2pass_2296.py::test_fix_broken_tool_use_leaves_last_tool_use_untouched
+============================== 5 failed in 0.53s ===============================

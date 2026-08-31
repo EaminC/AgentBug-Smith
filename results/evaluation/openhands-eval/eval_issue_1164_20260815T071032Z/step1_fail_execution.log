@@ -1,0 +1,66 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 10 items
+
+tests/agentsmith_fail2pass_1164.py::test_list_messages_parallel_order_preserved PASSED [ 10%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_with_limit_and_offset PASSED [ 20%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_handles_no_messages PASSED [ 30%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_parallel_fetch_performance PASSED [ 40%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_parallel_fetch_order_consistency PASSED [ 50%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_handles_missing_message PASSED [ 60%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_parallel_threadpool_used FAILED [ 70%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_single_message_no_threadpool PASSED [ 80%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_with_offset_and_limit_parallel PASSED [ 90%]
+tests/agentsmith_fail2pass_1164.py::test_list_messages_handles_empty_message_keys PASSED [100%]
+
+=================================== FAILURES ===================================
+_________________ test_list_messages_parallel_threadpool_used __________________
+
+s3_manager = <strands.session.s3_session_manager.S3SessionManager object at 0x7abff462d430>
+sample_session = Session(session_id='test-session-123', session_type=<SessionType.AGENT: 'AGENT'>, created_at='2026-08-31T07:00:57.367333+00:00', updated_at='2026-08-31T07:00:57.367341+00:00')
+sample_agent = SessionAgent(agent_id='test-agent-456', state={'key': 'value'}, conversation_manager_state={}, _internal_state={}, created_at='2026-08-31T07:00:57.367399+00:00', updated_at='2026-08-31T07:00:57.367402+00:00')
+
+    def test_list_messages_parallel_threadpool_used(s3_manager: S3SessionManager, sample_session: Session, sample_agent: SessionAgent):
+        s3_manager.create_session(sample_session)
+        s3_manager.create_agent(sample_session.session_id, sample_agent)
+    
+        # Create 5 messages
+        for i in range(5):
+            msg = SessionMessage(
+                {
+                    "role": "user",
+                    "content": [ContentBlock(text=f"ThreadPool Msg {i}")],
+                },
+                i,
+            )
+            s3_manager.create_message(sample_session.session_id, sample_agent.agent_id, msg)
+    
+        # Patch _read_s3_object to record calls and simulate delay
+        original_read = s3_manager._read_s3_object
+        call_order = []
+    
+        def delayed_read(key):
+            call_order.append(key)
+            time.sleep(0.1)
+            return original_read(key)
+    
+        s3_manager._read_s3_object = delayed_read
+    
+        # Call list_messages and verify that calls happen in parallel by timing
+        start_time = time.time()
+        messages = s3_manager.list_messages(sample_session.session_id, sample_agent.agent_id)
+        duration = time.time() - start_time
+    
+        # Should be less than sum of all delays (0.1 * 5 = 0.5s), indicating parallelism
+>       assert duration < 0.5
+E       assert 0.5363011360168457 < 0.5
+
+tests/agentsmith_fail2pass_1164.py:231: AssertionError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_1164.py::test_list_messages_parallel_threadpool_used
+========================= 1 failed, 9 passed in 4.55s ==========================
