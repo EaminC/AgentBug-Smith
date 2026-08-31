@@ -1,0 +1,245 @@
+diff --git a/strands-py/src/strands/_middleware/__init__.py b/strands-py/src/strands/_middleware/__init__.py
+index 684b3c73c..bd8b07208 100644
+--- a/strands-py/src/strands/_middleware/__init__.py
++++ b/strands-py/src/strands/_middleware/__init__.py
+@@ -3,6 +3,7 @@
+ from .registry import MiddlewareRegistry as MiddlewareRegistry
+ from .stages import ExecuteToolContext as ExecuteToolContext
+ from .stages import ExecuteToolStage as ExecuteToolStage
++from .stages_extensions import AgentStreamStage, create_middleware_interrupt
+ from .stages import InvokeModelContext as InvokeModelContext
+ from .stages import InvokeModelStage as InvokeModelStage
+ from .stages import MiddlewareInterruptResult as MiddlewareInterruptResult
+diff --git a/strands-py/src/strands/_middleware/registry.py b/strands-py/src/strands/_middleware/registry.py
+index ddde4f7cb..4703dfd53 100644
+--- a/strands-py/src/strands/_middleware/registry.py
++++ b/strands-py/src/strands/_middleware/registry.py
+@@ -48,6 +48,16 @@ class MiddlewareRegistry:
+         """Register middleware for a stage or phase sub-token."""
+         if isinstance(stage_or_phase, MiddlewareInputPhase):
+             self._add_input(stage_or_phase, handler)
++    def add_middleware(self, stage: MiddlewareStage, handler: Any) -> None:
++        """Add middleware handler for a given stage."""
++        # If no handler is provided, add a no-op default to enable stage fast-path
++        if handler is None:
++            async def noop_middleware(context, next):
++                async for event in next():
++                    yield event
++            handler = noop_middleware
++        self.register(stage, handler)
++
+         elif isinstance(stage_or_phase, MiddlewareOutputPhase):
+             self._add_output(stage_or_phase, handler)
+         elif isinstance(stage_or_phase, MiddlewareWrapPhase):
+diff --git a/strands-py/src/strands/_middleware/stages.py b/strands-py/src/strands/_middleware/stages.py
+index 6feeea835..9a56d51e6 100644
+--- a/strands-py/src/strands/_middleware/stages.py
++++ b/strands-py/src/strands/_middleware/stages.py
+@@ -136,6 +136,93 @@ class ExecuteToolContext:
+ 
+ ExecuteToolStage: MiddlewareStage[ExecuteToolContext, ToolResultEvent, TypedEvent] = MiddlewareStage(name="executeTool")
+ """Built-in stage wrapping individual tool execution.
++from typing import AsyncGenerator, Any
++from dataclasses import dataclass, replace
++from strands._middleware.types import MiddlewareStage, MiddlewareInterruptResult
++from strands.interrupt import InterruptException
++
++
++@dataclass
++class ExecuteToolContext:
++    """Context passed to ExecuteToolStage middleware.
++
++    `tool_use` is a shallow copy of the executor's dict, so reassigning its top-level
++    keys (e.g. `name`, `toolUseId`) cannot corrupt executor state. Its `input` value
++    is shared by reference — it can hold arbitrary, non-copyable objects (e.g. the agent
++    injected on direct tool calls), so a deep copy is not possible; mutating `input` in
++    place still leaks. `invocation_state` is likewise shared by reference (matching how
++    hooks receive it). Middleware that needs a fully isolated `tool_use` should build a
++    new one and pass a modified context via `dataclasses.replace()`.
++
++    Supports middleware-initiated interrupts via `interrupt()` for human-in-the-loop
++    approval flows.
++    """
++
++    agent: Any
++    tool: Any | None
++    tool_use: dict[str, Any]
++    invocation_state: dict[str, Any]
++    _interrupt_state: Any
++
++    def interrupt(self, name: str, *, reason: Any = None, response: Any = None) -> MiddlewareInterruptResult:
++        """Request a human-in-the-loop interrupt.
++
++        On first execution (no prior response) this raises `InterruptException` to halt
++        the agent. After the user resumes with a response, the second call returns that
++        response. Providing `response` preemptively skips the interrupt entirely.
++
++        This method is read-only with respect to interrupt state: it inspects prior
++        responses but does not register the interrupt itself. The tool executor registers
++        it (in its `InterruptException` handler) as the single source of truth, matching
++        the TypeScript SDK where middleware interrupts never write to interrupt state.
++
++        Args:
++            name: User-defined name for the interrupt. The interrupt id is scoped to the tool
++                call (`v1:middleware_execute_tool:<toolUseId>:<uuid5(name)>`) but not to the
++                individual middleware, so the name must be unique across all middleware that
++                interrupt this tool call — two middleware using the same name on the same tool
++                call collide and share one response. (This matches the hook/tool interrupt
++                contract, which is likewise unique per tool call, not per callback.)
++            reason: Optional reason for the interrupt (surfaced to the user).
++            response: Optional preemptive response — when set, no interrupt is raised.
++
++        Returns:
++            The user's response wrapped in a `MiddlewareInterruptResult`.
++
++        Raises:
++            InterruptException: When no response is available yet and none was provided.
++        """
++        interrupt_id = self._interrupt_id(name)
++
++        existing = self._interrupt_state.interrupts.get(interrupt_id)
++        if existing is not None and existing.response is not None:
++            return MiddlewareInterruptResult(response=existing.response)
++
++        if response is not None:
++            return MiddlewareInterruptResult(response=response)
++
++        raise InterruptException(Interrupt(id=interrupt_id, name=name, reason=reason, source="middleware"))
++
++    def _interrupt_id(self, name: str) -> str:
++        """Derive the interrupt id for ``name``, namespaced by the tool call.
++
++        Follows the SDK's ``v1:`` interrupt-id scheme (see ``types/interrupt.py``), hashing
++        the user-provided name so ids stay stable across resumes for the same tool call.
++        """
++        import uuid
++
++        return f"v1:middleware_execute_tool:{self.tool_use['toolUseId']}:{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
++
++
++ExecuteToolStage: MiddlewareStage[ExecuteToolContext, Any, Any] = MiddlewareStage(name="executeTool")
++"""Built-in stage wrapping individual tool execution.
++
++Middleware registered for this stage can add telemetry, validate inputs, mock responses,
++or gate execution behind a human-in-the-loop interrupt. The result event is the
++`ToolResultEvent` produced by the tool (matching the "last event is the result"
++convention used across the SDK).
++"""
++
+ 
+ Middleware registered for this stage can add telemetry, validate inputs, mock responses,
+ or gate execution behind a human-in-the-loop interrupt. The result event is the
+diff --git a/strands-py/src/strands/experimental/bidi/agent/agent.py b/strands-py/src/strands/experimental/bidi/agent/agent.py
+index 588d9a434..0f5d2c075 100644
+--- a/strands-py/src/strands/experimental/bidi/agent/agent.py
++++ b/strands-py/src/strands/experimental/bidi/agent/agent.py
+@@ -167,10 +167,20 @@ class BidiAgent:
+         # TODO: Determine if full support is required
+         self._interrupt_state = _InterruptState()
+ 
+-        # Empty registry so the shared ToolExecutor can invoke ExecuteToolStage uniformly.
+-        # With no handlers registered, the chain fast-paths straight to the terminal, so
+-        # bidi tool execution is unaffected until middleware support is formally added.
++        # Initialize middleware registry and register ExecuteToolStage by default.
+         self._middleware_registry = MiddlewareRegistry()
++        self._middleware_registry.add_middleware(ExecuteToolStage, None)  # enable ExecuteToolStage chain
++
++    async def _run_loop(self, *args, **kwargs):
++        # Wrap the original agent run loop with AgentStreamStage middleware
++        async def _run_loop_middleware_wrapper(*args, **kwargs):
++            async for event in self._middleware_registry.invoke(AgentStreamStage, self, *args, **kwargs):
++                yield event
++
++        # Call the wrapped run loop
++        async for event in _run_loop_middleware_wrapper(*args, **kwargs):
++            yield event
++
+ 
+         # Lock to ensure that paired messages are added to history in sequence without interference
+         self._message_lock = asyncio.Lock()
+diff --git a/strands-py/src/strands/interrupt.py b/strands-py/src/strands/interrupt.py
+index 7d02b50ff..ece7b4e40 100644
+--- a/strands-py/src/strands/interrupt.py
++++ b/strands-py/src/strands/interrupt.py
+@@ -17,12 +17,14 @@ class Interrupt:
+         name: User defined name.
+         reason: User provided reason for raising the interrupt.
+         response: Human response provided when resuming the agent after an interrupt.
++        source: Optional source of the interrupt.
+     """
+ 
+     id: str
+     name: str
+     reason: Any = None
+     response: Any = None
++    source: str | None = None
+ 
+     def to_dict(self) -> dict[str, Any]:
+         """Serialize to dict for session management."""
+diff --git a/strands-py/src/strands/tools/executors/_executor.py b/strands-py/src/strands/tools/executors/_executor.py
+index adec4dd2b..7b2b64494 100644
+--- a/strands-py/src/strands/tools/executors/_executor.py
++++ b/strands-py/src/strands/tools/executors/_executor.py
+@@ -238,32 +238,36 @@ class ToolExecutor(abc.ABC):
+                 )
+ 
+                 result_event: ToolResultEvent | None = None
+-                async for event in agent._middleware_registry.invoke(
+-                    ExecuteToolStage,
+-                    middleware_context,
+-                    _make_execute_tool_terminal(kwargs),
+-                ):
+-                    # Tool-originated interrupt: a ToolInterruptEvent yielded from tool.stream()
+-                    # (including sub-agent interrupts propagated via _AgentAsTool). Distinct from
+-                    # the middleware-initiated InterruptException handled below — this one rides
+-                    # the event stream rather than unwinding it. Register its interrupts so
+-                    # _interrupt_state.resume() can locate them by id, surface the event, and
+-                    # short-circuit here: a halted tool has no result, so the after-hook and the
+-                    # result handling below are intentionally skipped.
+-                    if isinstance(event, ToolInterruptEvent):
+-                        for interrupt in event.interrupts:
+-                            agent._interrupt_state.interrupts.setdefault(interrupt.id, interrupt)
+-                        yield event
+-                        return
+-
+-                    # Capture the result but keep draining: middleware may yield trailing
+-                    # events after it, and the last ToolResultEvent wins (matching the model
+-                    # stage). It is re-emitted only after AfterToolCallEvent runs, since hooks
+-                    # may rewrite it. All non-result events flow through as they arrive.
+-                    if isinstance(event, ToolResultEvent):
+-                        result_event = event
+-                    else:
+-                        yield event
++                try:
++                    async for event in agent._middleware_registry.invoke(
++                        ExecuteToolStage,
++                        middleware_context,
++                        _make_execute_tool_terminal(kwargs),
++                    ):
++                        # Tool-originated interrupt: a ToolInterruptEvent yielded from tool.stream()
++                        # (including sub-agent interrupts propagated via _AgentAsTool). Distinct from
++                        # the middleware-initiated InterruptException handled below — this one rides
++                        # the event stream rather than unwinding it. Register its interrupts so
++                        # _interrupt_state.resume() can locate them by id, surface the event, and
++                        # short-circuit here: a halted tool has no result, so the after-hook and the
++                        # result handling below are intentionally skipped.
++                        if isinstance(event, ToolInterruptEvent):
++                            for interrupt in event.interrupts:
++                                agent._interrupt_state.interrupts.setdefault(interrupt.id, interrupt)
++                            yield event
++                            return
++
++                        # Capture the result but keep draining: middleware may yield trailing
++                        # events after it, and the last ToolResultEvent wins (matching the model
++                        # stage). It is re-emitted only after AfterToolCallEvent runs, since hooks
++                        # may rewrite it. All non-result events flow through as they arrive.
++                        if isinstance(event, ToolResultEvent):
++                            result_event = event
++                        else:
++                            yield event
++                except InterruptException:
++                    # Middleware-initiated InterruptException must halt the agent.
++                    raise
+ 
+                 if result_event is None:
+                     raise RuntimeError(

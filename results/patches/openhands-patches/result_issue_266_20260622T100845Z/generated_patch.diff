@@ -1,0 +1,78 @@
+diff --git a/mle/cli.py b/mle/cli.py
+index 32990b4..39644ca 100644
+--- a/mle/cli.py
++++ b/mle/cli.py
+@@ -233,6 +233,44 @@ def chat(model, build_mem):
+     return workflow.chat(os.getcwd(), model=model, memory=memory)
+ 
+ 
++@cli.command()
++@click.argument('command')
++@click.argument('file_path', required=False)
++def memory_manage(command, file_path=None):
++    """
++    Manage the local memory by listing keys or adding/removing files.
++    Usage:
++      memory_manage list
++      memory_manage add /path/to/file
++      memory_manage remove /path/to/file
++    """
++    memory_instance = LanceDBMemory(os.getcwd())
++    if command == 'list':
++        table = memory_instance.client.open_table(memory_instance.table_name)
++        keys = [record['id'] for record in table.to_pylist()]
++        for key in keys:
++            print(key)
++    elif command == 'add' and file_path:
++        with open(file_path, 'r') as f:
++            content = f.read()
++        chunks = CodeChunker(os.path.join(os.getcwd(), '.mle', 'cache'), 'py').chunk(content, token_limit=100)
++        memory_instance.add(
++            texts=list(chunks.values()),
++            table_name=memory_instance.table_name,
++            metadata=[{'file': file_path, 'chunk_key': k} for k, _ in chunks.items()]
++        )
++        print(f"Added {file_path} to memory.")
++    elif command == 'remove' and file_path:
++        table = memory_instance.client.open_table(memory_instance.table_name)
++        rows = table.to_pylist()
++        for row in rows:
++            if row.get('metadata', {}).get('file') == file_path:
++                memory_instance.delete(row['id'], table_name=memory_instance.table_name)
++                print(f"Removed data related to {file_path} from memory.")
++    else:
++        print("Invalid command or missing file_path.")
++
++
+ @cli.command()
+ @click.option('--host', default='0.0.0.0', help='Host to bind the server to')
+ @click.option('--port', default=8000, help='Port to bind the server to')
+diff --git a/mle/server/app.py b/mle/server/app.py
+index c44c8bb..44cebbd 100644
+--- a/mle/server/app.py
++++ b/mle/server/app.py
+@@ -11,6 +11,24 @@ from mle.workflow import report
+ from mle.utils import check_config
+ 
+ app = FastAPI()
++from fastapi import APIRouter
++from mle.utils.memory import LanceDBMemory
++from fastapi.responses import JSONResponse
++
++memory_router = APIRouter()
++
++@memory_router.get('/memory/keys')
++async def list_memory_keys():
++    memory_instance = LanceDBMemory('.')
++    try:
++        table = memory_instance.client.open_table(memory_instance.table_name)
++        keys = [record['id'] for record in table.to_pylist()]
++        return JSONResponse(content=keys)
++    except Exception as e:
++        return JSONResponse(status_code=500, content={'detail': str(e)})
++
++app.include_router(memory_router)
++
+ 
+ # Add CORS middleware
+ app.add_middleware(

@@ -1,0 +1,175 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index 567a92b4a..234aef852 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -129,6 +129,29 @@ class Agent(AgentBase):
+         structured_output_prompt: str | None = None,
+         tool_executor: ToolExecutor | None = None,
+         retry_strategy: ModelRetryStrategy | _DefaultRetryStrategySentinel | None = _DEFAULT_RETRY_STRATEGY,
++        concurrent_invocation_mode: ConcurrentInvocationMode = "throw",
++    ):
++        self,
++        model: Model | str | None = None,
++        messages: Messages | None = None,
++        tools: list[Union[str, dict[str, str], "ToolProvider", Any]] | None = None,
++        system_prompt: str | list[SystemContentBlock] | None = None,
++        structured_output_model: type[BaseModel] | None = None,
++        callback_handler: Callable[..., Any] | _DefaultCallbackHandlerSentinel | None = _DEFAULT_CALLBACK_HANDLER,
++        conversation_manager: ConversationManager | None = None,
++        record_direct_tool_call: bool = True,
++        load_tools_from_directory: bool = False,
++        trace_attributes: Mapping[str, AttributeValue] | None = None,
++        *,
++        agent_id: str | None = None,
++        name: str | None = None,
++        description: str | None = None,
++        state: AgentState | dict | None = None,
++        hooks: list[HookProvider] | None = None,
++        session_manager: SessionManager | None = None,
++        structured_output_prompt: str | None = None,
++        tool_executor: ToolExecutor | None = None,
++        retry_strategy: ModelRetryStrategy | _DefaultRetryStrategySentinel | None = _DEFAULT_RETRY_STRATEGY,
+     ):
+         """Initialize the Agent with the specified configuration.
+ 
+@@ -209,9 +232,11 @@ class Agent(AgentBase):
+         elif callback_handler is None:
+             self.callback_handler = null_callback_handler
+         else:
+-            self.callback_handler = callback_handler
++                            self.callback_handler = callback_handler
+ 
+         self.conversation_manager = conversation_manager if conversation_manager else SlidingWindowConversationManager()
++        self._concurrent_invocation_mode = concurrent_invocation_mode
++
+ 
+         # Process trace attributes to ensure they're of compatible types
+         self.trace_attributes: dict[str, AttributeValue] = {}
+@@ -625,11 +650,12 @@ class Agent(AgentBase):
+         # Acquire lock to prevent concurrent invocations
+         # Using threading.Lock instead of asyncio.Lock because run_async() creates
+         # separate event loops in different threads
+-        acquired = self._invocation_lock.acquire(blocking=False)
+-        if not acquired:
+-            raise ConcurrencyException(
+-                "Agent is already processing a request. Concurrent invocations are not supported."
+-            )
++        if self._concurrent_invocation_mode == "throw":
++            acquired = self._invocation_lock.acquire(blocking=False)
++            if not acquired:
++                raise ConcurrencyException(
++                    "Agent is already processing a request. Concurrent invocations are not supported."
++                )
+ 
+         try:
+             self._interrupt_state.resume(prompt)
+diff --git a/src/strands/types/agent.py b/src/strands/types/agent.py
+index aa69149a6..118920b9a 100644
+--- a/src/strands/types/agent.py
++++ b/src/strands/types/agent.py
+@@ -9,3 +9,7 @@ from .content import ContentBlock, Messages
+ from .interrupt import InterruptResponseContent
+ 
+ AgentInput: TypeAlias = str | list[ContentBlock] | list[InterruptResponseContent] | Messages | None
++from typing import Literal
++
++ConcurrentInvocationMode = Literal["throw", "unsafe_reentrant"]
++
+diff --git a/tests/strands/agent/test_agent.py b/tests/strands/agent/test_agent.py
+index eb039185c..da01af2f2 100644
+--- a/tests/strands/agent/test_agent.py
++++ b/tests/strands/agent/test_agent.py
+@@ -40,8 +40,10 @@ FORMATTED_DEFAULT_MODEL_ID = DEFAULT_BEDROCK_MODEL_ID.format("us")
+ def mock_model(request):
+     async def stream(*args, **kwargs):
+         # Skip deep copy of invocation_state which contains non-serializable objects (agent, spans, etc.)
++        # Skip deep copy of invocation_state and objects that contain locks which cannot be pickled
++        skip_keys = {"invocation_state", "_invocation_lock"}
+         copied_kwargs = {
+-            key: value if key == "invocation_state" else copy.deepcopy(value) for key, value in kwargs.items()
++            key: value if key in skip_keys else copy.deepcopy(value) for key, value in kwargs.items()
+         }
+         result = mock.mock_stream(*copy.deepcopy(args), **copied_kwargs)
+         # If result is already an async generator, yield from it
+@@ -2269,6 +2271,81 @@ def test_agent_concurrent_call_raises_exception():
+     assert "concurrent" in str(errors[0]).lower() and "invocation" in str(errors[0]).lower()
+ 
+ 
++@pytest.mark.asyncio
++async def test_agent_concurrent_call_no_exception_in_unsafe_reentrant_mode():
++    model = SyncEventMockedModel([
++        {"role": "assistant", "content": [{"text": "hello"}]},
++        {"role": "assistant", "content": [{"text": "world"}]},
++    ])
++    agent = Agent(model=model, concurrent_invocation_mode="unsafe_reentrant")
++
++    results = []
++    errors = []
++    lock = threading.Lock()
++
++    def invoke():
++        try:
++            result = agent("test")
++            with lock:
++                results.append(result)
++        except Exception as e:
++            with lock:
++                errors.append(e)
++
++    t1 = threading.Thread(target=invoke)
++    t1.start()
++    model.started_event.wait()
++
++    t2 = threading.Thread(target=invoke)
++    t2.start()
++
++    t2.join(timeout=1.0)
++    model.proceed_event.set()
++    t1.join()
++    t2.join()
++
++    # Both invocations should succeed without exception
++    assert len(results) == 2, f"Expected 2 successes, got {len(results)}"
++    assert len(errors) == 0, f"Expected 0 errors, got {len(errors)}"
++
++
++@pytest.mark.asyncio
++async def test_agent_concurrent_structured_output_no_exception_in_unsafe_reentrant_mode():
++    model = SyncEventMockedModel([
++        {"role": "assistant", "content": [{"text": "response1"}]},
++        {"role": "assistant", "content": [{"text": "response2"}]},
++    ])
++    agent = Agent(model=model, concurrent_invocation_mode="unsafe_reentrant")
++
++    results = []
++    errors = []
++    lock = threading.Lock()
++
++    def invoke():
++        try:
++            result = agent("test")
++            with lock:
++                results.append(result)
++        except Exception as e:
++            with lock:
++                errors.append(e)
++
++    t1 = threading.Thread(target=invoke)
++    t1.start()
++    model.started_event.wait()
++
++    t2 = threading.Thread(target=invoke)
++    t2.start()
++
++    t2.join(timeout=1.0)
++    model.proceed_event.set()
++    t1.join()
++    t2.join()
++
++    # Both invocations should succeed without exception
++    assert len(results) == 2, f"Expected 2 successes, got {len(results)}"
++    assert len(errors) == 0, f"Expected 0 errors, got {len(errors)}"
++
+ def test_agent_concurrent_structured_output_raises_exception():
+     """Test that concurrent structured_output() calls raise ConcurrencyException.
+ 

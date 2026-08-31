@@ -1,0 +1,112 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index 7350ab7ed..6c2050897 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -40,6 +40,9 @@ from ..hooks import (
+     HookCallback,
+     HookProvider,
+     HookRegistry,
++from ..hooks import Plugin
++import inspect
++
+     MessageAddedEvent,
+ )
+ from ..hooks.registry import TEvent
+@@ -308,6 +311,14 @@ class Agent(AgentBase):
+ 
+         self.tool_executor = tool_executor or ConcurrentToolExecutor()
+ 
++        if plugins:
++            for plugin in plugins:
++                if inspect.iscoroutinefunction(plugin.init_plugin):
++                    run_async(lambda p=plugin: p.init_plugin(self))
++                else:
++                    plugin.init_plugin(self)
++
++
+         if hooks:
+             for hook in hooks:
+                 self.hooks.add_hook(hook)
+diff --git a/tests/strands/agent/test_agent.py b/tests/strands/agent/test_agent.py
+index 587735cec..53649ee26 100644
+--- a/tests/strands/agent/test_agent.py
++++ b/tests/strands/agent/test_agent.py
+@@ -29,6 +29,78 @@ from strands.types._events import EventLoopStopEvent, ModelStreamEvent
+ from strands.types.agent import ConcurrentInvocationMode
+ from strands.types.content import Messages
+ from strands.types.exceptions import ConcurrencyException, ContextWindowOverflowException, EventLoopException
++
++import inspect
++import asyncio
++
++
++class SyncPlugin:
++    def __init__(self):
++        self.initialized = False
++
++    def init_plugin(self, agent):
++        self.initialized = True
++        agent.add_hook(self.record_hook)
++
++    def record_hook(self, event):
++        pass
++
++
++class AsyncPlugin:
++    def __init__(self):
++        self.initialized = False
++
++    async def init_plugin(self, agent):
++        await asyncio.sleep(0.01)  # Simulate async init
++        self.initialized = True
++        agent.add_hook(self.record_hook)
++
++    def record_hook(self, event):
++        pass
++
++
++def test_agent_plugins_initialization(monkeypatch):
++    sync_plugin = SyncPlugin()
++    async_plugin = AsyncPlugin()
++
++    agent = Agent(plugins=[sync_plugin, async_plugin])
++
++    # Assert sync plugin was initialized
++    assert sync_plugin.initialized
++
++    # Assert async plugin was initialized
++    assert async_plugin.initialized
++
++
++async def test_agent_plugins_multiple_order():
++    order = []
++
++    class Plugin1:
++        def init_plugin(self, agent):
++            order.append("plugin1")
++
++    class Plugin2:
++        async def init_plugin(self, agent):
++            order.append("plugin2")
++
++    agent = Agent(plugins=[Plugin1(), Plugin2()])
++
++    # Wait a bit for async init_plugin to complete if needed
++    await asyncio.sleep(0.1)
++
++    assert order == ["plugin1", "plugin2"]
++
++
++def test_agent_no_plugins():
++    agent = Agent(plugins=None)
++    assert agent is not None
++
++
++def test_agent_empty_plugins():
++    agent = Agent(plugins=[])
++    assert agent is not None
++
++
+ from strands.types.session import Session, SessionAgent, SessionMessage, SessionType
+ from tests.fixtures.mock_session_repository import MockedSessionRepository
+ from tests.fixtures.mocked_model_provider import MockedModelProvider

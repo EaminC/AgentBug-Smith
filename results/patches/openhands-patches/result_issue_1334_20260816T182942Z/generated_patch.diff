@@ -1,0 +1,67 @@
+diff --git a/src/strands/tools/mcp/mcp_client.py b/src/strands/tools/mcp/mcp_client.py
+index 6ce591bc5..bb6384a43 100644
+--- a/src/strands/tools/mcp/mcp_client.py
++++ b/src/strands/tools/mcp/mcp_client.py
+@@ -801,4 +801,12 @@ class MCPClient(ToolProvider):
+         return False
+ 
+     def _is_session_active(self) -> bool:
+-        return self._background_thread is not None and self._background_thread.is_alive()
++        if self._background_thread is None or not self._background_thread.is_alive():
++            return False
++        # Check if the close_future has been set, indicating the session is closing/closed
++        # This detects session failure during the race condition window BEFORE the thread
++        # fully exits, preventing retry attempts from hanging in run_coroutine_threadsafe
++        if self._close_future is not None and self._close_future.done():
++            return False
++        return True
++
+diff --git a/tests/strands/tools/mcp/test_mcp_client_tool_provider.py b/tests/strands/tools/mcp/test_mcp_client_tool_provider.py
+index 9cb90167d..ad59e07ad 100644
+--- a/tests/strands/tools/mcp/test_mcp_client_tool_provider.py
++++ b/tests/strands/tools/mcp/test_mcp_client_tool_provider.py
+@@ -818,9 +818,39 @@ def test_list_tools_sync_callable_filter_override(mock_transport):
+         callable_filters: ToolFilters = {"allowed": [short_names_only]}
+         result = client.list_tools_sync(tool_filters=callable_filters)
+ 
+-        # Should create both tools
+-        assert mock_agent_tool_class.call_count == 2
++def test_is_session_active_with_close_future():
++    class DummyThread:
++        def __init__(self, alive):
++            self._alive = alive
++        def is_alive(self):
++            return self._alive
++
++    class DummyClient:
++        def __init__(self, background_alive, close_future_done):
++            self._background_thread = DummyThread(background_alive)
++            class DummyFuture:
++                def __init__(self, done):
++                    self._done = done
++                def done(self):
++                    return self._done
++            self._close_future = DummyFuture(close_future_done)
++
++    # Session inactive due to no background thread
++    client = DummyClient(False, False)
++    assert client._is_session_active() is False
++
++    # Session inactive due to close_future done
++    client = DummyClient(True, True)
++    assert client._is_session_active() is False
++
++    # Session active
++    client = DummyClient(True, False)
++    assert client._is_session_active() is True
++
++# Should create both tools
++assert mock_agent_tool_class.call_count == 2
++
++# Should only include short tool (name length <= 10)
++assert len(result) == 1
++assert result[0] is mock_agent_tool1
+ 
+-        # Should only include short tool (name length <= 10)
+-        assert len(result) == 1
+-        assert result[0] is mock_agent_tool1

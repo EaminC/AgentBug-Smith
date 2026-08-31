@@ -1,0 +1,106 @@
+diff --git a/src/strands/models/anthropic.py b/src/strands/models/anthropic.py
+index 526460184..20b57c3b8 100644
+--- a/src/strands/models/anthropic.py
++++ b/src/strands/models/anthropic.py
+@@ -88,6 +88,31 @@ class AnthropicModel(Model):
+         validate_config_keys(model_config, self.AnthropicConfig)
+         self.config.update(model_config)
+ 
++    @override
++    def estimate_tokens(
++        self,
++        messages: Messages,
++        tool_specs: list[ToolSpec] | None = None,
++        system_prompt: str | None = None,
++    ) -> int:
++        """Estimate token count for the given input before sending to model."""
++        formatted_messages = self._format_request_messages(messages)
++        # Use anthropic.count_tokens native API
++        from anthropic import count_tokens
++        # Include system prompt if provided
++        if system_prompt:
++            formatted_messages.insert(0, {"role": "system", "content": system_prompt})
++        # Include tool specs if provided
++        if tool_specs:
++            # Convert tool_specs to Anthropic compatible format if needed
++            tool_descriptions = "\n".join(f"{tool['name']}: {tool['description']}" for tool in tool_specs)
++            formatted_messages.append({"role": "system", "content": f"Available tools:\n{tool_descriptions}"})
++        # Count tokens in formatted messages
++        token_count = 0
++        for message in formatted_messages:
++            token_count += count_tokens(message["content"])
++        return token_count
++
+     @override
+     def get_config(self) -> AnthropicConfig:
+         """Get the Anthropic model configuration.
+diff --git a/src/strands/models/model.py b/src/strands/models/model.py
+index 438d6a7ba..dfde85554 100644
+--- a/src/strands/models/model.py
++++ b/src/strands/models/model.py
+@@ -92,6 +92,17 @@ class Model(abc.ABC):
+         """
+         pass
+ 
++    @abc.abstractmethod
++    # pragma: no cover
++    def estimate_tokens(
++        self,
++        messages: Messages,
++        tool_specs: list[ToolSpec] | None = None,
++        system_prompt: str | None = None,
++    ) -> int:
++        """Estimate token count for the given input before sending to model."""
++        pass
++
+     @abc.abstractmethod
+     # pragma: no cover
+     def structured_output(
+diff --git a/src/strands/models/openai.py b/src/strands/models/openai.py
+index c4be7d360..83f47db03 100644
+--- a/src/strands/models/openai.py
++++ b/src/strands/models/openai.py
+@@ -119,6 +119,43 @@ class OpenAIModel(Model):
+         """Get the OpenAI model configuration.
+ 
+         Returns:
++    @override
++    def estimate_tokens(
++        self,
++        messages: Messages,
++        tool_specs: list[ToolSpec] | None = None,
++        system_prompt: str | None = None,
++    ) -> int:
++        """Estimate token count for the given input before sending to model."""
++        import tiktoken
++        # Determine the encoding based on model ID or default
++        model_id = self.config.get("model_id", "gpt-4")
++        try:
++            encoding = tiktoken.encoding_for_model(model_id)
++        except KeyError:
++            encoding = tiktoken.get_encoding("cl100k_base")
++
++        tokens = 0
++
++        # If system prompt is provided, count tokens for it
++        if system_prompt:
++            tokens += len(encoding.encode(system_prompt))
++
++        # Count tokens in messages
++        for message in messages:
++            # Count tokens for the role, name, and content keys
++            tokens += len(encoding.encode(message["role"]))
++            if "name" in message:
++                tokens += len(encoding.encode(message["name"]))
++            tokens += len(encoding.encode(message["content"]))
++
++        # Count tokens for tool specs if provided
++        if tool_specs:
++            tool_descriptions = "\n".join(f"{tool['name']}: {tool['description']}" for tool in tool_specs)
++            tokens += len(encoding.encode(tool_descriptions))
++
++        return tokens
++
+             The OpenAI model configuration.
+         """
+         return cast(OpenAIModel.OpenAIConfig, self.config)

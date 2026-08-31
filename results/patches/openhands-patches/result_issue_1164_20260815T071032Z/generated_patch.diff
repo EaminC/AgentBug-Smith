@@ -1,0 +1,86 @@
+diff --git a/src/strands/session/s3_session_manager.py b/src/strands/session/s3_session_manager.py
+index e5713e5b7..aee772ee8 100644
+--- a/src/strands/session/s3_session_manager.py
++++ b/src/strands/session/s3_session_manager.py
+@@ -256,7 +256,81 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
+         message_key = self._get_message_path(session_id, agent_id, message_id)
+         self._write_s3_object(message_key, session_message.to_dict())
+ 
++from concurrent.futures import ThreadPoolExecutor, as_completed
++
++from concurrent.futures import ThreadPoolExecutor, as_completed
++
++
+     def list_messages(
++    def list_messages(self, session_id: str, agent_id: str, limit: int | None = None, offset: int = 0, **kwargs: Any) -> list[SessionMessage]:
++        """List messages for an agent with pagination from S3."""
++        from concurrent.futures import ThreadPoolExecutor, as_completed
++
++        messages_prefix = f"{self._get_agent_path(session_id, agent_id)}messages/"
++        try:
++            paginator = self.client.get_paginator("list_objects_v2")
++            pages = paginator.paginate(Bucket=self.bucket, Prefix=messages_prefix)
++
++            # Collect all message keys and extract their indices
++            message_index_keys: list[tuple[int, str]] = []
++            for page in pages:
++                if "Contents" in page:
++                    for obj in page["Contents"]:
++                        key = obj["Key"]
++                        if key.endswith(".json") and MESSAGE_PREFIX in key:
++                            # Extract the filename part from the full S3 key
++                            filename = key.split("/")[-1]
++                            # Extract index from message_<index>.json format
++                            index = int(filename[len(MESSAGE_PREFIX) : -5])  # Remove prefix and .json suffix
++                            message_index_keys.append((index, key))
++
++            # Sort by index and extract just the keys
++            message_keys = [k for _, k in sorted(message_index_keys)]
++
++            # Apply pagination to keys before loading content
++            if limit is not None:
++                message_keys = message_keys[offset : offset + limit]
++            else:
++                message_keys = message_keys[offset:]
++
++            # Load only the required message objects concurrently
++            messages: list[tuple[int, SessionMessage | None]] = []
++            with ThreadPoolExecutor() as executor:
++                future_to_index = {executor.submit(self._read_s3_object, key): i for i, key in enumerate(message_keys)}
++                for future in as_completed(future_to_index):
++                    index = future_to_index[future]
++                    try:
++                        message_data = future.result()
++                        if message_data:
++                            message = SessionMessage.from_dict(message_data)
++                        else:
++                            message = None
++                    except Exception:
++                        # Log or handle errors gracefully
++                        message = None
++                    messages.append((index, message))
++
++            # Sort messages by their original index to maintain order
++            messages.sort(key=lambda x: x[0])
++
++            # Return only the SessionMessage objects, filter out None
++            return [msg for _, msg in messages if msg is not None]
++
++        except ClientError as e:
++            raise SessionException(f"S3 error reading messages: {e}") from e
++
++
++
++
++
++
++
++
++
++
++
++from concurrent.futures import ThreadPoolExecutor, as_completed
++
+         self, session_id: str, agent_id: str, limit: int | None = None, offset: int = 0, **kwargs: Any
+     ) -> list[SessionMessage]:
+         """List messages for an agent with pagination from S3."""

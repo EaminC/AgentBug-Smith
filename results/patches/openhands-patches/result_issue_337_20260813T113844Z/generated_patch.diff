@@ -1,0 +1,129 @@
+diff --git a/src/strands/tools/structured_output.py b/src/strands/tools/structured_output.py
+index 5421cdc69..8bdddce61 100644
+--- a/src/strands/tools/structured_output.py
++++ b/src/strands/tools/structured_output.py
+@@ -312,6 +312,7 @@ def _expand_nested_properties(schema: Dict[str, Any], model: Type[BaseModel]) ->
+     if "properties" not in schema:
+         return
+ 
++    
+     # Create a modified copy of the properties to avoid modifying while iterating
+     for prop_name, prop_info in list(schema["properties"].items()):
+         field = model.model_fields.get(prop_name)
+@@ -320,43 +321,80 @@ def _expand_nested_properties(schema: Dict[str, Any], model: Type[BaseModel]) ->
+ 
+         field_type = field.annotation
+ 
+-        # Handle Optional types
++        # Handle Optional and container types with BaseModel items
+         is_optional = False
+-        if (
+-            field_type is not None
+-            and hasattr(field_type, "__origin__")
+-            and field_type.__origin__ is Union
+-            and hasattr(field_type, "__args__")
+-        ):
+-            # Look for Optional[BaseModel]
+-            for arg in field_type.__args__:
+-                if arg is type(None):
+-                    is_optional = True
+-                elif isinstance(arg, type) and issubclass(arg, BaseModel):
+-                    field_type = arg
+-
+-        # If this is a BaseModel field, expand its properties with full details
+-        if isinstance(field_type, type) and issubclass(field_type, BaseModel):
+-            # Get the nested model's schema with all its properties
+-            nested_model_schema = field_type.model_json_schema()
+-
+-            # Create a properly expanded nested object
+-            expanded_object = {
+-                "type": ["object", "null"] if is_optional else "object",
+-                "description": prop_info.get("description", field.description or f"The {prop_name}"),
+-                "properties": {},
+-            }
+-
+-            # Copy all properties from the nested schema
+-            if "properties" in nested_model_schema:
+-                expanded_object["properties"] = nested_model_schema["properties"]
+-
+-            # Copy required fields
+-            if "required" in nested_model_schema:
+-                expanded_object["required"] = nested_model_schema["required"]
+-
+-            # Replace the original property with this expanded version
+-            schema["properties"][prop_name] = expanded_object
++        inner_model = None
++
++        def resolve_inner_model(t):
++            """Recursively resolve inner BaseModel from type annotations."""
++            origin = getattr(t, "__origin__", None)
++            args = getattr(t, "__args__", ())
++            if origin is Union:
++                # Optional or Union types
++                for arg in args:
++                    if arg is type(None):
++                        continue
++                    inner = resolve_inner_model(arg)
++                    if inner:
++                        return inner
++            elif origin in (list, List):
++                # List type
++                return resolve_inner_model(args[0]) if args else None
++            elif isinstance(t, type) and issubclass(t, BaseModel):
++                return t
++            return None
++
++        inner_model = resolve_inner_model(field_type)
++
++        if inner_model:
++            # Determine if optional
++            if (
++                field_type is not None
++                and hasattr(field_type, "__origin__")
++                and field_type.__origin__ is Union
++                and hasattr(field_type, "__args__")
++            ):
++                for arg in field_type.__args__:
++                    if arg is type(None):
++                        is_optional = True
++
++            # Get nested model's schema
++            nested_model_schema = inner_model.model_json_schema()
++
++            # Wrap based on original type
++            origin = getattr(field_type, "__origin__", None)
++            if origin in (list, List):
++                expanded_object = {
++                    "type": ["array", "null"] if is_optional else "array",
++                    "minItems": 0,
++                    "items": {
++                        "type": "object",
++                        "description": prop_info.get("description", field.description or f"The {prop_name}"),
++                        "properties": {},
++                    },
++                }
++                if "properties" in nested_model_schema:
++                    expanded_object["items"]["properties"] = nested_model_schema["properties"]
++                if "required" in nested_model_schema:
++                    expanded_object["items"]["required"] = nested_model_schema["required"]
++                schema["properties"][prop_name] = expanded_object
++            else:
++                expanded_object = {
++                    "type": ["object", "null"] if is_optional else "object",
++                    "description": prop_info.get("description", field.description or f"The {prop_name}"),
++                    "properties": {},
++                }
++                if "properties" in nested_model_schema:
++                    expanded_object["properties"] = nested_model_schema["properties"]
++                if "required" in nested_model_schema:
++                    expanded_object["required"] = nested_model_schema["required"]
++                schema["properties"][prop_name] = expanded_object
++        
++
++        # No change for other types
++
++    
++
+ 
+ 
+ def _process_referenced_models(schema: Dict[str, Any], model: Type[BaseModel]) -> None:

@@ -1,0 +1,55 @@
+diff --git a/strands-py/src/strands/vended_plugins/context_offloader/plugin.py b/strands-py/src/strands/vended_plugins/context_offloader/plugin.py
+index 62fa88e57..86ee71884 100644
+--- a/strands-py/src/strands/vended_plugins/context_offloader/plugin.py
++++ b/strands-py/src/strands/vended_plugins/context_offloader/plugin.py
+@@ -391,8 +391,8 @@ class ContextOffloader(Plugin):
+         storage = self._storage_for_agent(tool_context.agent)
+         try:
+             content_bytes, content_type = await _retrieve_content(storage, reference)
+-        except KeyError:
+-            return f"Error: reference not found: {reference}"
++        except KeyError as e:
++            raise ValueError(f"reference not found: {reference}") from e
+ 
+         # Refresh the eviction cycle so actively-retrieved content survives
+         # eviction for unified Storage backends, matching InMemoryStorage.retrieve.
+@@ -402,8 +402,8 @@ class ContextOffloader(Plugin):
+             return self._decode_full_content(content_bytes, content_type, reference)
+ 
+         if not _is_searchable_content(content_type):
+-            return (
+-                f"Error: cannot search binary content ({content_type}). "
++            raise ValueError(
++                f"cannot search binary content ({content_type}). "
+                 "Omit pattern/line_range/context_lines to retrieve the full content."
+             )
+ 
+@@ -417,7 +417,11 @@ class ContextOffloader(Plugin):
+         elif pattern is None:
+             lr = (1, max(1, ctx_lines))
+ 
+-        return _search_content(text, pattern=pattern, line_range=lr, context_lines=ctx_lines, max_chars=max_chars)
++        content = _search_content(text, pattern=pattern, line_range=lr, context_lines=ctx_lines, max_chars=max_chars)
++        if isinstance(content, str) and content.startswith("Error:"):
++            raise ValueError(content)
++        return content
++
+ 
+     @staticmethod
+     def _decode_full_content(content_bytes: bytes, content_type: str, reference: str) -> dict | str:
+diff --git a/strands-py/tests/strands/vended_plugins/context_offloader/test_plugin.py b/strands-py/tests/strands/vended_plugins/context_offloader/test_plugin.py
+index 4e639a47d..ea5d7190e 100644
+--- a/strands-py/tests/strands/vended_plugins/context_offloader/test_plugin.py
++++ b/strands-py/tests/strands/vended_plugins/context_offloader/test_plugin.py
+@@ -509,8 +509,9 @@ class TestRetrievalTool:
+ 
+     @pytest.mark.asyncio
+     async def test_retrieve_missing_reference(self, plugin, tool_context):
+-        result = await plugin.retrieve_offloaded_content(reference="nonexistent", tool_context=tool_context)
+-        assert "Error: reference not found" in result
++        with pytest.raises(ValueError) as excinfo:
++            await plugin.retrieve_offloaded_content(reference="nonexistent", tool_context=tool_context)
++        assert "reference not found" in str(excinfo.value)
+ 
+     @pytest.mark.asyncio
+     async def test_retrieve_image_content(self, plugin, storage, tool_context):

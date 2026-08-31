@@ -1,0 +1,47 @@
+diff --git a/src/strands/models/bedrock.py b/src/strands/models/bedrock.py
+index 4a48d7229..e668c20bd 100644
+--- a/src/strands/models/bedrock.py
++++ b/src/strands/models/bedrock.py
+@@ -177,14 +177,21 @@ class BedrockModel(Model):
+ 
+         logger.debug("region=<%s> | bedrock client created", self.client.meta.region_name)
+ 
+-    @property
+     def _supports_caching(self) -> bool:
+         """Whether this model supports prompt caching.
+ 
+-        Returns True for Claude models on Bedrock.
++        Returns True for Claude models and application inference profile ARNs on Bedrock.
+         """
+-        model_id = self.config.get("model_id", "").lower()
+-        return "claude" in model_id or "anthropic" in model_id
++        model_id = getattr(self.config, "model_id", "").lower()
++        # Support caching for model_ids that contain "claude" or "anthropic"
++        # or if the model_id looks like an ARN for an application inference profile
++        if "claude" in model_id or "anthropic" in model_id:
++            return True
++        if model_id.startswith("arn:") and ("anthropic" in model_id or "claude" in model_id):
++            return True
++        return False
++
++    _supports_caching = property(_supports_caching)
+ 
+     @override
+     def update_config(self, **model_config: Unpack[BedrockConfig]) -> None:  # type: ignore
+diff --git a/tests/strands/models/test_bedrock.py b/tests/strands/models/test_bedrock.py
+index 9dae16be7..af7d01daa 100644
+--- a/tests/strands/models/test_bedrock.py
++++ b/tests/strands/models/test_bedrock.py
+@@ -2591,6 +2591,12 @@ def test_supports_caching_true_for_claude(bedrock_client):
+     assert model2._supports_caching is True
+ 
+ 
++def test_supports_caching_true_for_application_arn():
++    # Simulate an application inference profile ARN that copies from a Claude profile
++    arn_model = BedrockModel(model_id="arn:aws:bedrock:us-east-1:123456789012:inference-profile/anthropic.claude-haiku-4-5-20251001-v1:0")
++    assert arn_model._supports_caching
++
++
+ def test_supports_caching_false_for_non_claude(bedrock_client):
+     """Test that supports_caching returns False for non-Claude models."""
+     model = BedrockModel(model_id="amazon.nova-pro-v1:0")

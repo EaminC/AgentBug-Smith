@@ -1,0 +1,73 @@
+diff --git a/strands-py/src/strands/event_loop/event_loop.py b/strands-py/src/strands/event_loop/event_loop.py
+index 5d28879c7..f290cb34c 100644
+--- a/strands-py/src/strands/event_loop/event_loop.py
++++ b/strands-py/src/strands/event_loop/event_loop.py
+@@ -307,16 +307,23 @@ async def event_loop_cycle(
+                 """
+                 Handle max_tokens limit reached by the model.
+ 
+-                When the model reaches its maximum token limit, this represents a potentially unrecoverable
+-                state where the model's response was truncated. By default, Strands fails hard with an
+-                MaxTokensReachedException to maintain consistency with other failure types.
++                When the model reaches its maximum token limit, this is a recoverable
++                condition where the model's response was truncated.
++
++                Raise MaxTokensReachedException with partial message to allow recovery.
+                 """
++
++                from ._recover_message_on_max_tokens_reached import recover_message_on_max_tokens_reached
++
++                recovered_message = recover_message_on_max_tokens_reached(message)
++
+                 raise MaxTokensReachedException(
+                     message=(
+-                        "Agent has reached an unrecoverable state due to max_tokens limit. "
++                        "Agent loop stopped: max_tokens limit reached. "
+                         "For more information see: "
+                         "https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+-                    )
++                    ),
++                    partial_message=recovered_message,
+                 )
+ 
+             if stop_reason == "tool_use":
+diff --git a/strands-py/src/strands/types/exceptions.py b/strands-py/src/strands/types/exceptions.py
+index 7d621191d..554e239b2 100644
+--- a/strands-py/src/strands/types/exceptions.py
++++ b/strands-py/src/strands/types/exceptions.py
+@@ -24,15 +24,20 @@ class MaxTokensReachedException(Exception):
+     This exception is raised when the model stops generating tokens because it has reached the maximum number of
+     tokens allowed for output generation. This can occur when the model's max_tokens parameter is set too low for
+     the complexity of the response, or when the model naturally reaches its configured output limit during generation.
++
++    Attributes:
++        partial_message: Optional dictionary containing the partial message data generated before hitting the limit.
+     """
+ 
+-    def __init__(self, message: str):
+-        """Initialize the exception with an error message and the incomplete message object.
++    def __init__(self, message: str, partial_message: dict | None = None):
++        """Initialize the exception with an error message and the partial message object.
+ 
+         Args:
+             message: The error message describing the token limit issue
++            partial_message: Optional partial message generated before hitting the token limit
+         """
+         super().__init__(message)
++        self.partial_message = partial_message
+ 
+ 
+ class ContextWindowOverflowException(Exception):
+diff --git a/strands-py/tests/strands/event_loop/test_event_loop.py b/strands-py/tests/strands/event_loop/test_event_loop.py
+index 48efbc6d1..2e9042488 100644
+--- a/strands-py/tests/strands/event_loop/test_event_loop.py
++++ b/strands-py/tests/strands/event_loop/test_event_loop.py
+@@ -635,7 +635,7 @@ async def test_event_loop_cycle_max_tokens_exception(
+ 
+     # Call event_loop_cycle, expecting it to raise MaxTokensReachedException
+     expected_message = (
+-        "Agent has reached an unrecoverable state due to max_tokens limit. "
++        "Agent loop stopped: max_tokens limit reached. "
+         "For more information see: "
+         "https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+     )

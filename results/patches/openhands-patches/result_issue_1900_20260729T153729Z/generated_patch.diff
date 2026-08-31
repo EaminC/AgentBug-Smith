@@ -1,0 +1,66 @@
+diff --git a/src/agentscope/tool/_response.py b/src/agentscope/tool/_response.py
+index 94646699..4661837e 100644
+--- a/src/agentscope/tool/_response.py
++++ b/src/agentscope/tool/_response.py
+@@ -48,6 +48,10 @@ class ToolResponse(BaseModel):
+     metadata: dict = Field(default_factory=dict)
+     """The metadata to be accessed within the agent, so that we don't need to
+     parse the tool result block."""
++        # Helper dict to accumulate decoded bytes per block id for base64 merging
++        if not hasattr(self, '_decoded_bytes_map'):
++            self._decoded_bytes_map = {}
++
+ 
+     id: str = Field(default_factory=_generate_id)
+     """The identity of the tool response."""
+@@ -80,16 +84,42 @@ class ToolResponse(BaseModel):
+                         target_block.source,
+                         Base64Source,
+                     ) and isinstance(chunk_block.source, Base64Source):
+-                        # Accumulate the base64 data
+-                        target_block.source.data += chunk_block.source.data
+-                        # Update the newest media type and name if provided
+-                        target_block.name = (
+-                            chunk_block.name or target_block.name
++                        # Accumulate the base64 data by decoding and re-encoding to avoid padding corruption
++                        import base64
++                        import base64
++                        idx = current_ids_to_index[chunk_block.id]
++                        print('Merging base64 strings:', repr(self.content[idx].source.data), repr(chunk_block.source.data))
++                        decoded_bytes = base64.b64decode(self.content[idx].source.data) + base64.b64decode(chunk_block.source.data)
++                        print('Decoded bytes length:', len(decoded_bytes))
++                        merged_source = Base64Source(
++                            data=base64.b64encode(decoded_bytes).decode("ascii"),
++                            media_type=chunk_block.source.media_type or self.content[idx].source.media_type,
+                         )
+-                        target_block.source.media_type = (
+-                            chunk_block.source.media_type
+-                            or target_block.source.media_type
++                        new_block = target_block.model_copy(deep=True)
++                        new_block.source = merged_source
++                        self.content[idx] = new_block
++                        # Update the newest media type and name if provided
++                        # Refresh the id-index mapping after changing content
++                        current_ids_to_index = {_.id: idx for idx, _ in enumerate(self.content) }
++
++                        # Accumulate decoded bytes per block id
++                        if chunk_block.id in self._decoded_bytes_map:
++                            self._decoded_bytes_map[chunk_block.id] += base64.b64decode(chunk_block.source.data)
++                        else:
++                            self._decoded_bytes_map[chunk_block.id] = base64.b64decode(chunk_block.source.data)
++
++                        # Update the DataBlock source data as merged base64 encoding of accumulated bytes
++                        new_block.name = chunk_block.name or new_block.name
++                        new_block.source.media_type = chunk_block.source.media_type or new_block.source.media_type
++                        new_block.source = Base64Source(
++                            data=base64.b64encode(self._decoded_bytes_map[chunk_block.id]).decode("ascii"),
++                            media_type=new_block.source.media_type,
+                         )
++
++                        # Replace the block
++                        self.content[idx] = new_block
++
++
+                     else:
+                         raise ValueError(
+                             "Cannot append DataBlock with URL source or "

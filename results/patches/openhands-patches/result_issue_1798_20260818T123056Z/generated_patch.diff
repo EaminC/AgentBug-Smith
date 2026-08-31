@@ -1,0 +1,226 @@
+diff --git a/src/strands/session/repository_session_manager.py b/src/strands/session/repository_session_manager.py
+index d23c4a94f..29a958332 100644
+--- a/src/strands/session/repository_session_manager.py
++++ b/src/strands/session/repository_session_manager.py
+@@ -92,17 +92,70 @@ class RepositorySessionManager(SessionManager):
+         latest_agent_message.redact_message = redact_message
+         return self.session_repository.update_message(self.session_id, agent.agent_id, latest_agent_message)
+ 
++    def __init__(
++        self,
++        session_id: str,
++        session_repository: SessionRepository,
++        **kwargs: Any,
++    ):
++        """Initialize the RepositorySessionManager.
++
++        If no session with the specified session_id exists yet, it will be created
++        in the session_repository.
++
++        This override is needed to initialize _synced_internal_state dict.
++        """
++        session = session_repository.read_session(session_id)
++        # Create a session if it does not exist yet
++        if session is None:
++            logger.debug("session_id=<%s> | session not found, creating new session", self.session_id)
++            session = Session(session_id=session_id, session_type=SessionType.AGENT)
++            session_repository.create_session(session)
++
++        self.session = session
++
++        # Keep track of the latest message of each agent in case we need to redact it.
++        self._latest_agent_message = {}
++
++        # New attribute: keep track of last synced internal states per agent
++        self._synced_internal_state = {}
++
+     def sync_agent(self, agent: "Agent", **kwargs: Any) -> None:
+-        """Serialize and update the agent into the session repository.
++        """Serialize and update the agent into the session repository conditionally.
+ 
+         Args:
+             agent: Agent to sync to the session.
+             **kwargs: Additional keyword arguments for future extensibility.
+         """
+-        self.session_repository.update_agent(
+-            self.session_id,
+-            SessionAgent.from_agent(agent),
+-        )
++        # Check current internal state of the agent
++        current_internal_state = agent.state._get_internal_state()
++
++        # Previous synced internal state for comparison
++        previous_internal_state = self._synced_internal_state.get(agent.agent_id)
++
++        # Check dirty flag on agent state
++        state_dirty = agent.state._is_dirty() if hasattr(agent.state, "_is_dirty") else False
++
++        # Only update if dirty flag is set or internal state has changed
++        if state_dirty or current_internal_state != previous_internal_state:
++            try:
++                self.session_repository.update_agent(
++                    self.session_id,
++                    SessionAgent.from_agent(agent),
++                )
++            except Exception as e:
++                # Log the error and keep the dirty flag for retry
++                logger.error(
++                    "Failed to sync agent_id=<%s>, error: %s",
++                    agent.agent_id,
++                    e,
++                )
++                return
++            # Clear dirty flag after successful sync
++            if hasattr(agent.state, "_clear_dirty"):
++                agent.state._clear_dirty()
++            # Update tracked internal state
++            self._synced_internal_state[agent.agent_id] = current_internal_state
+ 
+     def initialize(self, agent: "Agent", **kwargs: Any) -> None:
+         """Initialize an agent with a session.
+diff --git a/src/strands/types/json_dict.py b/src/strands/types/json_dict.py
+index a8636ab10..a69dbbcd0 100644
+--- a/src/strands/types/json_dict.py
++++ b/src/strands/types/json_dict.py
+@@ -15,6 +15,7 @@ class JSONSerializableDict:
+     def __init__(self, initial_state: dict[str, Any] | None = None):
+         """Initialize JSONSerializableDict."""
+         self._data: dict[str, Any]
++        self._dirty: bool = False
+         if initial_state:
+             self._validate_json_serializable(initial_state)
+             self._data = copy.deepcopy(initial_state)
+@@ -34,6 +35,7 @@ class JSONSerializableDict:
+         self._validate_key(key)
+         self._validate_json_serializable(value)
+         self._data[key] = copy.deepcopy(value)
++        self._dirty = True
+ 
+     def get(self, key: str | None = None) -> Any:
+         """Get a value or entire data.
+@@ -57,6 +59,7 @@ class JSONSerializableDict:
+         """
+         self._validate_key(key)
+         self._data.pop(key, None)
++        self._dirty = True
+ 
+     def _validate_key(self, key: str) -> None:
+         """Validate that a key is valid.
+@@ -87,6 +90,15 @@ class JSONSerializableDict:
+             json.dumps(value)
+         except (TypeError, ValueError) as e:
+             raise ValueError(
++    def _is_dirty(self) -> bool:
++        """Check if the dict has been modified since last clean state."""
++        return self._dirty
++
++    def _clear_dirty(self) -> None:
++        """Reset the dirty flag to indicate no changes have been made."""
++        self._dirty = False
++
++
+                 f"Value is not JSON serializable: {type(value).__name__}. "
+                 f"Only JSON-compatible types (str, int, float, bool, list, dict, None) are allowed."
+             ) from e
+diff --git a/tests/strands/session/test_repository_session_manager.py b/tests/strands/session/test_repository_session_manager.py
+index 22de9f964..8fa79fef6 100644
+--- a/tests/strands/session/test_repository_session_manager.py
++++ b/tests/strands/session/test_repository_session_manager.py
+@@ -39,6 +39,61 @@ def mock_multi_agent():
+     """Create mock multi-agent for testing."""
+ 
+     mock = Mock()
++def test_sync_agent_conditional_calls(session_manager, mock_repository, agent):
++    """Test that sync_agent calls update_agent only when dirty or state changes."""
++    # Patch the session_repository's update_agent method with a mock
++    mock_repository.update_agent = Mock()
++    
++    # Initially, the internal state dict is empty, and dirty flag is False
++    # So first sync should call update_agent because internal state changes
++    session_manager.sync_agent(agent)
++    assert mock_repository.update_agent.call_count == 1
++    
++    # On second call, without changes, update_agent should not be called
++    mock_repository.update_agent.reset_mock()
++    session_manager.sync_agent(agent)
++    assert mock_repository.update_agent.call_count == 0
++
++    # Set the dirty flag on the agent state
++    agent.state._dirty = True
++
++    # Now sync_agent should trigger update_agent call
++    session_manager.sync_agent(agent)
++    assert mock_repository.update_agent.call_count == 1
++    
++    # Clear dirty flag
++    agent.state._clear_dirty()
++
++    # Change internal state by setting a new key
++    agent.state.set("new_key", "value")
++
++    # Sync again should trigger update
++    mock_repository.update_agent.reset_mock()
++    session_manager.sync_agent(agent)
++    assert mock_repository.update_agent.call_count == 1
++
++    # Clear dirty flag
++    agent.state._clear_dirty()
++
++    # Sync with no changes should not call update_agent
++    mock_repository.update_agent.reset_mock()
++    session_manager.sync_agent(agent)
++    assert mock_repository.update_agent.call_count == 0
++
++    # Simulate update_agent failure raises error but keeps dirty flag
++    def fail_update_agent(*args, **kwargs):
++        raise Exception("Simulated failure")
++
++    mock_repository.update_agent = Mock(side_effect=fail_update_agent)
++
++    # Set dirty flag to True
++    agent.state._dirty = True
++
++    # Call sync_agent, which should catch error and keep dirty flag
++    session_manager.sync_agent(agent)
++    assert agent.state._is_dirty() is True
++
++
+     mock.id = "test-multi-agent"
+     mock.serialize_state.return_value = {"id": "test-multi-agent", "state": {"key": "value"}}
+     mock.deserialize_state = Mock()
+diff --git a/tests/strands/types/test_json_dict.py b/tests/strands/types/test_json_dict.py
+index caa010bac..5f9215685 100644
+--- a/tests/strands/types/test_json_dict.py
++++ b/tests/strands/types/test_json_dict.py
+@@ -39,6 +39,31 @@ def test_initialize_and_get_entire_state():
+ def test_initialize_with_error():
+     with pytest.raises(ValueError, match="not JSON serializable"):
+         JSONSerializableDict({"object", object()})
++def test_dirty_flag_behavior():
++    d = JSONSerializableDict()
++    
++    # Initially not dirty
++    assert not d._is_dirty()
++    
++    # Set a key should mark dirty
++    d.set("key1", 123)
++    assert d._is_dirty()
++
++    # Clear dirty resets flag
++    d._clear_dirty()
++    assert not d._is_dirty()
++
++    # Delete a key should mark dirty
++    d.set("key2", 456)
++    d._clear_dirty()
++    d.delete("key2")
++    assert d._is_dirty()
++
++    # Clearing dirty again
++    d._clear_dirty()
++    assert not d._is_dirty()
++
++
+ 
+ 
+ def test_delete():
