@@ -1,0 +1,204 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_3226.py::test_vertex_ai_429_plain_text_message_converts_to_model_throttled_exception FAILED [100%]
+
+=================================== FAILURES ===================================
+_ test_vertex_ai_429_plain_text_message_converts_to_model_throttled_exception __
+
+self = <strands.models.gemini.GeminiModel object at 0x745d98080200>
+messages = [{'role': 'user', 'content': [{'text': 'hi'}]}], tool_specs = None
+system_prompt = None, tool_choice = None, kwargs = {}
+
+    async def stream(
+        self,
+        messages: Messages,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Stream conversation with the Gemini model.
+    
+        Args:
+            messages: List of message objects to be processed by the model.
+            tool_specs: List of tool specifications to make available to the model.
+            system_prompt: System prompt to provide context to the model.
+            tool_choice: Selection strategy for tool invocation.
+                Note: Currently unused.
+            **kwargs: Additional keyword arguments for future extensibility.
+    
+        Yields:
+            Formatted message chunks from the model.
+    
+        Raises:
+            ModelThrottledException: If the request is throttled by Gemini.
+        """
+        request = self._format_request(messages, tool_specs, system_prompt, self.config.get("params"))
+    
+        client = self._get_client().aio
+    
+        try:
+            response = await client.models.generate_content_stream(**request)
+    
+            yield self._format_chunk({"chunk_type": "message_start"})
+    
+            data_type: str | None = None
+            tool_used = False
+            candidate = None
+            event = None
+            async for event in response:
+                candidates = event.candidates
+                candidate = candidates[0] if candidates else None
+                content = candidate.content if candidate else None
+                parts = content.parts if content and content.parts else []
+    
+                for part in parts:
+                    if part.function_call:
+                        if data_type is not None:
+                            yield self._format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+                            data_type = None
+    
+                        yield self._format_chunk({"chunk_type": "content_start", "data_type": "tool", "data": part})
+                        yield self._format_chunk({"chunk_type": "content_delta", "data_type": "tool", "data": part})
+                        yield self._format_chunk({"chunk_type": "content_stop", "data_type": "tool", "data": part})
+                        tool_used = True
+    
+                    if part.text:
+                        new_data_type = "reasoning_content" if part.thought else "text"
+                        if new_data_type != data_type:
+                            if data_type is not None:
+                                yield self._format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+                            yield self._format_chunk({"chunk_type": "content_start", "data_type": new_data_type})
+                            data_type = new_data_type
+                        yield self._format_chunk(
+                            {
+                                "chunk_type": "content_delta",
+                                "data_type": data_type,
+                                "data": part,
+                            },
+                        )
+    
+            if data_type is not None:
+                yield self._format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+            yield self._format_chunk(
+                {
+                    "chunk_type": "message_stop",
+                    "data": "TOOL_USE" if tool_used else (candidate.finish_reason if candidate else "STOP"),
+                }
+            )
+            if event:
+                yield self._format_chunk({"chunk_type": "metadata", "data": event.usage_metadata})
+    
+        except genai.errors.ClientError as error:
+            if not error.message:
+                raise
+    
+            try:
+>               message = json.loads(error.message) if error.message else {}
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+strands-py/src/strands/models/gemini.py:601: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/json/__init__.py:346: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/json/decoder.py:338: in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <json.decoder.JSONDecoder object at 0x745d9b9a4d10>
+s = 'Resource exhausted. Please try again later.', idx = 0
+
+    def raw_decode(self, s, idx=0):
+        """Decode a JSON document from ``s`` (a ``str`` beginning with
+        a JSON document) and return a 2-tuple of the Python
+        representation and the index in ``s`` where the document ended.
+    
+        This can be used to decode a JSON document from a string that may
+        have extraneous data at the end.
+    
+        """
+        try:
+            obj, end = self.scan_once(s, idx)
+        except StopIteration as err:
+>           raise JSONDecodeError("Expecting value", s, err.value) from None
+E           json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+/usr/local/lib/python3.12/json/decoder.py:356: JSONDecodeError
+
+The above exception was the direct cause of the following exception:
+
+    @pytest.mark.asyncio
+    async def test_vertex_ai_429_plain_text_message_converts_to_model_throttled_exception():
+        """
+        Regression test for issue #3226:
+        When Vertex AI returns a 429 with a plain-text error message (not JSON),
+        GeminiModel.stream() should convert it to ModelThrottledException.
+        """
+        error = genai.errors.ClientError(
+            429,
+            {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Resource exhausted. Please try again later."}},
+        )
+        assert error.code == 429
+        assert error.status == "RESOURCE_EXHAUSTED"
+    
+        model = GeminiModel(model_id="gemini-2.5-flash", client_args={"api_key": "test"})
+    
+        # Patch the client's generate_content_stream to raise the above error
+        # We do not mock GeminiModel.stream itself, only the internal client call
+        # so that the real stream method runs and triggers the error handling.
+        # Use unittest.mock.AsyncMock for the aio.models.generate_content_stream method.
+        import unittest.mock
+    
+        with unittest.mock.patch.object(genai.Client, "aio", new_callable=unittest.mock.PropertyMock) as aio_mock:
+            mock_aio = unittest.mock.AsyncMock()
+            aio_mock.return_value = mock_aio
+            mock_aio.models.generate_content_stream.side_effect = error
+    
+            # The stream method returns an async generator; calling __anext__ triggers the call
+            stream_gen = model.stream([{"role": "user", "content": [{"text": "hi"}]}])
+            with pytest.raises(ModelThrottledException) as excinfo:
+>               await stream_gen.__anext__()
+
+tests/agentsmith_fail2pass_3226.py:38: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+strands-py/src/strands/models/gemini.py:605: in stream
+    raise error from e
+strands-py/src/strands/models/gemini.py:545: in stream
+    response = await client.models.generate_content_stream(**request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <AsyncMock name='aio().models.generate_content_stream' id='127945328390416'>
+args = ()
+kwargs = {'config': {}, 'contents': [{'parts': [{'text': 'hi'}], 'role': 'user'}], 'model': 'gemini-2.5-flash'}
+
+    async def _execute_mock_call(self, /, *args, **kwargs):
+        # This is nearly just like super(), except for special handling
+        # of coroutines
+    
+        _call = _Call((args, kwargs), two=True)
+        self.await_count += 1
+        self.await_args = _call
+        self.await_args_list.append(_call)
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'status': 'RESOURCE_EXHAUSTED', 'message': 'Resource exhausted. Please try again later.'}}
+
+/usr/local/lib/python3.12/unittest/mock.py:2291: ClientError
+------------------------------ Captured log call -------------------------------
+WARNING  strands.models.gemini:gemini.py:603 error_message=<Resource exhausted. Please try again later.> | Gemini API returned non-JSON error
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_3226.py::test_vertex_ai_429_plain_text_message_converts_to_model_throttled_exception
+============================== 1 failed in 1.21s ===============================
