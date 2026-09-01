@@ -1,0 +1,2655 @@
+STDOUT:
+
+[2026-08-31 23:41:12] Total number of tasks: 1
+
+[2026-08-31 23:41:12] Total number of processes: 1
+
+[2026-08-31 23:41:12] Task group info: (number of groups: 1)
+
+[2026-08-31 23:41:12]   local: 1 tasks
+
+[2026-08-31 23:41:12] Running in single process mode.
+
+[2026-08-31 23:41:12] ============= Running task issue_1696_20260818T061206Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] OpenAIModel tool message content sent as array instead of string breaks OpenAI-compatible endpoints (e.g., Kimi K2.5)        │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched [./issues](./issues?q=) and there are no duplicates of my issue                                                              │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ 1.26.0                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Python Version                                                                                                                              │
+│                                                                                                                                                 │
+│ 3.13                                                                                                                                            │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ macOS 15.5                                                                                                                                      │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ 1. Create an agent using `OpenAIModel` with an OpenAI-compatible endpoint                                                                       │
+│    (e.g., Kimi K2.5 via Bedrock Mantle or Moonshot API directly)                                                                                │
+│ 2. Register a simple tool (e.g., `current_time` from `strands-agents-tools`)                                                                    │
+│ 3. Ask the agent a question that triggers tool use: `"What time is it right now? Please use your tools to answer."`                             │
+│ 4. Observe that the tool executes correctly and returns the correct timestamp                                                                   │
+│ 5. Observe that the model ignores the tool result and hallucinates a different datetime                                                         │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ The model should use the tool result (In this case, the exact current time. e.g., `2026-02-15T09:22:35`) and return the correct datetime in its │
+│ response.                                                                                                                                       │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ The model returns a completely different, hallucinated datetime(e.g., `2025-04-26T18:25:31`) despite the tool result containing the correct     │
+│ value.                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Root Cause Analysis                                                                                                                         │
+│                                                                                                                                                 │
+│ `OpenAIModel.format_request_tool_message()` sends the tool result `content`                                                                     │
+│ as an **array** of content blocks:                                                                                                              │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # Current behavior (openai.py L207-211)                                                                                                         │
+│ return {                                                                                                                                        │
+│     "role": "tool",                                                                                                                             │
+│     "tool_call_id": tool_result["toolUseId"],                                                                                                   │
+│     "content": ,  # array                                                                                                                       │
+│ }                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ While OpenAI's API accepts both array and string formats, many                                                                                  │
+│ OpenAI-compatible endpoints (including Kimi K2.5) only correctly process                                                                        │
+│ the **string** format:                                                                                                                          │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # Expected by Kimi K2.5 (per official docs)                                                                                                     │
+│ {                                                                                                                                               │
+│     "role": "tool",                                                                                                                             │
+│     "tool_call_id": tool_call.id,                                                                                                               │
+│     "name": tool_call_name,                                                                                                                     │
+│     "content": json.dumps(tool_result),  # string                                                                                               │
+│ }                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Kimi K2.5's official tool calling example                                                                                                       │
+│ (https://huggingface.co/moonshotai/Kimi-K2-Instruct#tool-calling)                                                                               │
+│ uses `json.dumps(tool_result)` (string format) for the `content` field.                                                                         │
+│                                                                                                                                                 │
+│ When the model receives the array format, it fails to parse the tool result                                                                     │
+│ and falls back to hallucinating the answer.                                                                                                     │
+│                                                                                                                                                 │
+│ ### Verified Fix                                                                                                                                │
+│                                                                                                                                                 │
+│ Subclassing `OpenAIModel` and overriding `format_request_tool_message()` to                                                                     │
+│ return `content` as a string resolves the issue:                                                                                                │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ class KimiCompatibleOpenAIModel(OpenAIModel):                                                                                                   │
+│     @classmethod                                                                                                                                │
+│     def format_request_tool_message(cls, tool_result, **kwargs):                                                                                │
+│         text_parts = []                                                                                                                         │
+│         for content in tool_result["content"]:                                                                                                  │
+│             if "json" in content:                                                                                                               │
+│                 text_parts.append(json.dumps(content["json"]))                                                                                  │
+│             elif "text" in content:                                                                                                             │
+│                 text_parts.append(content["text"])                                                                                              │
+│         return {                                                                                                                                │
+│             "role": "tool",                                                                                                                     │
+│             "tool_call_id": tool_result["toolUseId"],                                                                                           │
+│             "content": "\n".join(text_parts),                                                                                                   │
+│         }                                                                                                                                       │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Debug Logs                                                                                                                                  │
+│                                                                                                                                                 │
+│ **Before fix** (array format → hallucinated response):                                                                                          │
+│ ```                                                                                                                                             │
+│ formatted request=<{... 'content': [{'text': '2026-02-15T09:22:35', 'type': 'text'}] ...}>                                                      │
+│ Output: The current time is 18:25:31 UTC on April 26, 2025.  ← WRONG                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **After fix** (string format → correct response):                                                                                               │
+│ ```                                                                                                                                             │
+│ formatted request=<{... 'content': '2026-02-15T09:30:54' ...}>                                                                                  │
+│ Output: The current time is 9:30:54 UTC on February 15, 2026.  ← CORRECT                                                                        │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ - `BedrockModel` is not affected because it uses the Bedrock Converse API                                                                       │
+│   natively, and AWS Bedrock handles format translation to the model.                                                                            │
+│ - This likely affects other OpenAI-compatible providers beyond Kimi K2.5                                                                        │
+│   (e.g., vLLM, SGLang, Ollama, etc.) that implement the OpenAI API spec                                                                         │
+│   with strict string-only content parsing for tool messages.                                                                                    │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ Option A: Change `format_request_tool_message()` to always return `content`                                                                     │
+│ as a string (most compatible with OpenAI-compatible endpoints).                                                                                 │
+│                                                                                                                                                 │
+│ Option B: Add a configuration option to `OpenAIModel` to switch between                                                                         │
+│ array and string format for tool message content.                                                                                               │
+│                                                                                                                                                 │
+│ Option C: Add both formats support — use string format by default                                                                               │
+│ (broader compatibility) with an option to use array format.                                                                                     │
+│                                                                                                                                                 │
+│ ### Related Issues                                                                                                                              │
+│                                                                                                                                                 │
+│ _No response_                                                                                                                                   │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1185, output_tokens=13, cost=0.000186
+
+===================== CONTEXT RETRIEVAL ROUND 0 ======================
+
+╭─ AutoCodeRover (context retrieval initial prompt) ─────────────────╮
+│ Based on the files, classes, methods, and code statements from the │
+│ issue related to the bug, you can use the following search APIs to │
+│ get more context of the project.                                   │
+│                                                                    │
+│  • search_class(class_name: str): Search for a class in the        │
+│    codebase.                                                       │
+│  • search_class_in_file(self, class_name, file_name: str): Search  │
+│    for a class in a given file.                                    │
+│  • search_method_in_file(method_name: str, file_path: str): Search │
+│    for a method in a given file..                                  │
+│  • search_method_in_class(method_name: str, class_name: str):      │
+│    Search for a method in a given class.                           │
+│  • search_method(method_name: str): Search for a method in the     │
+│    entire codebase.                                                │
+│  • search_code(code_str: str): Search for a code snippet in the    │
+│    entire codebase.                                                │
+│  • search_code_in_file(code_str: str, file_path: str): Search for  │
+│    a code snippet in a given file file.                            │
+│  • get_code_around_line(file_path: str, line_number: int,          │
+│    window_size: int): Get the code around a given line number in a │
+│    file. window_size is the number of lines before and after the   │
+│    line number.                                                    │
+│                                                                    │
+│ You must give correct number of arguments when invoking API calls. │
+│                                                                    │
+│ Note that you can use multiple search APIs in one round.           │
+│                                                                    │
+│ Now analyze the issue and select necessary APIs to get more        │
+│ context of the project. Each API call must have concrete arguments │
+│ as inputs.                                                         │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1465, output_tokens=18, cost=0.000231
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│ search_method_in_file("format_request_tool_message",               │
+│ "strands/models/openai.py")                                        │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=373, output_tokens=33, cost=0.000076
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_method_in_file("format_request_tool_message",            │
+│    "strands/models/openai.py")                                     │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval round 0) ────────────────────────╮
+│ Result of search_method_in_file("format_request_tool_message",     │
+│ "strands/models/openai.py"):                                       │
+│                                                                    │
+│ Found 2 methods with name format_request_tool_message in file      │
+│ strands/models/openai.py:                                          │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│   [func]format_request_tool_message[/func]                         │
+│  [code]                                                            │
+│  189     def format_request_tool_message(cls, tool_result:         │
+│  ToolResult, **kwargs: Any) -> dict[str, Any]:                     │
+│  190         """Format an OpenAI compatible tool message.          │
+│  191                                                               │
+│  192         Args:                                                 │
+│  193             tool_result: Tool result collected from a tool    │
+│  execution.                                                        │
+│  194             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  195                                                               │
+│  196         Returns:                                              │
+│  197             OpenAI compatible tool message.                   │
+│  198         """                                                   │
+│  199         contents = cast(                                      │
+│  200             list[ContentBlock],                               │
+│  201             [                                                 │
+│  202                 {"text": json.dumps(content["json"])} if      │
+│  "json" in content else content                                    │
+│  203                 for content in tool_result["content"]         │
+│  204             ],                                                │
+│  205         )                                                     │
+│  206                                                               │
+│  207         formatted_contents =                                  │
+│  [cls.format_request_message_content(content) for content in       │
+│  contents]                                                         │
+│  208                                                               │
+│  209         # If single text content, use string format for bett  │
+│  model compatibility                                               │
+│  210         if len(formatted_contents) == 1 and                   │
+│  formatted_contents[0].get("type") == "text":                      │
+│  211             content: str | list[dict[str, Any]] =             │
+│  formatted_contents[0]["text"]                                     │
+│  212         else:                                                 │
+│  213             content = formatted_contents                      │
+│  214                                                               │
+│  215         return {                                              │
+│  216             "role": "tool",                                   │
+│  217             "tool_call_id": tool_result["toolUseId"],         │
+│  218             "content": content,                               │
+│  219         }                                                     │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 2:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│  [class]OpenAIModel[/class]                                        │
+│  [func]format_request_tool_message[/func]                          │
+│  [code]                                                            │
+│  189     def format_request_tool_message(cls, tool_result:         │
+│  ToolResult, **kwargs: Any) -> dict[str, Any]:                     │
+│  190         """Format an OpenAI compatible tool message.          │
+│  191                                                               │
+│  192         Args:                                                 │
+│  193             tool_result: Tool result collected from a tool    │
+│  execution.                                                        │
+│  194             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  195                                                               │
+│  196         Returns:                                              │
+│  197             OpenAI compatible tool message.                   │
+│  198         """                                                   │
+│  199         contents = cast(                                      │
+│  200             list[ContentBlock],                               │
+│  201             [                                                 │
+│  202                 {"text": json.dumps(content["json"])} if      │
+│  "json" in content else content                                    │
+│  203                 for content in tool_result["content"]         │
+│  204             ],                                                │
+│  205         )                                                     │
+│  206                                                               │
+│  207         formatted_contents =                                  │
+│  [cls.format_request_message_content(content) for content in       │
+│  contents]                                                         │
+│  208                                                               │
+│  209         # If single text content, use string format for bett  │
+│  model compatibility                                               │
+│  210         if len(formatted_contents) == 1 and                   │
+│  formatted_contents[0].get("type") == "text":                      │
+│  211             content: str | list[dict[str, Any]] =             │
+│  formatted_contents[0]["text"]                                     │
+│  212         else:                                                 │
+│  213             content = formatted_contents                      │
+│  214                                                               │
+│  215         return {                                              │
+│  216             "role": "tool",                                   │
+│  217             "tool_call_id": tool_result["toolUseId"],         │
+│  218             "content": content,                               │
+│  219         }                                                     │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 1 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2266, output_tokens=423, cost=0.000594
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│                                                                    │
+│  • The method format_request_tool_message in the OpenAIModel class │
+│    formats the tool's result into a message dictionary compatible  │
+│    with OpenAI's API expected format. It processes the contents of │
+│    the tool result, where each content block can either be a JSON  │
+│    object or already in text. It converts JSON content to a text   │
+│    JSON string, then formats each content block further using      │
+│    format_request_message_content. If there is only one text       │
+│    content block, it extracts the string directly, otherwise it    │
+│    leaves the content as a list of formatted content blocks.       │
+│                                                                    │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│                                                                    │
+│  • The bug described is that this method returns the content as an │
+│    array (list) if there are multiple content blocks (or it seems  │
+│    even if there is a single), while some OpenAI-compatible        │
+│    endpoints only accept the content field as a single string in   │
+│    the message. This causes these endpoints to ignore the tool     │
+│    result because they cannot parse the array content properly,    │
+│    leading to hallucinated answers.                                │
+│                                                                    │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+│                                                                    │
+│  • The intended behavior would be for this method to always return │
+│    the content field as a string for compatibility with many       │
+│    OpenAI-compatible providers that do not accept an array format  │
+│    for tool message content. The method should convert the list of │
+│    content blocks into one concatenated string, possibly by        │
+│    joining JSON-dumped content or text with newlines, instead of   │
+│    returning an array. This matches the verified fix shown in the  │
+│    issue description.                                              │
+│                                                                    │
+│ Next, to get more context:                                         │
+│                                                                    │
+│  • What is the format_request_message_content method doing? It is  │
+│    called to format each content block before returning.           │
+│  • What is the structure of ToolResult and the content blocks?     │
+│    Understanding typical structure might help.                     │
+│  • Is there configuration or usage in OpenAIModel class related to │
+│    this format? Might be good to see more of the class or other    │
+│    relevant methods.                                               │
+│                                                                    │
+│ I will search for format_request_message_content method in the     │
+│ class OpenAIModel in the same file.                                │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2904, output_tokens=171, cost=0.000538
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 do we need more context:                                        │
+│                                                                    │
+│  • search_method_in_class("format_request_message_content",        │
+│    "OpenAIModel")                                                  │
+│                                                                    │
+│  2 where are bug locations:                                        │
+│                                                                    │
+│  • Location 1: File: strands/models/openai.py, Class: OpenAIModel, │
+│    Method: format_request_tool_message. Intended behavior: Modify  │
+│    this method to always return the tool message content as a      │
+│    single string rather than as an array of content blocks. The    │
+│    string should be constructed by merging or joining the content  │
+│    blocks, converting any JSON content to string via json.dumps,   │
+│    preserving all existing information. This will ensure           │
+│    compatibility with OpenAI-compatible endpoints (like Kimi K2.5) │
+│    that expect string content in tool messages, without affecting  │
+│    the handling of normal content in OpenAI's API. The change      │
+│    should preserve the role as "tool" and include "tool_call_id"   │
+│    as before.                                                      │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=526, output_tokens=188, cost=0.000192
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_method_in_class("format_request_message_content",        │
+│    "OpenAIModel")                                                  │
+│                                                                    │
+│ Bug locations                                                      │
+│                                                                    │
+│  • file: strands/models/openai.py, class: OpenAIModel, method:     │
+│    format_request_tool_message, intended_behavior: Modify this     │
+│    method to always return the tool message content as a single    │
+│    string rather than as an array of content blocks. The string    │
+│    should be constructed by merging or joining the content blocks, │
+│    converting any JSON content to string via json.dumps,           │
+│    preserving all existing information. This will ensure           │
+│    compatibility with OpenAI-compatible endpoints (like Kimi K2.5) │
+│    that expect string content in tool messages, without affecting  │
+│    the handling of normal content in OpenAI's API. The change      │
+│    should preserve the role as "tool" and include "tool_call_id"   │
+│    as before.                                                      │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval round 1) ────────────────────────╮
+│ Result of search_method_in_class("format_request_message_content", │
+│ "OpenAIModel"):                                                    │
+│                                                                    │
+│ Found 1 methods with name format_request_message_content in class  │
+│ OpenAIModel:                                                       │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│  [class]OpenAIModel[/class]                                        │
+│  [func]format_request_message_content[/func]                       │
+│  [code]                                                            │
+│  126     def format_request_message_content(cls, content:          │
+│  ContentBlock, **kwargs: Any) -> dict[str, Any]:                   │
+│  127         """Format an OpenAI compatible content block.         │
+│  128                                                               │
+│  129         Args:                                                 │
+│  130             content: Message content.                         │
+│  131             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  132                                                               │
+│  133         Returns:                                              │
+│  134             OpenAI compatible content block.                  │
+│  135                                                               │
+│  136         Raises:                                               │
+│  137             TypeError: If the content block type cannot be    │
+│  converted to an OpenAI-compatible format.                         │
+│  138         """                                                   │
+│  139         if "document" in content:                             │
+│  140             mime_type =                                       │
+│  mimetypes.types_map.get(f".{content['document']['format']}",      │
+│  "application/octet-stream")                                       │
+│  141             file_data =                                       │
+│  base64.b64encode(content["document"]["source"]["bytes"]).decode(  │
+│  tf-8")                                                            │
+│  142             return {                                          │
+│  143                 "file": {                                     │
+│  144                     "file_data":                              │
+│  f"data:{mime_type};base64,{file_data}",                           │
+│  145                     "filename": content["document"]["name"],  │
+│  146                 },                                            │
+│  147                 "type": "file",                               │
+│  148             }                                                 │
+│  149                                                               │
+│  150         if "image" in content:                                │
+│  151             mime_type =                                       │
+│  mimetypes.types_map.get(f".{content['image']['format']}",         │
+│  "application/octet-stream")                                       │
+│  152             image_data =                                      │
+│  base64.b64encode(content["image"]["source"]["bytes"]).decode("ut  │
+│  8")                                                               │
+│  153                                                               │
+│  154             return {                                          │
+│  155                 "image_url": {                                │
+│  156                     "detail": "auto",                         │
+│  157                     "format": mime_type,                      │
+│  158                     "url":                                    │
+│  f"data:{mime_type};base64,{image_data}",                          │
+│  159                 },                                            │
+│  160                 "type": "image_url",                          │
+│  161             }                                                 │
+│  162                                                               │
+│  163         if "text" in content:                                 │
+│  164             return {"text": content["text"], "type": "text"}  │
+│  165                                                               │
+│  166         raise TypeError(f"content_type=<{next(iter(content))  │
+│  | unsupported type")                                              │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 2 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=3657, output_tokens=351, cost=0.000759
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│                                                                    │
+│  • The method format_request_message_content in OpenAIModel class  │
+│    formats a single content block into an OpenAI-compatible        │
+│    content dictionary. It supports content that is a document      │
+│    (base64 encoding it with mime type), an image (also base64      │
+│    encoding with mime type), or text (returns the text and marks   │
+│    type as "text"). If the content block type is unrecognized, it  │
+│    raises a TypeError.                                             │
+│                                                                    │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│                                                                    │
+│  • This method formats individual content blocks within the tool   │
+│    result. The bug discussion involves the handling of multiple    │
+│    such formatted content blocks, specifically how they are        │
+│    aggregated and returned as part of the "content" field in the   │
+│    tool message. This method returns each block either as a dict   │
+│    with type and content or just text wrapped in a dict. The bug   │
+│    relates to the final aggregation step which currently returns a │
+│    list of these formatted content blocks, whereas some            │
+│    OpenAI-compatible endpoints require a single concatenated       │
+│    string.                                                         │
+│                                                                    │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+│                                                                    │
+│  • This method should still produce the correct formatted dicts or │
+│    text for individual content blocks unchanged, preserving        │
+│    current logic. However, the caller (e.g.,                       │
+│    format_request_tool_message) should then combine these          │
+│    formatted blocks into a single string for the content field in  │
+│    the outgoing tool message to ensure compatibility. The intended │
+│    behavior does not require changes to this method but informs    │
+│    how the caller should handle the outputs for the bug fix.       │
+│                                                                    │
+│ No additional context is strictly necessary since this clarifies   │
+│ how content blocks are formatted, and the main fix is in how those │
+│ formatted content blocks are combined in                           │
+│ format_request_tool_message.                                       │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=4223, output_tokens=148, cost=0.000722
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 do we need more context:                                        │
+│  2 where are bug locations:                                        │
+│                                                                    │
+│  • Location 1: File: strands/models/openai.py, Class: OpenAIModel, │
+│    Method: format_request_tool_message. Intended behavior: Modify  │
+│    this method to always convert the formatted content blocks into │
+│    a single string joined appropriately (e.g., with newlines)      │
+│    instead of returning a list/array of content blocks in the      │
+│    "content" field of the tool message. This conversion should     │
+│    serialize JSON content blocks using json.dumps and extract text │
+│    content directly as strings, preserving all original            │
+│    information. This will fix compatibility issues with            │
+│    OpenAI-compatible endpoints that require string content for     │
+│    tool messages, while maintaining the existing support for       │
+│    various content block types and the overall message structure.  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=503, output_tokens=160, cost=0.000171
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ Bug locations                                                      │
+│                                                                    │
+│  • file: strands/models/openai.py, class: OpenAIModel, method:     │
+│    format_request_tool_message, intended_behavior: Modify this     │
+│    method to always convert the formatted content blocks into a    │
+│    single string joined appropriately (e.g., with newlines)        │
+│    instead of returning a list/array of content blocks in the      │
+│    "content" field of the tool message. This conversion should     │
+│    serialize JSON content blocks using json.dumps and extract text │
+│    content directly as strings, preserving all original            │
+│    information. This will fix compatibility issues with            │
+│    OpenAI-compatible endpoints that require string content for     │
+│    tool messages, while maintaining the existing support for       │
+│    various content block types and the overall message structure.  │
+╰────────────────────────────────────────────────────────────────────╯
+
+========================== PATCH GENERATION ==========================
+
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Write a patch for the issue, based on the relevant code context.   │
+│ First explain the reasoning, and then write the actual patch. When │
+│ writing the patch, remember the following:                         │
+│                                                                    │
+│  • You do not have to modify every location provided - just make   │
+│    the necessary changes.                                          │
+│  • Pay attention to the addtional context as well - sometimes it   │
+│    might be better to fix there.                                   │
+│  • You should import necessary libraries if needed.                │
+│                                                                    │
+│ Return the patch in the format below. Within [file][/file],        │
+│ replace ... with actual file path. Within [original][/original],   │
+│ replace ... with the original code snippet from the program.       │
+│ Within [patched][/patched], replace ... with the fixed version of  │
+│ the original code. When adding orignal code and updated code, pay  │
+│ attention to indentation, as the code is in Python. You can write  │
+│ multiple modifications if needed.                                  │
+│                                                                    │
+│ Example format:                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 1                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 2                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 3                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│ ...                                                                │
+│                                                                    │
+│                                                                    │
+│  NOTE:                                                             │
+│  - In your patch, DO NOT include the line numbers at the beginnin  │
+│  of each line!                                                     │
+│  - Inside [original] and [/original], you should provide the       │
+│  original code snippet from the program.                           │
+│  This original code snippet MUST match exactly to a continuous     │
+│  block of code in the original program,                            │
+│  since the system will use this to locate the code to be modified  │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8874, output_tokens=798, cost=0.001810
+╭─ Patch Generation ─────────────────────────────────────────────────╮
+│ The root cause of the issue is that                                │
+│ OpenAIModel.format_request_tool_message() returns the "content"    │
+│ field as an array of content blocks when the OpenAI API-compatible │
+│ spec, especially for some implementations like Kimi K2.5, strictly │
+│ requires the content as a single string. This causes               │
+│ hallucinations because those models fail to parse the array        │
+│ format.                                                            │
+│                                                                    │
+│ The current implementation only returns a string if there is       │
+│ exactly one text block, otherwise returns the entire array, which  │
+│ breaks compatibility.                                              │
+│                                                                    │
+│ The fix is to always convert the tool message content to a single  │
+│ string, joining multiple content blocks with newline separators.   │
+│ For each content block:                                            │
+│                                                                    │
+│  • If the block holds JSON, it should be json.dumps() serialized.  │
+│  • If it's a text block, extract the plain text.                   │
+│  • Ignore unsupported content types or raise? The current logic    │
+│    assumes only text/json, so follow that pattern.                 │
+│                                                                    │
+│ This approach preserves all the informative content but guarantees │
+│ output is always a string, which addresses compatibility while     │
+│ preserving information.                                            │
+│                                                                    │
+│ We will import json since we need json.dumps().                    │
+│                                                                    │
+│ Patch is limited to just modifying format_request_tool_message.    │
+│                                                                    │
+│ ────────────────────────────────────────────────────────────────── │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│  [original]189     def format_request_tool_message(cls,            │
+│  tool_result: ToolResult, **kwargs: Any) -> dict[str, Any]:        │
+│  190         """Format an OpenAI compatible tool message.          │
+│  191                                                               │
+│  192         Args:                                                 │
+│  193             tool_result: Tool result collected from a tool    │
+│  execution.                                                        │
+│  194             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  195                                                               │
+│  196         Returns:                                              │
+│  197             OpenAI compatible tool message.                   │
+│  198         """                                                   │
+│  199         contents = cast(                                      │
+│  200             list[ContentBlock],                               │
+│  201             [                                                 │
+│  202                 {"text": json.dumps(content["json"])} if      │
+│  "json" in content else content                                    │
+│  203                 for content in tool_result["content"]         │
+│  204             ],                                                │
+│  205         )                                                     │
+│  206                                                               │
+│  207         formatted_contents =                                  │
+│  [cls.format_request_message_content(content) for content in       │
+│  contents]                                                         │
+│  208                                                               │
+│  209         # If single text content, use string format for bett  │
+│  model compatibility                                               │
+│  210         if len(formatted_contents) == 1 and                   │
+│  formatted_contents[0].get("type") == "text":                      │
+│  211             content: str | list[dict[str, Any]] =             │
+│  formatted_contents[0]["text"]                                     │
+│  212         else:                                                 │
+│  213             content = formatted_contents                      │
+│  214                                                               │
+│  215         return {                                              │
+│  216             "role": "tool",                                   │
+│  217             "tool_call_id": tool_result["toolUseId"],         │
+│  218             "content": content,                               │
+│  219         }                                                     │
+│  [/original]                                                       │
+│  [patched]189     def format_request_tool_message(cls, tool_resul  │
+│  ToolResult, **kwargs: Any) -> dict[str, Any]:                     │
+│  190         """Format an OpenAI compatible tool message.          │
+│  191                                                               │
+│  192         Args:                                                 │
+│  193             tool_result: Tool result collected from a tool    │
+│  execution.                                                        │
+│  194             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  195                                                               │
+│  196         Returns:                                              │
+│  197             OpenAI compatible tool message.                   │
+│  198         """                                                   │
+│  199         # Compose text parts by serializing json content and  │
+│  extracting text                                                   │
+│  200         text_parts = []                                       │
+│  201         for content in tool_result["content"]:                │
+│  202             if "json" in content:                             │
+│  203                 text_parts.append(json.dumps(content["json"]  │
+│  204             elif "text" in content:                           │
+│  205                 text_parts.append(content["text"])            │
+│  206                                                               │
+│  207         combined_content = "\n".join(text_parts)              │
+│  208                                                               │
+│  209         return {                                              │
+│  210             "role": "tool",                                   │
+│  211             "tool_call_id": tool_result["toolUseId"],         │
+│  212             "content": combined_content,                      │
+│  213         }                                                     │
+│  [/patched]                                                        │
+│                                                                    │
+│                                                                    │
+│ Additionally, add import json at the top if not already imported.  │
+│                                                                    │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│  [original]import base64                                           │
+│  import mimetypes                                                  │
+│  ...[/original]                                                    │
+│  [patched]import base64                                            │
+│  import json                                                       │
+│  import mimetypes                                                  │
+│  ...[/patched]                                                     │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Patch is not applicable                                            │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Write a patch for the issue, based on the relevant code context.   │
+│ First explain the reasoning, and then write the actual patch. When │
+│ writing the patch, remember the following:                         │
+│                                                                    │
+│  • You do not have to modify every location provided - just make   │
+│    the necessary changes.                                          │
+│  • Pay attention to the addtional context as well - sometimes it   │
+│    might be better to fix there.                                   │
+│  • You should import necessary libraries if needed.                │
+│                                                                    │
+│ Return the patch in the format below. Within [file][/file],        │
+│ replace ... with actual file path. Within [original][/original],   │
+│ replace ... with the original code snippet from the program.       │
+│ Within [patched][/patched], replace ... with the fixed version of  │
+│ the original code. When adding orignal code and updated code, pay  │
+│ attention to indentation, as the code is in Python. You can write  │
+│ multiple modifications if needed.                                  │
+│                                                                    │
+│ Example format:                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 1                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 2                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 3                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│ ...                                                                │
+│                                                                    │
+│                                                                    │
+│  NOTE:                                                             │
+│  - In your patch, DO NOT include the line numbers at the beginnin  │
+│  of each line!                                                     │
+│  - Inside [original] and [/original], you should provide the       │
+│  original code snippet from the program.                           │
+│  This original code snippet MUST match exactly to a continuous     │
+│  block of code in the original program,                            │
+│  since the system will use this to locate the code to be modified  │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8874, output_tokens=716, cost=0.001761
+╭─ Patch Generation ─────────────────────────────────────────────────╮
+│ Reasoning:                                                         │
+│                                                                    │
+│ The root cause of the issue is that                                │
+│ OpenAIModel.format_request_tool_message() currently returns the    │
+│ content field as a list of content blocks (an array), while many   │
+│ OpenAI-compatible endpoints (like Kimi K2.5) expect it as a single │
+│ string. The fix is to always convert the multiple content blocks   │
+│ into one combined string. For JSON content blocks, their JSON      │
+│ representation should be used via json.dumps(). For text content,  │
+│ text should be appended directly. This concatenation should apply  │
+│ regardless of whether there is one content block or many.          │
+│                                                                    │
+│ The buggy code currently does this:                                │
+│                                                                    │
+│  • Processes tool_result["content"] into formatted content blocks. │
+│  • If just one text block, returns "content" as that text string.  │
+│  • Otherwise, returns "content" as the array of formatted content  │
+│    blocks.                                                         │
+│                                                                    │
+│ This needs to be replaced by logic that always joins the text      │
+│ pieces into one string for "content", addressing the compatibility │
+│ issue.                                                             │
+│                                                                    │
+│ The fix:                                                           │
+│                                                                    │
+│  • Iterate over each content block in tool_result["content"].      │
+│  • For each block, if it has "json", json.dumps() that into a      │
+│    string.                                                         │
+│  • If it has "text", extract the text.                             │
+│  • Join these strings with newline separators ("\n").              │
+│  • Return the "content" dict key with the joined string.           │
+│                                                                    │
+│ No other part of the class or project apparently needs             │
+│ modification.                                                      │
+│                                                                    │
+│ ────────────────────────────────────────────────────────────────── │
+│ Patch:                                                             │
+│                                                                    │
+│                                                                    │
+│  [file]src/strands/models/openai.py[/file]                         │
+│  [original]    def format_request_tool_message(cls, tool_result:   │
+│  ToolResult, **kwargs: Any) -> dict[str, Any]:                     │
+│          """Format an OpenAI compatible tool message.              │
+│                                                                    │
+│          Args:                                                     │
+│              tool_result: Tool result collected from a tool        │
+│  execution.                                                        │
+│              **kwargs: Additional keyword arguments for future     │
+│  extensibility.                                                    │
+│                                                                    │
+│          Returns:                                                  │
+│              OpenAI compatible tool message.                       │
+│          """                                                       │
+│          contents = cast(                                          │
+│              list[ContentBlock],                                   │
+│              [                                                     │
+│                  {"text": json.dumps(content["json"])} if "json"   │
+│  content else content                                              │
+│                  for content in tool_result["content"]             │
+│              ],                                                    │
+│          )                                                         │
+│                                                                    │
+│          formatted_contents =                                      │
+│  [cls.format_request_message_content(content) for content in       │
+│  contents]                                                         │
+│                                                                    │
+│          # If single text content, use string format for better    │
+│  model compatibility                                               │
+│          if len(formatted_contents) == 1 and                       │
+│  formatted_contents[0].get("type") == "text":                      │
+│              content: str | list[dict[str, Any]] =                 │
+│  formatted_contents[0]["text"]                                     │
+│          else:                                                     │
+│              content = formatted_contents                          │
+│                                                                    │
+│          return {                                                  │
+│              "role": "tool",                                       │
+│              "tool_call_id": tool_result["toolUseId"],             │
+│              "content": content,                                   │
+│          }                                                         │
+│  [/original]                                                       │
+│  [patched]    def format_request_tool_message(cls, tool_result:    │
+│  ToolResult, **kwargs: Any) -> dict[str, Any]:                     │
+│          """Format an OpenAI compatible tool message.              │
+│                                                                    │
+│          Args:                                                     │
+│              tool_result: Tool result collected from a tool        │
+│  execution.                                                        │
+│              **kwargs: Additional keyword arguments for future     │
+│  extensibility.                                                    │
+│                                                                    │
+│          Returns:                                                  │
+│              OpenAI compatible tool message.                       │
+│          """                                                       │
+│          text_parts = []                                           │
+│          for content in tool_result["content"]:                    │
+│              if "json" in content:                                 │
+│                  text_parts.append(json.dumps(content["json"]))    │
+│              elif "text" in content:                               │
+│                  text_parts.append(content["text"])                │
+│                                                                    │
+│          content_str = "\n".join(text_parts)                       │
+│                                                                    │
+│          return {                                                  │
+│              "role": "tool",                                       │
+│              "tool_call_id": tool_result["toolUseId"],             │
+│              "content": content_str,                               │
+│          }                                                         │
+│  [/patched]                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Patch is applicable                                                │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (Extracted patch) ──────────────────────────────────╮
+│                                                                    │
+│  diff --git a/src/strands/models/openai.py                         │
+│  b/src/strands/models/openai.py                                    │
+│  index 2b217ad91..07992fcd2 100644                                 │
+│  --- a/src/strands/models/openai.py                                │
+│  +++ b/src/strands/models/openai.py                                │
+│  @@ -196,26 +196,19 @@ class OpenAIModel(Model):                   │
+│           Returns:                                                 │
+│               OpenAI compatible tool message.                      │
+│           """                                                      │
+│  -        contents = cast(                                         │
+│  -            list[ContentBlock],                                  │
+│  -            [                                                    │
+│  -                {"text": json.dumps(content["json"])} if "json"  │
+│  in content else content                                           │
+│  -                for content in tool_result["content"]            │
+│  -            ],                                                   │
+│  -        )                                                        │
+│  +        text_parts = []                                          │
+│  +        for content in tool_result["content"]:                   │
+│  +            if "json" in content:                                │
+│  +                text_parts.append(json.dumps(content["json"]))   │
+│  +            elif "text" in content:                              │
+│  +                text_parts.append(content["text"])               │
+│                                                                    │
+│  -        formatted_contents =                                     │
+│  [cls.format_request_message_content(content) for content in       │
+│  contents]                                                         │
+│  -                                                                 │
+│  -        # If single text content, use string format for better   │
+│  model compatibility                                               │
+│  -        if len(formatted_contents) == 1 and                      │
+│  formatted_contents[0].get("type") == "text":                      │
+│  -            content: str | list[dict[str, Any]] =                │
+│  formatted_contents[0]["text"]                                     │
+│  -        else:                                                    │
+│  -            content = formatted_contents                         │
+│  +        content_str = "\n".join(text_parts)                      │
+│                                                                    │
+│           return {                                                 │
+│               "role": "tool",                                      │
+│               "tool_call_id": tool_result["toolUseId"],            │
+│  -            "content": content,                                  │
+│  +            "content": content_str,                              │
+│           }                                                        │
+│                                                                    │
+│       @classmethod                                                 │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-08-31 23:42:05] Task issue_1696_20260818T061206Z completed successfully.
+
+[2026-08-31 23:42:05] Please find the generated patch at: 
+/root/auto-code-rover/patches/result_issue_1696_20260818T061206Z/acr_output/issue_1696_20260818T061206Z_2026-08-31_23-41-12/output_0/extracted_patc
+h_1.diff
+
+[2026-08-31 23:42:05] Finished all tasks sequentially.
+
+
+STDERR:
+2026-08-31 23:41:12.364 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1696_20260818T061206Z =============
+2026-08-31 23:41:12.474 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-08-31 23:41:15.111 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1185, output_tokens=13, cost=0.000186
+2026-08-31 23:41:15.113 | INFO     | app.inference:_run_one_task:290 - Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-08-31 23:41:15.120 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-08-31 23:41:16.412 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1465, output_tokens=18, cost=0.000231
+2026-08-31 23:41:16.417 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-08-31 23:41:17.851 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=373, output_tokens=33, cost=0.000076
+2026-08-31 23:41:17.855 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-08-31 23:41:17.855 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": ["search_method_in_file(\"format_request_tool_message\", \"strands/models/openai.py\")"],
+    "bug_locations": []
+}
+2026-08-31 23:41:17.873 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-08-31 23:41:17.874 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-08-31 23:41:24.914 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2266, output_tokens=423, cost=0.000594
+2026-08-31 23:41:24.922 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-08-31 23:41:28.883 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2904, output_tokens=171, cost=0.000538
+2026-08-31 23:41:28.886 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-08-31 23:41:31.947 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=526, output_tokens=188, cost=0.000192
+2026-08-31 23:41:31.948 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-08-31 23:41:31.949 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": [
+        "search_method_in_class(\"format_request_message_content\", \"OpenAIModel\")"
+    ],
+    "bug_locations": [
+        {
+            "file": "strands/models/openai.py",
+            "class": "OpenAIModel",
+            "method": "format_request_tool_message",
+            "intended_behavior": "Modify this method to always return the tool message content as a single string rather than as an array of content blocks. The string should be constructed by merging or joining the content blocks, converting any JSON content to string via json.dumps, preserving all existing information. This will ensure compatibility with OpenAI-compatible endpoints (like Kimi K2.5) that expect string content in tool messages, without affecting the handling of normal content in OpenAI's API. The change should preserve the role as \"tool\" and include \"tool_call_id\" as before."
+        }
+    ]
+}
+2026-08-31 23:41:31.957 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-08-31 23:41:31.957 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-08-31 23:41:36.300 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=3657, output_tokens=351, cost=0.000759
+2026-08-31 23:41:36.306 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-08-31 23:41:38.714 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=4223, output_tokens=148, cost=0.000722
+2026-08-31 23:41:38.718 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-08-31 23:41:41.056 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=503, output_tokens=160, cost=0.000171
+2026-08-31 23:41:41.057 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-08-31 23:41:41.058 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "strands/models/openai.py",
+            "class": "OpenAIModel",
+            "method": "format_request_tool_message",
+            "intended_behavior": "Modify this method to always convert the formatted content blocks into a single string joined appropriately (e.g., with newlines) instead of returning a list/array of content blocks in the \"content\" field of the tool message. This conversion should serialize JSON content blocks using json.dumps and extract text content directly as strings, preserving all original information. This will fix compatibility issues with OpenAI-compatible endpoints that require string content for tool messages, while maintaining the existing support for various content block types and the overall message structure."
+        }
+    ]
+}
+2026-08-31 23:41:41.061 | DEBUG    | app.search.search_manage:search_iterative:143 - Bug location extracted successfully: [<file>src/strands/models/openai.py</file>
+<class>OpenAIModel</class>
+<method>format_request_tool_message</method>
+<code>
+189     def format_request_tool_message(cls, tool_result: ToolResult, **kwargs: Any) -> dict[str, Any]:
+190         """Format an OpenAI compatible tool message.
+191 
+192         Args:
+193             tool_result: Tool result collected from a tool execution.
+194             **kwargs: Additional keyword arguments for future extensibility.
+195 
+196         Returns:
+197             OpenAI compatible tool message.
+198         """
+199         contents = cast(
+200             list[ContentBlock],
+201             [
+202                 {"text": json.dumps(content["json"])} if "json" in content else content
+203                 for content in tool_result["content"]
+204             ],
+205         )
+206 
+207         formatted_contents = [cls.format_request_message_content(content) for content in contents]
+208 
+209         # If single text content, use string format for better model compatibility
+210         if len(formatted_contents) == 1 and formatted_contents[0].get("type") == "text":
+211             content: str | list[dict[str, Any]] = formatted_contents[0]["text"]
+212         else:
+213             content = formatted_contents
+214 
+215         return {
+216             "role": "tool",
+217             "tool_call_id": tool_result["toolUseId"],
+218             "content": content,
+219         }
+
+</code><intended_behavior>Modify this method to always convert the formatted content blocks into a single string joined appropriately (e.g., with newlines) instead of returning a list/array of content blocks in the "content" field of the tool message. This conversion should serialize JSON content blocks using json.dumps and extract text content directly as strings, preserving all original information. This will fix compatibility issues with OpenAI-compatible endpoints that require string content for tool messages, while maintaining the existing support for various content block types and the overall message structure.</intended_behavior>, <file>src/strands/models/openai.py</file>
+<class>OpenAIModel</class>
+<method>None</method>
+<code>
+50 class OpenAIModel(Model):
+51     """OpenAI model provider implementation."""
+52 
+53     client: Client
+54 
+55     class OpenAIConfig(TypedDict, total=False):
+56         """Configuration options for OpenAI models.
+57 
+58         Attributes:
+59             model_id: Model ID (e.g., "gpt-4o").
+60                 For a complete list of supported models, see https://platform.openai.com/docs/models.
+61             params: Model parameters (e.g., max_tokens).
+62                 For a complete list of supported parameters, see
+63                 https://platform.openai.com/docs/api-reference/chat/create.
+64         """
+65 
+66         model_id: str
+67         params: dict[str, Any] | None
+68 
+69     def __init__(
+70         self,
+71         client: Client | None = None,
+72         client_args: dict[str, Any] | None = None,
+73         **model_config: Unpack[OpenAIConfig],
+74     ) -> None:
+75         """Initialize provider instance.
+76 
+77         Args:
+78             client: Pre-configured OpenAI-compatible client to reuse across requests.
+79                 When provided, this client will be reused for all requests and will NOT be closed
+80                 by the model. The caller is responsible for managing the client lifecycle.
+81                 This is useful for:
+82                 - Injecting custom client wrappers (e.g., GuardrailsAsyncOpenAI)
+83                 - Reusing connection pools within a single event loop/worker
+84                 - Centralizing observability, retries, and networking policy
+85                 - Pointing to custom model gateways
+86                 Note: The client should not be shared across different asyncio event loops.
+87             client_args: Arguments for the OpenAI client (legacy approach).
+88                 For a complete list of supported arguments, see https://pypi.org/project/openai/.
+89             **model_config: Configuration options for the OpenAI model.
+90 
+91         Raises:
+92             ValueError: If both `client` and `client_args` are provided.
+93         """
+94         validate_config_keys(model_config, self.OpenAIConfig)
+95         self.config = dict(model_config)
+96 
+97         # Validate that only one client configuration method is provided
+98         if client is not None and client_args is not None and len(client_args) > 0:
+99             raise ValueError("Only one of 'client' or 'client_args' should be provided, not both.")
+100 
+101         self._custom_client = client
+102         self.client_args = client_args or {}
+103 
+104         logger.debug("config=<%s> | initializing", self.config)
+105 
+106     @override
+107     def update_config(self, **model_config: Unpack[OpenAIConfig]) -> None:  # type: ignore[override]
+108         """Update the OpenAI model configuration with the provided arguments.
+109 
+110         Args:
+111             **model_config: Configuration overrides.
+112         """
+113         validate_config_keys(model_config, self.OpenAIConfig)
+114         self.config.update(model_config)
+115 
+116     @override
+117     def get_config(self) -> OpenAIConfig:
+118         """Get the OpenAI model configuration.
+119 
+120         Returns:
+121             The OpenAI model configuration.
+122         """
+123         return cast(OpenAIModel.OpenAIConfig, self.config)
+124 
+125     @classmethod
+126     def format_request_message_content(cls, content: ContentBlock, **kwargs: Any) -> dict[str, Any]:
+127         """Format an OpenAI compatible content block.
+128 
+129         Args:
+130             content: Message content.
+131             **kwargs: Additional keyword arguments for future extensibility.
+132 
+133         Returns:
+134             OpenAI compatible content block.
+135 
+136         Raises:
+137             TypeError: If the content block type cannot be converted to an OpenAI-compatible format.
+138         """
+139         if "document" in content:
+140             mime_type = mimetypes.types_map.get(f".{content['document']['format']}", "application/octet-stream")
+141             file_data = base64.b64encode(content["document"]["source"]["bytes"]).decode("utf-8")
+142             return {
+143                 "file": {
+144                     "file_data": f"data:{mime_type};base64,{file_data}",
+145                     "filename": content["document"]["name"],
+146                 },
+147                 "type": "file",
+148             }
+149 
+150         if "image" in content:
+151             mime_type = mimetypes.types_map.get(f".{content['image']['format']}", "application/octet-stream")
+152             image_data = base64.b64encode(content["image"]["source"]["bytes"]).decode("utf-8")
+153 
+154             return {
+155                 "image_url": {
+156                     "detail": "auto",
+157                     "format": mime_type,
+158                     "url": f"data:{mime_type};base64,{image_data}",
+159                 },
+160                 "type": "image_url",
+161             }
+162 
+163         if "text" in content:
+164             return {"text": content["text"], "type": "text"}
+165 
+166         raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+167 
+168     @classmethod
+169     def format_request_message_tool_call(cls, tool_use: ToolUse, **kwargs: Any) -> dict[str, Any]:
+170         """Format an OpenAI compatible tool call.
+171 
+172         Args:
+173             tool_use: Tool use requested by the model.
+174             **kwargs: Additional keyword arguments for future extensibility.
+175 
+176         Returns:
+177             OpenAI compatible tool call.
+178         """
+179         return {
+180             "function": {
+181                 "arguments": json.dumps(tool_use["input"]),
+182                 "name": tool_use["name"],
+183             },
+184             "id": tool_use["toolUseId"],
+185             "type": "function",
+186         }
+187 
+188     @classmethod
+189     def format_request_tool_message(cls, tool_result: ToolResult, **kwargs: Any) -> dict[str, Any]:
+190         """Format an OpenAI compatible tool message.
+191 
+192         Args:
+193             tool_result: Tool result collected from a tool execution.
+194             **kwargs: Additional keyword arguments for future extensibility.
+195 
+196         Returns:
+197             OpenAI compatible tool message.
+198         """
+199         contents = cast(
+200             list[ContentBlock],
+201             [
+202                 {"text": json.dumps(content["json"])} if "json" in content else content
+203                 for content in tool_result["content"]
+204             ],
+205         )
+206 
+207         formatted_contents = [cls.format_request_message_content(content) for content in contents]
+208 
+209         # If single text content, use string format for better model compatibility
+210         if len(formatted_contents) == 1 and formatted_contents[0].get("type") == "text":
+211             content: str | list[dict[str, Any]] = formatted_contents[0]["text"]
+212         else:
+213             content = formatted_contents
+214 
+215         return {
+216             "role": "tool",
+217             "tool_call_id": tool_result["toolUseId"],
+218             "content": content,
+219         }
+220 
+221     @classmethod
+222     def _split_tool_message_images(cls, tool_message: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+223         """Split a tool message into text-only tool message and optional user message with images.
+224 
+225         OpenAI API restricts images to user role messages only. This method extracts any image
+226         content from a tool message and returns it separately as a user message.
+227 
+228         Args:
+229             tool_message: A formatted tool message that may contain images.
+230 
+231         Returns:
+232             A tuple of (tool_message_without_images, user_message_with_images_or_None).
+233         """
+234         if tool_message.get("role") != "tool":
+235             return tool_message, None
+236 
+237         content = tool_message.get("content", [])
+238         if not isinstance(content, list):
+239             return tool_message, None
+240 
+241         # Separate image and non-image content
+242         text_content = []
+243         image_content = []
+244 
+245         for item in content:
+246             if isinstance(item, dict) and item.get("type") == "image_url":
+247                 image_content.append(item)
+248             else:
+249                 text_content.append(item)
+250 
+251         # If no images found, return original message
+252         if not image_content:
+253             return tool_message, None
+254 
+255         # Let the user know that we are modifying the messages for OpenAI compatibility
+256         logger.warning(
+257             "tool_call_id=<%s> | Moving image from tool message to a new user message for OpenAI compatibility",
+258             tool_message["tool_call_id"],
+259         )
+260 
+261         # Append a message to the text content to inform the model about the upcoming image
+262         text_content.append(
+263             {
+264                 "type": "text",
+265                 "text": (
+266                     "Tool successfully returned an image. The image is being provided in the following user message."
+267                 ),
+268             }
+269         )
+270 
+271         # Create the clean tool message with the updated text content
+272         tool_message_clean = {
+273             "role": "tool",
+274             "tool_call_id": tool_message["tool_call_id"],
+275             "content": text_content,
+276         }
+277 
+278         # Create user message with only images
+279         user_message_with_images = {"role": "user", "content": image_content}
+280 
+281         return tool_message_clean, user_message_with_images
+282 
+283     @classmethod
+284     def _format_request_tool_choice(cls, tool_choice: ToolChoice | None) -> dict[str, Any]:
+285         """Format a tool choice for OpenAI compatibility.
+286 
+287         Args:
+288             tool_choice: Tool choice configuration in Bedrock format.
+289 
+290         Returns:
+291             OpenAI compatible tool choice format.
+292         """
+293         if not tool_choice:
+294             return {}
+295 
+296         match tool_choice:
+297             case {"auto": _}:
+298                 return {"tool_choice": "auto"}  # OpenAI SDK doesn't define constants for these values
+299             case {"any": _}:
+300                 return {"tool_choice": "required"}
+301             case {"tool": {"name": tool_name}}:
+302                 return {"tool_choice": {"type": "function", "function": {"name": tool_name}}}
+303             case _:
+304                 # This should not happen with proper typing, but handle gracefully
+305                 return {"tool_choice": "auto"}
+306 
+307     @classmethod
+308     def _format_system_messages(
+309         cls,
+310         system_prompt: str | None = None,
+311         *,
+312         system_prompt_content: list[SystemContentBlock] | None = None,
+313         **kwargs: Any,
+314     ) -> list[dict[str, Any]]:
+315         """Format system messages for OpenAI-compatible providers.
+316 
+317         Args:
+318             system_prompt: System prompt to provide context to the model.
+319             system_prompt_content: System prompt content blocks to provide context to the model.
+320             **kwargs: Additional keyword arguments for future extensibility.
+321 
+322         Returns:
+323             List of formatted system messages.
+324         """
+325         # Handle backward compatibility: if system_prompt is provided but system_prompt_content is None
+326         if system_prompt and system_prompt_content is None:
+327             system_prompt_content = [{"text": system_prompt}]
+328 
+329         # TODO: Handle caching blocks https://github.com/strands-agents/sdk-python/issues/1140
+330         return [
+331             {"role": "system", "content": content["text"]}
+332             for content in system_prompt_content or []
+333             if "text" in content
+334         ]
+335 
+336     @classmethod
+337     def _format_regular_messages(cls, messages: Messages, **kwargs: Any) -> list[dict[str, Any]]:
+338         """Format regular messages for OpenAI-compatible providers.
+339 
+340         Args:
+341             messages: List of message objects to be processed by the model.
+342             **kwargs: Additional keyword arguments for future extensibility.
+343 
+344         Returns:
+345             List of formatted messages.
+346         """
+347         formatted_messages = []
+348 
+349         for message in messages:
+350             contents = message["content"]
+351 
+352             # Check for reasoningContent and warn user
+353             if any("reasoningContent" in content for content in contents):
+354                 logger.warning(
+355                     "reasoningContent is not supported in multi-turn conversations with the Chat Completions API."
+356                 )
+357 
+358             # Filter out content blocks that shouldn't be formatted
+359             filtered_contents = []
+360             for content in contents:
+361                 if any(block_type in content for block_type in ["toolResult", "toolUse", "reasoningContent"]):
+362                     continue
+363                 if _has_location_source(content):
+364                     logger.warning("Location sources are not supported by OpenAI | skipping content block")
+365                     continue
+366                 filtered_contents.append(content)
+367 
+368             formatted_contents = [cls.format_request_message_content(content) for content in filtered_contents]
+369             formatted_tool_calls = [
+370                 cls.format_request_message_tool_call(content["toolUse"]) for content in contents if "toolUse" in content
+371             ]
+372             formatted_tool_messages = [
+373                 cls.format_request_tool_message(content["toolResult"])
+374                 for content in contents
+375                 if "toolResult" in content
+376             ]
+377 
+378             formatted_message = {
+379                 "role": message["role"],
+380                 **({"content": formatted_contents} if formatted_contents else {}),
+381                 **({"tool_calls": formatted_tool_calls} if formatted_tool_calls else {}),
+382             }
+383             formatted_messages.append(formatted_message)
+384 
+385             # Process tool messages to extract images into separate user messages
+386             # OpenAI API requires images to be in user role messages only
+387             # All tool messages must be grouped together before any user messages with images
+388             user_messages_with_images = []
+389             for tool_msg in formatted_tool_messages:
+390                 tool_msg_clean, user_msg_with_images = cls._split_tool_message_images(tool_msg)
+391                 formatted_messages.append(tool_msg_clean)
+392                 if user_msg_with_images:
+393                     user_messages_with_images.append(user_msg_with_images)
+394             formatted_messages.extend(user_messages_with_images)
+395 
+396         return formatted_messages
+397 
+398     @classmethod
+399     def format_request_messages(
+400         cls,
+401         messages: Messages,
+402         system_prompt: str | None = None,
+403         *,
+404         system_prompt_content: list[SystemContentBlock] | None = None,
+405         **kwargs: Any,
+406     ) -> list[dict[str, Any]]:
+407         """Format an OpenAI compatible messages array.
+408 
+409         Args:
+410             messages: List of message objects to be processed by the model.
+411             system_prompt: System prompt to provide context to the model.
+412             system_prompt_content: System prompt content blocks to provide context to the model.
+413             **kwargs: Additional keyword arguments for future extensibility.
+414 
+415         Returns:
+416             An OpenAI compatible messages array.
+417         """
+418         formatted_messages = cls._format_system_messages(system_prompt, system_prompt_content=system_prompt_content)
+419         formatted_messages.extend(cls._format_regular_messages(messages))
+420 
+421         return [message for message in formatted_messages if "content" in message or "tool_calls" in message]
+422 
+423     def format_request(
+424         self,
+425         messages: Messages,
+426         tool_specs: list[ToolSpec] | None = None,
+427         system_prompt: str | None = None,
+428         tool_choice: ToolChoice | None = None,
+429         *,
+430         system_prompt_content: list[SystemContentBlock] | None = None,
+431         **kwargs: Any,
+432     ) -> dict[str, Any]:
+433         """Format an OpenAI compatible chat streaming request.
+434 
+435         Args:
+436             messages: List of message objects to be processed by the model.
+437             tool_specs: List of tool specifications to make available to the model.
+438             system_prompt: System prompt to provide context to the model.
+439             tool_choice: Selection strategy for tool invocation.
+440             system_prompt_content: System prompt content blocks to provide context to the model.
+441             **kwargs: Additional keyword arguments for future extensibility.
+442 
+443         Returns:
+444             An OpenAI compatible chat streaming request.
+445 
+446         Raises:
+447             TypeError: If a message contains a content block type that cannot be converted to an OpenAI-compatible
+448                 format.
+449         """
+450         return {
+451             "messages": self.format_request_messages(
+452                 messages, system_prompt, system_prompt_content=system_prompt_content
+453             ),
+454             "model": self.config["model_id"],
+455             "stream": True,
+456             "stream_options": {"include_usage": True},
+457             "tools": [
+458                 {
+459                     "type": "function",
+460                     "function": {
+461                         "name": tool_spec["name"],
+462                         "description": tool_spec["description"],
+463                         "parameters": tool_spec["inputSchema"]["json"],
+464                     },
+465                 }
+466                 for tool_spec in tool_specs or []
+467             ],
+468             **(self._format_request_tool_choice(tool_choice)),
+469             **cast(dict[str, Any], self.config.get("params", {})),
+470         }
+471 
+472     def format_chunk(self, event: dict[str, Any], **kwargs: Any) -> StreamEvent:
+473         """Format an OpenAI response event into a standardized message chunk.
+474 
+475         Args:
+476             event: A response event from the OpenAI compatible model.
+477             **kwargs: Additional keyword arguments for future extensibility.
+478 
+479         Returns:
+480             The formatted chunk.
+481 
+482         Raises:
+483             RuntimeError: If chunk_type is not recognized.
+484                 This error should never be encountered as chunk_type is controlled in the stream method.
+485         """
+486         match event["chunk_type"]:
+487             case "message_start":
+488                 return {"messageStart": {"role": "assistant"}}
+489 
+490             case "content_start":
+491                 if event["data_type"] == "tool":
+492                     return {
+493                         "contentBlockStart": {
+494                             "start": {
+495                                 "toolUse": {
+496                                     "name": event["data"].function.name,
+497                                     "toolUseId": event["data"].id,
+498                                 }
+499                             }
+500                         }
+501                     }
+502 
+503                 return {"contentBlockStart": {"start": {}}}
+504 
+505             case "content_delta":
+506                 if event["data_type"] == "tool":
+507                     return {
+508                         "contentBlockDelta": {"delta": {"toolUse": {"input": event["data"].function.arguments or ""}}}
+509                     }
+510 
+511                 if event["data_type"] == "reasoning_content":
+512                     return {"contentBlockDelta": {"delta": {"reasoningContent": {"text": event["data"]}}}}
+513 
+514                 return {"contentBlockDelta": {"delta": {"text": event["data"]}}}
+515 
+516             case "content_stop":
+517                 return {"contentBlockStop": {}}
+518 
+519             case "message_stop":
+520                 match event["data"]:
+521                     case "tool_calls":
+522                         return {"messageStop": {"stopReason": "tool_use"}}
+523                     case "length":
+524                         return {"messageStop": {"stopReason": "max_tokens"}}
+525                     case _:
+526                         return {"messageStop": {"stopReason": "end_turn"}}
+527 
+528             case "metadata":
+529                 return {
+530                     "metadata": {
+531                         "usage": {
+532                             "inputTokens": event["data"].prompt_tokens,
+533                             "outputTokens": event["data"].completion_tokens,
+534                             "totalTokens": event["data"].total_tokens,
+535                         },
+536                         "metrics": {
+537                             "latencyMs": 0,  # TODO
+538                         },
+539                     },
+540                 }
+541 
+542             case _:
+543                 raise RuntimeError(f"chunk_type=<{event['chunk_type']} | unknown type")
+544 
+545     @asynccontextmanager
+546     async def _get_client(self) -> AsyncIterator[Any]:
+547         """Get an OpenAI client for making requests.
+548 
+549         This context manager handles client lifecycle management:
+550         - If an injected client was provided during initialization, it yields that client
+551           without closing it (caller manages lifecycle).
+552         - Otherwise, creates a new AsyncOpenAI client from client_args and automatically
+553           closes it when the context exits.
+554 
+555         Note: We create a new client per request to avoid connection sharing in the underlying
+556         httpx client, as the asyncio event loop does not allow connections to be shared.
+557         For more details, see https://github.com/encode/httpx/discussions/2959.
+558 
+559         Yields:
+560             Client: An OpenAI-compatible client instance.
+561         """
+562         if self._custom_client is not None:
+563             # Use the injected client (caller manages lifecycle)
+564             yield self._custom_client
+565         else:
+566             # Create a new client from client_args
+567             # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying
+568             # httpx client. The asyncio event loop does not allow connections to be shared. For more details, please
+569             # refer to https://github.com/encode/httpx/discussions/2959.
+570             async with openai.AsyncOpenAI(**self.client_args) as client:
+571                 yield client
+572 
+573     @override
+574     async def stream(
+575         self,
+576         messages: Messages,
+577         tool_specs: list[ToolSpec] | None = None,
+578         system_prompt: str | None = None,
+579         *,
+580         tool_choice: ToolChoice | None = None,
+581         **kwargs: Any,
+582     ) -> AsyncGenerator[StreamEvent, None]:
+583         """Stream conversation with the OpenAI model.
+584 
+585         Args:
+586             messages: List of message objects to be processed by the model.
+587             tool_specs: List of tool specifications to make available to the model.
+588             system_prompt: System prompt to provide context to the model.
+589             tool_choice: Selection strategy for tool invocation.
+590             **kwargs: Additional keyword arguments for future extensibility.
+591 
+592         Yields:
+593             Formatted message chunks from the model.
+594 
+595         Raises:
+596             ContextWindowOverflowException: If the input exceeds the model's context window.
+597             ModelThrottledException: If the request is throttled by OpenAI (rate limits).
+598         """
+599         logger.debug("formatting request")
+600         request = self.format_request(messages, tool_specs, system_prompt, tool_choice)
+601         logger.debug("formatted request=<%s>", request)
+602 
+603         logger.debug("invoking model")
+604 
+605         # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying httpx
+606         # client. The asyncio event loop does not allow connections to be shared. For more details, please refer to
+607         # https://github.com/encode/httpx/discussions/2959.
+608         async with self._get_client() as client:
+609             try:
+610                 response = await client.chat.completions.create(**request)
+611             except openai.BadRequestError as e:
+612                 # Check if this is a context length exceeded error
+613                 if hasattr(e, "code") and e.code == "context_length_exceeded":
+614                     logger.warning("OpenAI threw context window overflow error")
+615                     raise ContextWindowOverflowException(str(e)) from e
+616                 # Re-raise other BadRequestError exceptions
+617                 raise
+618             except openai.RateLimitError as e:
+619                 # All rate limit errors should be treated as throttling, not context overflow
+620                 # Rate limits (including TPM) require waiting/retrying, not context reduction
+621                 logger.warning("OpenAI threw rate limit error")
+622                 raise ModelThrottledException(str(e)) from e
+623             except openai.APIError as e:
+624                 # Check for alternative context overflow error messages
+625                 error_message = str(e)
+626                 if any(overflow_msg in error_message for overflow_msg in _CONTEXT_OVERFLOW_MESSAGES):
+627                     logger.warning("context window overflow error detected")
+628                     raise ContextWindowOverflowException(error_message) from e
+629                 # Re-raise other APIError exceptions
+630                 raise
+631 
+632             logger.debug("got response from model")
+633             yield self.format_chunk({"chunk_type": "message_start"})
+634             tool_calls: dict[int, list[Any]] = {}
+635             data_type = None
+636             finish_reason = None  # Store finish_reason for later use
+637             event = None  # Initialize for scope safety
+638 
+639             async for event in response:
+640                 # Defensive: skip events with empty or missing choices
+641                 if not getattr(event, "choices", None):
+642                     continue
+643                 choice = event.choices[0]
+644 
+645                 if hasattr(choice.delta, "reasoning_content") and choice.delta.reasoning_content:
+646                     chunks, data_type = self._stream_switch_content("reasoning_content", data_type)
+647                     for chunk in chunks:
+648                         yield chunk
+649                     yield self.format_chunk(
+650                         {
+651                             "chunk_type": "content_delta",
+652                             "data_type": data_type,
+653                             "data": choice.delta.reasoning_content,
+654                         }
+655                     )
+656 
+657                 if choice.delta.content:
+658                     chunks, data_type = self._stream_switch_content("text", data_type)
+659                     for chunk in chunks:
+660                         yield chunk
+661                     yield self.format_chunk(
+662                         {"chunk_type": "content_delta", "data_type": data_type, "data": choice.delta.content}
+663                     )
+664 
+665                 for tool_call in choice.delta.tool_calls or []:
+666                     tool_calls.setdefault(tool_call.index, []).append(tool_call)
+667 
+668                 if choice.finish_reason:
+669                     finish_reason = choice.finish_reason  # Store for use outside loop
+670                     if data_type:
+671                         yield self.format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+672                     break
+673 
+674             for tool_deltas in tool_calls.values():
+675                 yield self.format_chunk({"chunk_type": "content_start", "data_type": "tool", "data": tool_deltas[0]})
+676 
+677                 for tool_delta in tool_deltas:
+678                     yield self.format_chunk({"chunk_type": "content_delta", "data_type": "tool", "data": tool_delta})
+679 
+680                 yield self.format_chunk({"chunk_type": "content_stop", "data_type": "tool"})
+681 
+682             yield self.format_chunk({"chunk_type": "message_stop", "data": finish_reason or "end_turn"})
+683 
+684             # Skip remaining events as we don't have use for anything except the final usage payload
+685             async for event in response:
+686                 _ = event
+687 
+688             if event and hasattr(event, "usage") and event.usage:
+689                 yield self.format_chunk({"chunk_type": "metadata", "data": event.usage})
+690 
+691         logger.debug("finished streaming response from model")
+692 
+693     def _stream_switch_content(self, data_type: str, prev_data_type: str | None) -> tuple[list[StreamEvent], str]:
+694         """Handle switching to a new content stream.
+695 
+696         Args:
+697             data_type: The next content data type.
+698             prev_data_type: The previous content data type.
+699 
+700         Returns:
+701             Tuple containing:
+702             - Stop block for previous content and the start block for the next content.
+703             - Next content data type.
+704         """
+705         chunks = []
+706         if data_type != prev_data_type:
+707             if prev_data_type is not None:
+708                 chunks.append(self.format_chunk({"chunk_type": "content_stop", "data_type": prev_data_type}))
+709             chunks.append(self.format_chunk({"chunk_type": "content_start", "data_type": data_type}))
+710 
+711         return chunks, data_type
+712 
+713     @override
+714     async def structured_output(
+715         self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+716     ) -> AsyncGenerator[dict[str, T | Any], None]:
+717         """Get structured output from the model.
+718 
+719         Args:
+720             output_model: The output model to use for the agent.
+721             prompt: The prompt messages to use for the agent.
+722             system_prompt: System prompt to provide context to the model.
+723             **kwargs: Additional keyword arguments for future extensibility.
+724 
+725         Yields:
+726             Model events with the last being the structured output.
+727 
+728         Raises:
+729             ContextWindowOverflowException: If the input exceeds the model's context window.
+730             ModelThrottledException: If the request is throttled by OpenAI (rate limits).
+731         """
+732         # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying httpx
+733         # client. The asyncio event loop does not allow connections to be shared. For more details, please refer to
+734         # https://github.com/encode/httpx/discussions/2959.
+735         async with self._get_client() as client:
+736             try:
+737                 response: ParsedChatCompletion = await client.beta.chat.completions.parse(
+738                     model=self.get_config()["model_id"],
+739                     messages=self.format_request(prompt, system_prompt=system_prompt)["messages"],
+740                     response_format=output_model,
+741                 )
+742             except openai.BadRequestError as e:
+743                 # Check if this is a context length exceeded error
+744                 if hasattr(e, "code") and e.code == "context_length_exceeded":
+745                     logger.warning("OpenAI threw context window overflow error")
+746                     raise ContextWindowOverflowException(str(e)) from e
+747                 # Re-raise other BadRequestError exceptions
+748                 raise
+749             except openai.RateLimitError as e:
+750                 # All rate limit errors should be treated as throttling, not context overflow
+751                 # Rate limits (including TPM) require waiting/retrying, not context reduction
+752                 logger.warning("OpenAI threw rate limit error")
+753                 raise ModelThrottledException(str(e)) from e
+754             except openai.APIError as e:
+755                 # Check for alternative context overflow error messages
+756                 error_message = str(e)
+757                 if any(overflow_msg in error_message for overflow_msg in _CONTEXT_OVERFLOW_MESSAGES):
+758                     logger.warning("context window overflow error detected")
+759                     raise ContextWindowOverflowException(error_message) from e
+760                 # Re-raise other APIError exceptions
+761                 raise
+762 
+763         parsed: T | None = None
+764         # Find the first choice with tool_calls
+765         if len(response.choices) > 1:
+766             raise ValueError("Multiple choices found in the OpenAI response.")
+767 
+768         for choice in response.choices:
+769             if isinstance(choice.message.parsed, output_model):
+770                 parsed = choice.message.parsed
+771                 break
+772 
+773         if parsed:
+774             yield {"output": parsed}
+775         else:
+776             raise ValueError("No valid tool use or tool use input was found in the OpenAI response.")
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-08-31 23:41:41.062 | INFO     | app.inference:_run_one_task:307 - Search completed. Bug locations: [<file>src/strands/models/openai.py</file>
+<class>OpenAIModel</class>
+<method>format_request_tool_message</method>
+<code>
+189     def format_request_tool_message(cls, tool_result: ToolResult, **kwargs: Any) -> dict[str, Any]:
+190         """Format an OpenAI compatible tool message.
+191 
+192         Args:
+193             tool_result: Tool result collected from a tool execution.
+194             **kwargs: Additional keyword arguments for future extensibility.
+195 
+196         Returns:
+197             OpenAI compatible tool message.
+198         """
+199         contents = cast(
+200             list[ContentBlock],
+201             [
+202                 {"text": json.dumps(content["json"])} if "json" in content else content
+203                 for content in tool_result["content"]
+204             ],
+205         )
+206 
+207         formatted_contents = [cls.format_request_message_content(content) for content in contents]
+208 
+209         # If single text content, use string format for better model compatibility
+210         if len(formatted_contents) == 1 and formatted_contents[0].get("type") == "text":
+211             content: str | list[dict[str, Any]] = formatted_contents[0]["text"]
+212         else:
+213             content = formatted_contents
+214 
+215         return {
+216             "role": "tool",
+217             "tool_call_id": tool_result["toolUseId"],
+218             "content": content,
+219         }
+
+</code><intended_behavior>Modify this method to always convert the formatted content blocks into a single string joined appropriately (e.g., with newlines) instead of returning a list/array of content blocks in the "content" field of the tool message. This conversion should serialize JSON content blocks using json.dumps and extract text content directly as strings, preserving all original information. This will fix compatibility issues with OpenAI-compatible endpoints that require string content for tool messages, while maintaining the existing support for various content block types and the overall message structure.</intended_behavior>, <file>src/strands/models/openai.py</file>
+<class>OpenAIModel</class>
+<method>None</method>
+<code>
+50 class OpenAIModel(Model):
+51     """OpenAI model provider implementation."""
+52 
+53     client: Client
+54 
+55     class OpenAIConfig(TypedDict, total=False):
+56         """Configuration options for OpenAI models.
+57 
+58         Attributes:
+59             model_id: Model ID (e.g., "gpt-4o").
+60                 For a complete list of supported models, see https://platform.openai.com/docs/models.
+61             params: Model parameters (e.g., max_tokens).
+62                 For a complete list of supported parameters, see
+63                 https://platform.openai.com/docs/api-reference/chat/create.
+64         """
+65 
+66         model_id: str
+67         params: dict[str, Any] | None
+68 
+69     def __init__(
+70         self,
+71         client: Client | None = None,
+72         client_args: dict[str, Any] | None = None,
+73         **model_config: Unpack[OpenAIConfig],
+74     ) -> None:
+75         """Initialize provider instance.
+76 
+77         Args:
+78             client: Pre-configured OpenAI-compatible client to reuse across requests.
+79                 When provided, this client will be reused for all requests and will NOT be closed
+80                 by the model. The caller is responsible for managing the client lifecycle.
+81                 This is useful for:
+82                 - Injecting custom client wrappers (e.g., GuardrailsAsyncOpenAI)
+83                 - Reusing connection pools within a single event loop/worker
+84                 - Centralizing observability, retries, and networking policy
+85                 - Pointing to custom model gateways
+86                 Note: The client should not be shared across different asyncio event loops.
+87             client_args: Arguments for the OpenAI client (legacy approach).
+88                 For a complete list of supported arguments, see https://pypi.org/project/openai/.
+89             **model_config: Configuration options for the OpenAI model.
+90 
+91         Raises:
+92             ValueError: If both `client` and `client_args` are provided.
+93         """
+94         validate_config_keys(model_config, self.OpenAIConfig)
+95         self.config = dict(model_config)
+96 
+97         # Validate that only one client configuration method is provided
+98         if client is not None and client_args is not None and len(client_args) > 0:
+99             raise ValueError("Only one of 'client' or 'client_args' should be provided, not both.")
+100 
+101         self._custom_client = client
+102         self.client_args = client_args or {}
+103 
+104         logger.debug("config=<%s> | initializing", self.config)
+105 
+106     @override
+107     def update_config(self, **model_config: Unpack[OpenAIConfig]) -> None:  # type: ignore[override]
+108         """Update the OpenAI model configuration with the provided arguments.
+109 
+110         Args:
+111             **model_config: Configuration overrides.
+112         """
+113         validate_config_keys(model_config, self.OpenAIConfig)
+114         self.config.update(model_config)
+115 
+116     @override
+117     def get_config(self) -> OpenAIConfig:
+118         """Get the OpenAI model configuration.
+119 
+120         Returns:
+121             The OpenAI model configuration.
+122         """
+123         return cast(OpenAIModel.OpenAIConfig, self.config)
+124 
+125     @classmethod
+126     def format_request_message_content(cls, content: ContentBlock, **kwargs: Any) -> dict[str, Any]:
+127         """Format an OpenAI compatible content block.
+128 
+129         Args:
+130             content: Message content.
+131             **kwargs: Additional keyword arguments for future extensibility.
+132 
+133         Returns:
+134             OpenAI compatible content block.
+135 
+136         Raises:
+137             TypeError: If the content block type cannot be converted to an OpenAI-compatible format.
+138         """
+139         if "document" in content:
+140             mime_type = mimetypes.types_map.get(f".{content['document']['format']}", "application/octet-stream")
+141             file_data = base64.b64encode(content["document"]["source"]["bytes"]).decode("utf-8")
+142             return {
+143                 "file": {
+144                     "file_data": f"data:{mime_type};base64,{file_data}",
+145                     "filename": content["document"]["name"],
+146                 },
+147                 "type": "file",
+148             }
+149 
+150         if "image" in content:
+151             mime_type = mimetypes.types_map.get(f".{content['image']['format']}", "application/octet-stream")
+152             image_data = base64.b64encode(content["image"]["source"]["bytes"]).decode("utf-8")
+153 
+154             return {
+155                 "image_url": {
+156                     "detail": "auto",
+157                     "format": mime_type,
+158                     "url": f"data:{mime_type};base64,{image_data}",
+159                 },
+160                 "type": "image_url",
+161             }
+162 
+163         if "text" in content:
+164             return {"text": content["text"], "type": "text"}
+165 
+166         raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+167 
+168     @classmethod
+169     def format_request_message_tool_call(cls, tool_use: ToolUse, **kwargs: Any) -> dict[str, Any]:
+170         """Format an OpenAI compatible tool call.
+171 
+172         Args:
+173             tool_use: Tool use requested by the model.
+174             **kwargs: Additional keyword arguments for future extensibility.
+175 
+176         Returns:
+177             OpenAI compatible tool call.
+178         """
+179         return {
+180             "function": {
+181                 "arguments": json.dumps(tool_use["input"]),
+182                 "name": tool_use["name"],
+183             },
+184             "id": tool_use["toolUseId"],
+185             "type": "function",
+186         }
+187 
+188     @classmethod
+189     def format_request_tool_message(cls, tool_result: ToolResult, **kwargs: Any) -> dict[str, Any]:
+190         """Format an OpenAI compatible tool message.
+191 
+192         Args:
+193             tool_result: Tool result collected from a tool execution.
+194             **kwargs: Additional keyword arguments for future extensibility.
+195 
+196         Returns:
+197             OpenAI compatible tool message.
+198         """
+199         contents = cast(
+200             list[ContentBlock],
+201             [
+202                 {"text": json.dumps(content["json"])} if "json" in content else content
+203                 for content in tool_result["content"]
+204             ],
+205         )
+206 
+207         formatted_contents = [cls.format_request_message_content(content) for content in contents]
+208 
+209         # If single text content, use string format for better model compatibility
+210         if len(formatted_contents) == 1 and formatted_contents[0].get("type") == "text":
+211             content: str | list[dict[str, Any]] = formatted_contents[0]["text"]
+212         else:
+213             content = formatted_contents
+214 
+215         return {
+216             "role": "tool",
+217             "tool_call_id": tool_result["toolUseId"],
+218             "content": content,
+219         }
+220 
+221     @classmethod
+222     def _split_tool_message_images(cls, tool_message: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+223         """Split a tool message into text-only tool message and optional user message with images.
+224 
+225         OpenAI API restricts images to user role messages only. This method extracts any image
+226         content from a tool message and returns it separately as a user message.
+227 
+228         Args:
+229             tool_message: A formatted tool message that may contain images.
+230 
+231         Returns:
+232             A tuple of (tool_message_without_images, user_message_with_images_or_None).
+233         """
+234         if tool_message.get("role") != "tool":
+235             return tool_message, None
+236 
+237         content = tool_message.get("content", [])
+238         if not isinstance(content, list):
+239             return tool_message, None
+240 
+241         # Separate image and non-image content
+242         text_content = []
+243         image_content = []
+244 
+245         for item in content:
+246             if isinstance(item, dict) and item.get("type") == "image_url":
+247                 image_content.append(item)
+248             else:
+249                 text_content.append(item)
+250 
+251         # If no images found, return original message
+252         if not image_content:
+253             return tool_message, None
+254 
+255         # Let the user know that we are modifying the messages for OpenAI compatibility
+256         logger.warning(
+257             "tool_call_id=<%s> | Moving image from tool message to a new user message for OpenAI compatibility",
+258             tool_message["tool_call_id"],
+259         )
+260 
+261         # Append a message to the text content to inform the model about the upcoming image
+262         text_content.append(
+263             {
+264                 "type": "text",
+265                 "text": (
+266                     "Tool successfully returned an image. The image is being provided in the following user message."
+267                 ),
+268             }
+269         )
+270 
+271         # Create the clean tool message with the updated text content
+272         tool_message_clean = {
+273             "role": "tool",
+274             "tool_call_id": tool_message["tool_call_id"],
+275             "content": text_content,
+276         }
+277 
+278         # Create user message with only images
+279         user_message_with_images = {"role": "user", "content": image_content}
+280 
+281         return tool_message_clean, user_message_with_images
+282 
+283     @classmethod
+284     def _format_request_tool_choice(cls, tool_choice: ToolChoice | None) -> dict[str, Any]:
+285         """Format a tool choice for OpenAI compatibility.
+286 
+287         Args:
+288             tool_choice: Tool choice configuration in Bedrock format.
+289 
+290         Returns:
+291             OpenAI compatible tool choice format.
+292         """
+293         if not tool_choice:
+294             return {}
+295 
+296         match tool_choice:
+297             case {"auto": _}:
+298                 return {"tool_choice": "auto"}  # OpenAI SDK doesn't define constants for these values
+299             case {"any": _}:
+300                 return {"tool_choice": "required"}
+301             case {"tool": {"name": tool_name}}:
+302                 return {"tool_choice": {"type": "function", "function": {"name": tool_name}}}
+303             case _:
+304                 # This should not happen with proper typing, but handle gracefully
+305                 return {"tool_choice": "auto"}
+306 
+307     @classmethod
+308     def _format_system_messages(
+309         cls,
+310         system_prompt: str | None = None,
+311         *,
+312         system_prompt_content: list[SystemContentBlock] | None = None,
+313         **kwargs: Any,
+314     ) -> list[dict[str, Any]]:
+315         """Format system messages for OpenAI-compatible providers.
+316 
+317         Args:
+318             system_prompt: System prompt to provide context to the model.
+319             system_prompt_content: System prompt content blocks to provide context to the model.
+320             **kwargs: Additional keyword arguments for future extensibility.
+321 
+322         Returns:
+323             List of formatted system messages.
+324         """
+325         # Handle backward compatibility: if system_prompt is provided but system_prompt_content is None
+326         if system_prompt and system_prompt_content is None:
+327             system_prompt_content = [{"text": system_prompt}]
+328 
+329         # TODO: Handle caching blocks https://github.com/strands-agents/sdk-python/issues/1140
+330         return [
+331             {"role": "system", "content": content["text"]}
+332             for content in system_prompt_content or []
+333             if "text" in content
+334         ]
+335 
+336     @classmethod
+337     def _format_regular_messages(cls, messages: Messages, **kwargs: Any) -> list[dict[str, Any]]:
+338         """Format regular messages for OpenAI-compatible providers.
+339 
+340         Args:
+341             messages: List of message objects to be processed by the model.
+342             **kwargs: Additional keyword arguments for future extensibility.
+343 
+344         Returns:
+345             List of formatted messages.
+346         """
+347         formatted_messages = []
+348 
+349         for message in messages:
+350             contents = message["content"]
+351 
+352             # Check for reasoningContent and warn user
+353             if any("reasoningContent" in content for content in contents):
+354                 logger.warning(
+355                     "reasoningContent is not supported in multi-turn conversations with the Chat Completions API."
+356                 )
+357 
+358             # Filter out content blocks that shouldn't be formatted
+359             filtered_contents = []
+360             for content in contents:
+361                 if any(block_type in content for block_type in ["toolResult", "toolUse", "reasoningContent"]):
+362                     continue
+363                 if _has_location_source(content):
+364                     logger.warning("Location sources are not supported by OpenAI | skipping content block")
+365                     continue
+366                 filtered_contents.append(content)
+367 
+368             formatted_contents = [cls.format_request_message_content(content) for content in filtered_contents]
+369             formatted_tool_calls = [
+370                 cls.format_request_message_tool_call(content["toolUse"]) for content in contents if "toolUse" in content
+371             ]
+372             formatted_tool_messages = [
+373                 cls.format_request_tool_message(content["toolResult"])
+374                 for content in contents
+375                 if "toolResult" in content
+376             ]
+377 
+378             formatted_message = {
+379                 "role": message["role"],
+380                 **({"content": formatted_contents} if formatted_contents else {}),
+381                 **({"tool_calls": formatted_tool_calls} if formatted_tool_calls else {}),
+382             }
+383             formatted_messages.append(formatted_message)
+384 
+385             # Process tool messages to extract images into separate user messages
+386             # OpenAI API requires images to be in user role messages only
+387             # All tool messages must be grouped together before any user messages with images
+388             user_messages_with_images = []
+389             for tool_msg in formatted_tool_messages:
+390                 tool_msg_clean, user_msg_with_images = cls._split_tool_message_images(tool_msg)
+391                 formatted_messages.append(tool_msg_clean)
+392                 if user_msg_with_images:
+393                     user_messages_with_images.append(user_msg_with_images)
+394             formatted_messages.extend(user_messages_with_images)
+395 
+396         return formatted_messages
+397 
+398     @classmethod
+399     def format_request_messages(
+400         cls,
+401         messages: Messages,
+402         system_prompt: str | None = None,
+403         *,
+404         system_prompt_content: list[SystemContentBlock] | None = None,
+405         **kwargs: Any,
+406     ) -> list[dict[str, Any]]:
+407         """Format an OpenAI compatible messages array.
+408 
+409         Args:
+410             messages: List of message objects to be processed by the model.
+411             system_prompt: System prompt to provide context to the model.
+412             system_prompt_content: System prompt content blocks to provide context to the model.
+413             **kwargs: Additional keyword arguments for future extensibility.
+414 
+415         Returns:
+416             An OpenAI compatible messages array.
+417         """
+418         formatted_messages = cls._format_system_messages(system_prompt, system_prompt_content=system_prompt_content)
+419         formatted_messages.extend(cls._format_regular_messages(messages))
+420 
+421         return [message for message in formatted_messages if "content" in message or "tool_calls" in message]
+422 
+423     def format_request(
+424         self,
+425         messages: Messages,
+426         tool_specs: list[ToolSpec] | None = None,
+427         system_prompt: str | None = None,
+428         tool_choice: ToolChoice | None = None,
+429         *,
+430         system_prompt_content: list[SystemContentBlock] | None = None,
+431         **kwargs: Any,
+432     ) -> dict[str, Any]:
+433         """Format an OpenAI compatible chat streaming request.
+434 
+435         Args:
+436             messages: List of message objects to be processed by the model.
+437             tool_specs: List of tool specifications to make available to the model.
+438             system_prompt: System prompt to provide context to the model.
+439             tool_choice: Selection strategy for tool invocation.
+440             system_prompt_content: System prompt content blocks to provide context to the model.
+441             **kwargs: Additional keyword arguments for future extensibility.
+442 
+443         Returns:
+444             An OpenAI compatible chat streaming request.
+445 
+446         Raises:
+447             TypeError: If a message contains a content block type that cannot be converted to an OpenAI-compatible
+448                 format.
+449         """
+450         return {
+451             "messages": self.format_request_messages(
+452                 messages, system_prompt, system_prompt_content=system_prompt_content
+453             ),
+454             "model": self.config["model_id"],
+455             "stream": True,
+456             "stream_options": {"include_usage": True},
+457             "tools": [
+458                 {
+459                     "type": "function",
+460                     "function": {
+461                         "name": tool_spec["name"],
+462                         "description": tool_spec["description"],
+463                         "parameters": tool_spec["inputSchema"]["json"],
+464                     },
+465                 }
+466                 for tool_spec in tool_specs or []
+467             ],
+468             **(self._format_request_tool_choice(tool_choice)),
+469             **cast(dict[str, Any], self.config.get("params", {})),
+470         }
+471 
+472     def format_chunk(self, event: dict[str, Any], **kwargs: Any) -> StreamEvent:
+473         """Format an OpenAI response event into a standardized message chunk.
+474 
+475         Args:
+476             event: A response event from the OpenAI compatible model.
+477             **kwargs: Additional keyword arguments for future extensibility.
+478 
+479         Returns:
+480             The formatted chunk.
+481 
+482         Raises:
+483             RuntimeError: If chunk_type is not recognized.
+484                 This error should never be encountered as chunk_type is controlled in the stream method.
+485         """
+486         match event["chunk_type"]:
+487             case "message_start":
+488                 return {"messageStart": {"role": "assistant"}}
+489 
+490             case "content_start":
+491                 if event["data_type"] == "tool":
+492                     return {
+493                         "contentBlockStart": {
+494                             "start": {
+495                                 "toolUse": {
+496                                     "name": event["data"].function.name,
+497                                     "toolUseId": event["data"].id,
+498                                 }
+499                             }
+500                         }
+501                     }
+502 
+503                 return {"contentBlockStart": {"start": {}}}
+504 
+505             case "content_delta":
+506                 if event["data_type"] == "tool":
+507                     return {
+508                         "contentBlockDelta": {"delta": {"toolUse": {"input": event["data"].function.arguments or ""}}}
+509                     }
+510 
+511                 if event["data_type"] == "reasoning_content":
+512                     return {"contentBlockDelta": {"delta": {"reasoningContent": {"text": event["data"]}}}}
+513 
+514                 return {"contentBlockDelta": {"delta": {"text": event["data"]}}}
+515 
+516             case "content_stop":
+517                 return {"contentBlockStop": {}}
+518 
+519             case "message_stop":
+520                 match event["data"]:
+521                     case "tool_calls":
+522                         return {"messageStop": {"stopReason": "tool_use"}}
+523                     case "length":
+524                         return {"messageStop": {"stopReason": "max_tokens"}}
+525                     case _:
+526                         return {"messageStop": {"stopReason": "end_turn"}}
+527 
+528             case "metadata":
+529                 return {
+530                     "metadata": {
+531                         "usage": {
+532                             "inputTokens": event["data"].prompt_tokens,
+533                             "outputTokens": event["data"].completion_tokens,
+534                             "totalTokens": event["data"].total_tokens,
+535                         },
+536                         "metrics": {
+537                             "latencyMs": 0,  # TODO
+538                         },
+539                     },
+540                 }
+541 
+542             case _:
+543                 raise RuntimeError(f"chunk_type=<{event['chunk_type']} | unknown type")
+544 
+545     @asynccontextmanager
+546     async def _get_client(self) -> AsyncIterator[Any]:
+547         """Get an OpenAI client for making requests.
+548 
+549         This context manager handles client lifecycle management:
+550         - If an injected client was provided during initialization, it yields that client
+551           without closing it (caller manages lifecycle).
+552         - Otherwise, creates a new AsyncOpenAI client from client_args and automatically
+553           closes it when the context exits.
+554 
+555         Note: We create a new client per request to avoid connection sharing in the underlying
+556         httpx client, as the asyncio event loop does not allow connections to be shared.
+557         For more details, see https://github.com/encode/httpx/discussions/2959.
+558 
+559         Yields:
+560             Client: An OpenAI-compatible client instance.
+561         """
+562         if self._custom_client is not None:
+563             # Use the injected client (caller manages lifecycle)
+564             yield self._custom_client
+565         else:
+566             # Create a new client from client_args
+567             # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying
+568             # httpx client. The asyncio event loop does not allow connections to be shared. For more details, please
+569             # refer to https://github.com/encode/httpx/discussions/2959.
+570             async with openai.AsyncOpenAI(**self.client_args) as client:
+571                 yield client
+572 
+573     @override
+574     async def stream(
+575         self,
+576         messages: Messages,
+577         tool_specs: list[ToolSpec] | None = None,
+578         system_prompt: str | None = None,
+579         *,
+580         tool_choice: ToolChoice | None = None,
+581         **kwargs: Any,
+582     ) -> AsyncGenerator[StreamEvent, None]:
+583         """Stream conversation with the OpenAI model.
+584 
+585         Args:
+586             messages: List of message objects to be processed by the model.
+587             tool_specs: List of tool specifications to make available to the model.
+588             system_prompt: System prompt to provide context to the model.
+589             tool_choice: Selection strategy for tool invocation.
+590             **kwargs: Additional keyword arguments for future extensibility.
+591 
+592         Yields:
+593             Formatted message chunks from the model.
+594 
+595         Raises:
+596             ContextWindowOverflowException: If the input exceeds the model's context window.
+597             ModelThrottledException: If the request is throttled by OpenAI (rate limits).
+598         """
+599         logger.debug("formatting request")
+600         request = self.format_request(messages, tool_specs, system_prompt, tool_choice)
+601         logger.debug("formatted request=<%s>", request)
+602 
+603         logger.debug("invoking model")
+604 
+605         # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying httpx
+606         # client. The asyncio event loop does not allow connections to be shared. For more details, please refer to
+607         # https://github.com/encode/httpx/discussions/2959.
+608         async with self._get_client() as client:
+609             try:
+610                 response = await client.chat.completions.create(**request)
+611             except openai.BadRequestError as e:
+612                 # Check if this is a context length exceeded error
+613                 if hasattr(e, "code") and e.code == "context_length_exceeded":
+614                     logger.warning("OpenAI threw context window overflow error")
+615                     raise ContextWindowOverflowException(str(e)) from e
+616                 # Re-raise other BadRequestError exceptions
+617                 raise
+618             except openai.RateLimitError as e:
+619                 # All rate limit errors should be treated as throttling, not context overflow
+620                 # Rate limits (including TPM) require waiting/retrying, not context reduction
+621                 logger.warning("OpenAI threw rate limit error")
+622                 raise ModelThrottledException(str(e)) from e
+623             except openai.APIError as e:
+624                 # Check for alternative context overflow error messages
+625                 error_message = str(e)
+626                 if any(overflow_msg in error_message for overflow_msg in _CONTEXT_OVERFLOW_MESSAGES):
+627                     logger.warning("context window overflow error detected")
+628                     raise ContextWindowOverflowException(error_message) from e
+629                 # Re-raise other APIError exceptions
+630                 raise
+631 
+632             logger.debug("got response from model")
+633             yield self.format_chunk({"chunk_type": "message_start"})
+634             tool_calls: dict[int, list[Any]] = {}
+635             data_type = None
+636             finish_reason = None  # Store finish_reason for later use
+637             event = None  # Initialize for scope safety
+638 
+639             async for event in response:
+640                 # Defensive: skip events with empty or missing choices
+641                 if not getattr(event, "choices", None):
+642                     continue
+643                 choice = event.choices[0]
+644 
+645                 if hasattr(choice.delta, "reasoning_content") and choice.delta.reasoning_content:
+646                     chunks, data_type = self._stream_switch_content("reasoning_content", data_type)
+647                     for chunk in chunks:
+648                         yield chunk
+649                     yield self.format_chunk(
+650                         {
+651                             "chunk_type": "content_delta",
+652                             "data_type": data_type,
+653                             "data": choice.delta.reasoning_content,
+654                         }
+655                     )
+656 
+657                 if choice.delta.content:
+658                     chunks, data_type = self._stream_switch_content("text", data_type)
+659                     for chunk in chunks:
+660                         yield chunk
+661                     yield self.format_chunk(
+662                         {"chunk_type": "content_delta", "data_type": data_type, "data": choice.delta.content}
+663                     )
+664 
+665                 for tool_call in choice.delta.tool_calls or []:
+666                     tool_calls.setdefault(tool_call.index, []).append(tool_call)
+667 
+668                 if choice.finish_reason:
+669                     finish_reason = choice.finish_reason  # Store for use outside loop
+670                     if data_type:
+671                         yield self.format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+672                     break
+673 
+674             for tool_deltas in tool_calls.values():
+675                 yield self.format_chunk({"chunk_type": "content_start", "data_type": "tool", "data": tool_deltas[0]})
+676 
+677                 for tool_delta in tool_deltas:
+678                     yield self.format_chunk({"chunk_type": "content_delta", "data_type": "tool", "data": tool_delta})
+679 
+680                 yield self.format_chunk({"chunk_type": "content_stop", "data_type": "tool"})
+681 
+682             yield self.format_chunk({"chunk_type": "message_stop", "data": finish_reason or "end_turn"})
+683 
+684             # Skip remaining events as we don't have use for anything except the final usage payload
+685             async for event in response:
+686                 _ = event
+687 
+688             if event and hasattr(event, "usage") and event.usage:
+689                 yield self.format_chunk({"chunk_type": "metadata", "data": event.usage})
+690 
+691         logger.debug("finished streaming response from model")
+692 
+693     def _stream_switch_content(self, data_type: str, prev_data_type: str | None) -> tuple[list[StreamEvent], str]:
+694         """Handle switching to a new content stream.
+695 
+696         Args:
+697             data_type: The next content data type.
+698             prev_data_type: The previous content data type.
+699 
+700         Returns:
+701             Tuple containing:
+702             - Stop block for previous content and the start block for the next content.
+703             - Next content data type.
+704         """
+705         chunks = []
+706         if data_type != prev_data_type:
+707             if prev_data_type is not None:
+708                 chunks.append(self.format_chunk({"chunk_type": "content_stop", "data_type": prev_data_type}))
+709             chunks.append(self.format_chunk({"chunk_type": "content_start", "data_type": data_type}))
+710 
+711         return chunks, data_type
+712 
+713     @override
+714     async def structured_output(
+715         self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+716     ) -> AsyncGenerator[dict[str, T | Any], None]:
+717         """Get structured output from the model.
+718 
+719         Args:
+720             output_model: The output model to use for the agent.
+721             prompt: The prompt messages to use for the agent.
+722             system_prompt: System prompt to provide context to the model.
+723             **kwargs: Additional keyword arguments for future extensibility.
+724 
+725         Yields:
+726             Model events with the last being the structured output.
+727 
+728         Raises:
+729             ContextWindowOverflowException: If the input exceeds the model's context window.
+730             ModelThrottledException: If the request is throttled by OpenAI (rate limits).
+731         """
+732         # We initialize an OpenAI context on every request so as to avoid connection sharing in the underlying httpx
+733         # client. The asyncio event loop does not allow connections to be shared. For more details, please refer to
+734         # https://github.com/encode/httpx/discussions/2959.
+735         async with self._get_client() as client:
+736             try:
+737                 response: ParsedChatCompletion = await client.beta.chat.completions.parse(
+738                     model=self.get_config()["model_id"],
+739                     messages=self.format_request(prompt, system_prompt=system_prompt)["messages"],
+740                     response_format=output_model,
+741                 )
+742             except openai.BadRequestError as e:
+743                 # Check if this is a context length exceeded error
+744                 if hasattr(e, "code") and e.code == "context_length_exceeded":
+745                     logger.warning("OpenAI threw context window overflow error")
+746                     raise ContextWindowOverflowException(str(e)) from e
+747                 # Re-raise other BadRequestError exceptions
+748                 raise
+749             except openai.RateLimitError as e:
+750                 # All rate limit errors should be treated as throttling, not context overflow
+751                 # Rate limits (including TPM) require waiting/retrying, not context reduction
+752                 logger.warning("OpenAI threw rate limit error")
+753                 raise ModelThrottledException(str(e)) from e
+754             except openai.APIError as e:
+755                 # Check for alternative context overflow error messages
+756                 error_message = str(e)
+757                 if any(overflow_msg in error_message for overflow_msg in _CONTEXT_OVERFLOW_MESSAGES):
+758                     logger.warning("context window overflow error detected")
+759                     raise ContextWindowOverflowException(error_message) from e
+760                 # Re-raise other APIError exceptions
+761                 raise
+762 
+763         parsed: T | None = None
+764         # Find the first choice with tool_calls
+765         if len(response.choices) > 1:
+766             raise ValueError("Multiple choices found in the OpenAI response.")
+767 
+768         for choice in response.choices:
+769             if isinstance(choice.message.parsed, output_model):
+770                 parsed = choice.message.parsed
+771                 break
+772 
+773         if parsed:
+774             yield {"output": parsed}
+775         else:
+776             raise ValueError("No valid tool use or tool use input was found in the OpenAI response.")
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-08-31 23:41:41.062 | DEBUG    | app.inference:_run_one_task:315 - Gathered enough information. Invoking write_patch.
+2026-08-31 23:41:41.063 | INFO     | app.inference:write_patch_iterative:69 - Start generating patches without reviewer
+2026-08-31 23:41:41.063 | DEBUG    | app.agents.agent_write_patch:_write_patch:173 - <agent write patch> is_first_try: True
+2026-08-31 23:41:53.336 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8874, output_tokens=798, cost=0.001810
+2026-08-31 23:41:53.372 | DEBUG    | app.agents.agent_write_patch:_write_patch:173 - <agent write patch> is_first_try: True
+2026-08-31 23:42:02.217 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8874, output_tokens=716, cost=0.001761
+2026-08-31 23:42:05.181 | INFO     | app.inference:write_patch_iterative:76 - Generated applicable patch: 1
+2026-08-31 23:42:05.181 | INFO     | app.inference:write_patch_iterative:80 - Begin evaluating patch: 1
+2026-08-31 23:42:05.181 | INFO     | app.inference:write_patch_iterative:88 - Patch 1 passed evaluation. Ending patch generation
+2026-08-31 23:42:05.181 | INFO     | app.inference:_run_one_task:337 - Invoked write_patch. Since there is no reproducer, the workflow will be terminated.
+2026-08-31 23:42:05.181 | INFO     | app.inference:run_one_task:129 - Overall retry 0 succeeded; ending workflow
+2026-08-31 23:42:05.181 | INFO     | app.inference:run_one_task:134 - Starting patch selection
+2026-08-31 23:42:05.187 | INFO     | app.inference:run_one_task:139 - Selected patch output_0/extracted_patch_1.diff. Reason: no-agent,single-pass-regression
+2026-08-31 23:42:05.259 | INFO     | app.log:log_and_always_print:229 - Task issue_1696_20260818T061206Z completed successfully.
+2026-08-31 23:42:05.260 | INFO     | app.log:log_and_always_print:229 - Please find the generated patch at: /root/auto-code-rover/patches/result_issue_1696_20260818T061206Z/acr_output/issue_1696_20260818T061206Z_2026-08-31_23-41-12/output_0/extracted_patch_1.diff

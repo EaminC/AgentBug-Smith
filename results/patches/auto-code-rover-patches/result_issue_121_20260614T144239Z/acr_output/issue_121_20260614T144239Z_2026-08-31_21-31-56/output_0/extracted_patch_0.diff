@@ -1,0 +1,124 @@
+diff --git a/mle/workflow/baseline.py b/mle/workflow/baseline.py
+index 2e61ece..a67e68d 100644
+--- a/mle/workflow/baseline.py
++++ b/mle/workflow/baseline.py
+@@ -22,47 +22,78 @@ def ask_data(data_str: str):
+         return f"[green]Dataset:[/green] {data_str}"
+ 
+ 
+-def baseline(work_dir: str, model='gpt-4o'):
++import json
++import os
++
++def baseline(work_dir: str, model='gpt-4o', resume=False):
+     """
+-    The workflow of the baseline mode.
++    The workflow of the baseline mode with optional resume support.
+     :return:
+     """
+ 
+     console = Console()
+     model = load_model(work_dir, model)
+ 
+-    # ask for the data information
+-    dataset = ask_text("Please provide your dataset information (a public dataset name or a local file path)")
+-    if not dataset:
+-        print_in_box("The dataset is empty. Aborted", console, title="Error", color="red")
+-        return
++    session_file = os.path.join(work_dir, '.mle_session.json')
++
++    if resume and os.path.exists(session_file):
++        # Load session state
++        with open(session_file, 'r') as f:
++            session_data = json.load(f)
++
++        dataset = session_data.get('dataset')
++        ml_requirement = session_data.get('ml_requirement')
++        advisor_report = session_data.get('advisor_report')
++        coding_plan = session_data.get('coding_plan')
++        task_index = session_data.get('task_index', 0)
++    else:
++        # ask for the data information
++        dataset = ask_text("Please provide your dataset information (a public dataset name or a local file path)")
++        if not dataset:
++            print_in_box("The dataset is empty. Aborted", console, title="Error", color="red")
++            return
+ 
+-    # ask for the user requirement
+-    ml_requirement = ask_text("Please provide the user requirement")
+-    if not ml_requirement:
+-        print_in_box("The user's requirement is empty. Aborted", console, title="Error", color="red")
+-        return
++        # ask for the user requirement
++        ml_requirement = ask_text("Please provide the user requirement")
++        if not ml_requirement:
++            print_in_box("The user's requirement is empty. Aborted", console, title="Error", color="red")
++            return
+ 
+-    # advisor agent gives suggestions in a report
+-    advisor = AdviseAgent(model, console)
+-    advisor_report = advisor.interact("[green]User Requirement:[/green] " + ml_requirement + "\n" + ask_data(dataset))
++        # advisor agent gives suggestions in a report
++        advisor = AdviseAgent(model, console)
++        advisor_report = advisor.interact("[green]User Requirement:[/green] " + ml_requirement + "\n" + ask_data(dataset))
+ 
+-    # plan agent generates the coding plan
+-    planner = PlanAgent(model, console)
+-    coding_plan = planner.interact(advisor_report)
++        # plan agent generates the coding plan
++        planner = PlanAgent(model, console)
++        coding_plan = planner.interact(advisor_report)
+ 
+-    # code agent codes the tasks and debug with the debug agent
++        task_index = 0
++
++    # Prepare agents
+     coder = CodeAgent(model, work_dir, console)
+     coder.read_requirement(advisor_report)
+     debugger = DebugAgent(model, console)
+ 
++    # If resuming, load internal agent states
++    if resume and os.path.exists(session_file):
++        # Load coder state if any
++        coder_state = session_data.get('coder_state')
++        if coder_state:
++            coder.load_state(coder_state)
++        # Load debugger state if any
++        debugger_state = session_data.get('debugger_state')
++        if debugger_state:
++            debugger.load_state(debugger_state)
++
+     is_auto_mode = questionary.confirm(
+         "MLE developer is about to start to code.\n"
+         "Choose to debug or not (If no, MLE agent will only focus on coding tasks,"
+         " and you have to run and debug the code yourself)?"
+     ).ask()
+ 
+-    for current_task in coding_plan.get('tasks'):
++    tasks = coding_plan.get('tasks', [])
++    for i in range(task_index, len(tasks)):
++        current_task = tasks[i]
+         code_report = coder.interact(current_task)
+         is_debugging = code_report.get('debug')
+ 
+@@ -77,3 +108,20 @@ def baseline(work_dir: str, model='gpt-4o'):
+                         code_report = coder.debug(current_task, debug_report)
+                 else:
+                     break
++
++        # Save session state after each task
++        session_data = {
++            'dataset': dataset,
++            'ml_requirement': ml_requirement,
++            'advisor_report': advisor_report,
++            'coding_plan': coding_plan,
++            'task_index': i + 1,
++            'coder_state': coder.save_state(),
++            'debugger_state': debugger.save_state()
++        }
++        with open(session_file, 'w') as f:
++            json.dump(session_data, f, indent=2)
++
++    # On completion remove session file
++    if os.path.exists(session_file):
++        os.remove(session_file)

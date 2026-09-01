@@ -1,0 +1,18 @@
+[
+    {
+        "role": "system",
+        "content": "You are an experienced software engineer responsible for reproducing given issues."
+    },
+    {
+        "role": "user",
+        "content": "Here is an issue:\n\nIssue Title: [BUG] Agent hanging on 5xx\n\nDescription:\n### Checks\n\n- [x] I have updated to the lastest minor and patch version of Strands\n- [x] I have checked the documentation and this is not expected behavior\n- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue\n\n### Strands Version\n\n1.18.x\n\n### Python Version\n\n3.11\n\n### Operating System\n\nAmazon Linux 2023\n\n### Installation Method\n\nother\n\n### Steps to Reproduce\n\nUnable to reproduce this in a standalone script.\n\n\n### Expected Behavior\n\nFail fast and propagate the error.\n\n### Actual Behavior\n\nHangs indefinitely.\n\n### Additional Context\n\nWe've noticed several instances of the agent hanging indefinitely on 4xx/5xx errors, much like the case described in https://github.com/strands-agents/sdk-python/issues/995 and subsequently fixed in https://github.com/strands-agents/sdk-python/pull/1169.\n\nIt is possible it is stemming from the way we're using the `MCPClient` instance in our service (we subclass it to add functionality), but my hunch is that it's a race condition that's allowing tool calls to be scheduled to the background thread event loop after it's been closed due to an uncaught exception, but before the thread has been shutdown (i.e, `_is_session_active` still returns `True`, causing those tasks to hang indefinitely (and with it, the agent itself).\n\nWe also observed that the hanging would stop if we patched the `MCPClient::_is_session_active` method to also check if `_close_future` is *done* to check if the event loop is still active to accept new tasks:\n\n(Happy to share service logs privately)\n\n### Possible Solution\n\nThis patch to the `MCPClient::_is_session_active` function appears to fix it.\n\n```python\ndef _patched_is_session_active(self) -> bool:\n     if self._background_thread is None or not self._background_thread.is_alive():\n        return False\n    # Check if the close_future has been set, indicating the session is closing/closed\n    # This detects session failure during the race condition window BEFORE the thread\n    # fully exits, preventing retry attempts from hanging in run_coroutine_threadsafe\n    if self._close_future is not None and self._close_future.done():\n        return False\n    return True\n\n\n# Apply the monkey patch\nMCPClient._is_session_active = _patched_is_session_active\n```\n\n\n### Related Issues\n\nhttps://github.com/strands-agents/sdk-python/issues/995"
+    },
+    {
+        "role": "user",
+        "content": "Tell me whether the issue contains a reproducible example. Your answer should take the following Json format:\n```\n{\n    \"has-reproducible-example\": ...\n}\n```\nwhere \"has-reproducible-example\" should be either `true` or `false`."
+    },
+    {
+        "role": "assistant",
+        "content": "{\n    \"has-reproducible-example\": false\n}"
+    }
+]

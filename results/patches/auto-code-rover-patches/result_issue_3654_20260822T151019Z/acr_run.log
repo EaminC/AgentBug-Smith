@@ -1,0 +1,429 @@
+STDOUT:
+
+[2026-09-01 04:36:11] Total number of tasks: 1
+
+[2026-09-01 04:36:11] Total number of processes: 1
+
+[2026-09-01 04:36:11] Task group info: (number of groups: 1)
+
+[2026-09-01 04:36:11]   local: 1 tasks
+
+[2026-09-01 04:36:11] Running in single process mode.
+
+[2026-09-01 04:36:11] ============= Running task issue_3654_20260822T151019Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] Bedrock Mantle base-path table only handles openai.gpt-5.*, mis-routing xai.grok-4.3 (and every third-party model) to /v1    │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched ./issues and there are no duplicates of my issue                                                                             │
+│                                                                                                                                                 │
+│ ### SDK Language                                                                                                                                │
+│                                                                                                                                                 │
+│ TypeScript                                                                                                                                      │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ Reported against current `main` / latest published `@strands-agents/sdk`. Exact version not captured from the reporter — the routing defect     │
+│ below is present on `main` as of this filing.                                                                                                   │
+│                                                                                                                                                 │
+│ ### Language Runtime Version                                                                                                                    │
+│                                                                                                                                                 │
+│ Not captured from the reporter (Node.js).                                                                                                       │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ Not captured from the reporter.                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ npm                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ Reported by a user attempting to reach `xai.grok-4.3` through the Bedrock Mantle endpoint in `us-east-1`                                        │
+│ (`https://bedrock-mantle.us-east-1.api.aws`).                                                                                                   │
+│                                                                                                                                                 │
+│ ```ts                                                                                                                                           │
+│ import { OpenAIModel } from '@strands-agents/sdk/models/openai'                                                                                 │
+│                                                                                                                                                 │
+│ const model = new OpenAIModel({                                                                                                                 │
+│   modelId: 'xai.grok-4.3',                                                                                                                      │
+│   bedrockMantleConfig: { region: 'us-east-1' },                                                                                                 │
+│ })                                                                                                                                              │
+│                                                                                                                                                 │
+│ await model.stream([{ role: 'user', content: [{ text: 'hello' }] }])                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The model id is valid and servable-by-catalog: `GET /v1/models` on the same endpoint returns `xai.grok-4.3` with `"status":"available"`, so     │
+│ this is not a typo'd or unavailable model id.                                                                                                   │
+│                                                                                                                                                 │
+│ The reporter also exercised the three routes directly with `curl` to isolate the SDK from the service:                                          │
+│                                                                                                                                                 │
+│ | Route | Payload shape | HTTP | Response |                                                                                                     │
+│ |---|---|---|---|                                                                                                                               │
+│ | `/v1/chat/completions` | Chat Completions | 400 | `{"error":{"code":"validation_error","message":"model 'xai.grok-4.3' isn't supported on     │
+│ this route","type":"invalid_request_error"}}` |                                                                                                 │
+│ | `/openai/v1/chat/completions` | Chat Completions | 500 | `{"error":{"code":"internal_server_error","message":"The server had an error while   │
+│ processing your request. Sorry about that!","type":"server_error"}}` |                                                                          │
+│ | `/openai/v1/responses` | Responses API | 500 | same `internal_server_error` body |                                                            │
+│                                                                                                                                                 │
+│ Control case, same account, same credentials, same session: `google.gemma-4-31b` returns valid completions on **`/openai/v1/chat/completions`** │
+│ and **`/openai/v1/responses`**. That rules out credentials, account permissions, and client code.                                               │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ Two separate expectations, because there are two separate defects here — one ours, one not.                                                     │
+│                                                                                                                                                 │
+│ 1. `OpenAIModel` + `bedrockMantleConfig` should route a non-OpenAI-family Mantle model id (`xai.*`, `google.*`, `anthropic.*`) to the base path │
+│ Mantle actually serves it from. It should not construct a request against a route the service will reject with `validation_error`.              │
+│ 2. A model advertised as `"status":"available"` by `GET /v1/models` should be invocable on at least one route.                                  │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ **Defect 1 (SDK, actionable here): the Mantle base-path table only special-cases `openai.gpt-5.*`, so every third-party model id falls through  │
+│ to `/v1` — the route that 400s.**                                                                                                               │
+│                                                                                                                                                 │
+│ `strands-ts/src/models/openai/mantle.ts`:                                                                                                       │
+│                                                                                                                                                 │
+│ ```ts                                                                                                                                           │
+│ const OPENAI_PATH_MODEL_PREFIXES = ['openai.gpt-5.'] as const                                                                                   │
+│                                                                                                                                                 │
+│ export function bedrockMantleBaseUrl(region: string, modelId: string): string {                                                                 │
+│   const suffix = OPENAI_PATH_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix)) ? '/openai/v1' : '/v1'                                 │
+│   return `https://bedrock-mantle.${region}.api.aws${suffix}`                                                                                    │
+│ }                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ `xai.grok-4.3` does not start with `openai.gpt-5.`, so it resolves to `/v1` — and `/v1/chat/completions` is precisely the route that returns    │
+│ `model 'xai.grok-4.3' isn't supported on this route`. The SDK cannot currently be pointed at `/openai/v1` for this model either, since          │
+│ `bedrockMantleConfig` rejects a caller-supplied `clientConfig.baseURL` (validated in `mantle.test.ts`, "throws when `clientConfig.baseURL` is   │
+│ set alongside `bedrockMantleConfig`"). There is no supported escape hatch.                                                                      │
+│                                                                                                                                                 │
+│ The reporter's own control case is the proof that the table is wrong, not just incomplete: `google.gemma-4-31b` **works** on `/openai/v1`, but  │
+│ the SDK would route it to `/v1` for the same reason. So the mis-routing is not specific to Grok — it applies to every non-`openai.gpt-5.*` id,  │
+│ and it is currently masked only because those models aren't documented as supported yet (#3563).                                                │
+│                                                                                                                                                 │
+│ The comment in `mantle.ts` states the operative rule correctly ("the base path is keyed by model family, not API surface") but the prefix list  │
+│ encodes only the OpenAI families that existed when it was written.                                                                              │
+│                                                                                                                                                 │
+│ **Defect 2 (Mantle service-side, not fixable in this repo): `/openai/v1/*` 500s for `xai.grok-4.3`.**                                           │
+│                                                                                                                                                 │
+│ Once routed to `/openai/v1`, Grok returns `internal_server_error` on both Chat Completions and Responses, while Gemma succeeds on the same      │
+│ routes with the same credentials. That is a serving-side problem with this specific model, either a catalog mis-registration (advertised        │
+│ `available`, not actually servable) or a backend fault. Fixing Defect 1 will **not** make `xai.grok-4.3` work; it will change a 400 into a 500  │
+│ until the service side is resolved. Worth cutting a separate ticket to the Bedrock Mantle service team, and worth confirming Grok is servable   │
+│ before wiring it up here — otherwise SDK-side support cannot be integ-tested.                                                                   │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ Parity: the Python SDK has the identical defect at `strands-py/src/strands/models/_openai_bedrock.py`:                                          │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ _OPENAI_PATH_MODEL_PREFIXES: tuple = ("openai.gpt-5.",)                                                                                         │
+│                                                                                                                                                 │
+│ def _resolve_mantle_base_path(model_id: str) -> str:                                                                                            │
+│     if model_id.startswith(_OPENAI_PATH_MODEL_PREFIXES):                                                                                        │
+│         return "/openai/v1"                                                                                                                     │
+│     return "/v1"                                                                                                                                │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Any fix should land in both SDKs to preserve parity.                                                                                            │
+│                                                                                                                                                 │
+│ Related history on this same base-path logic, all of which suggests the prefix-matching approach is fragile enough to be worth replacing rather │
+│ than extending:                                                                                                                                 │
+│                                                                                                                                                 │
+│ - #3279 — `[BUG] OpenAIModel Bedrock Mantle base URL is wrong for the Responses API (hits /v1/responses)` (closed)                              │
+│ - #2629 — `bedrock_mantle_config builds wrong base_url for OpenAI Responses models (missing /openai path segment)` (closed)                     │
+│ - #3388 — `OpenAIModel (Responses, TypeScript) sends invalid assistant history shape, rejected by Bedrock Mantle` (closed)                      │
+│                                                                                                                                                 │
+│ This is the fourth bug filed against Mantle base-URL/route derivation.                                                                          │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ Scoped to Defect 1 only.                                                                                                                        │
+│                                                                                                                                                 │
+│ The narrow fix is to add the third-party families to the prefix list so they resolve to `/openai/v1`:                                           │
+│                                                                                                                                                 │
+│ ```ts                                                                                                                                           │
+│ const OPENAI_PATH_MODEL_PREFIXES = ['openai.gpt-5.', 'xai.', 'google.', 'anthropic.'] as const                                                  │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ That is a one-line change, mirrored in Python, and it makes the confirmed-working case (`google.gemma-4-31b` on `/openai/v1`) actually          │
+│ reachable through the SDK. But it keeps the design that has now produced four bugs: a hardcoded allowlist of prefixes that must be updated      │
+│ every time Mantle onboards a family, where the failure mode is a confusing service-side 400 rather than a clear client-side error.              │
+│                                                                                                                                                 │
+│ Two alternatives worth weighing during triage:                                                                                                  │
+│                                                                                                                                                 │
+│ 1. **Invert the default.** `/openai/v1` appears to be the general case and `/v1` the exception (`openai.gpt-oss-*`). Encoding the exceptions    │
+│ instead of the rule shrinks the list that needs maintenance and makes new families work by default.                                             │
+│ 2. **Fail loudly on unrecognized families.** If the model id matches no known Mantle family, throw a client-side error naming the id and the    │
+│ supported prefixes rather than silently building a URL that the service will reject. That converts an opaque `validation_error` from Mantle     │
+│ into an actionable message, which is what the reporter needed here.                                                                             │
+│                                                                                                                                                 │
+│ Either way, extending the allowlist without also deciding on the default is likely to produce bug number five.                                  │
+│                                                                                                                                                 │
+│ Also worth considering: whether `bedrockMantleConfig`'s hard rejection of `clientConfig.baseURL` should relax to a documented override. The     │
+│ validation is sound as a default (it prevents accidentally unsigned or mis-pointed requests), but with no escape hatch, a routing-table gap is  │
+│ a hard block rather than a workaround-able annoyance.                                                                                           │
+│                                                                                                                                                 │
+│ ### Related Issues                                                                                                                              │
+│                                                                                                                                                 │
+│ #3563 (feature request: Mantle-API support for Anthropic, Google and Grok models). This issue is the bug half of that request: the routing      │
+│ table silently mis-routes those families today rather than rejecting them, so the failure surfaces as an opaque service 400.                    │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2167, output_tokens=13, cost=0.000333
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2345, output_tokens=550, cost=0.000682
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  from strands.models.openai import OpenAIModel                     │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  async def main():                                                 │
+│      # Create an OpenAIModel with a "third-party" Bedrock Mantle   │
+│  model                                                             │
+│      # known to be mis-routed in the buggy SDK:                    │
+│      model = OpenAIModel(                                          │
+│          modelId='xai.grok-4.3',                                   │
+│          bedrockMantleConfig={'region': 'us-east-1'}               │
+│      )                                                             │
+│      # Call stream() - async generator - to trigger route          │
+│  determination and request                                         │
+│      try:                                                          │
+│          # We will consume only first chunk or so to provoke the   │
+│  error quickly,                                                    │
+│          # or consume fully if no chunk.                           │
+│          async for _ in model.stream([{'role': 'user', 'content':  │
+│  [{'text': 'hello'}]}]):                                           │
+│              break                                                 │
+│      except Exception as e:                                        │
+│          import sys                                                │
+│          print_stacktrace(e)                                       │
+│          # The bug is that the SDK routes to /v1 instead of        │
+│  /openai/v1,                                                       │
+│          # resulting in a validation error or internal error.      │
+│          # If we catch an HTTP error with relevant message, asser  │
+│  to flag the bug.                                                  │
+│          # We check for "not supported on this route":             │
+│          err_msg = str(e)                                          │
+│          if "not supported on this route" in err_msg or            │
+│  "internal_server_error" in err_msg:                               │
+│              raise AssertionError(                                 │
+│                  "Bug reproduced: model request mis-routed by      │
+│  Bedrock Mantle base-path table"                                   │
+│              ) from e                                              │
+│          # If no error or different message, assume fixed          │
+│      # If no exception, assume fixed and print success to stdout   │
+│      else:                                                         │
+│          print("No routing bug detected, Bedrock Mantle base-path  │
+│  handling appears fixed.")                                         │
+│                                                                    │
+│  if __name__=="__main__":                                          │
+│      import asyncio                                                │
+│      import sys                                                    │
+│      try:                                                          │
+│          asyncio.run(main())                                       │
+│      except AssertionError as assertion_err:                       │
+│          # Reraise after printing so exit code is nonzero          │
+│          raise                                                     │
+│      except Exception as unexpected_err:                           │
+│          print("Unexpected error occurred:", file=sys.stderr)      │
+│          print_stacktrace(unexpected_err)                          │
+│          sys.exit(1)                                               │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 04:36:22] Task issue_3654_20260822T151019Z failed with exception: .
+
+[2026-09-01 04:36:22] No patch generated. You can try running ACR again.
+
+[2026-09-01 04:36:22] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 04:36:11.411 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_3654_20260822T151019Z =============
+2026-09-01 04:36:11.693 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 04:36:14.654 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2167, output_tokens=13, cost=0.000333
+2026-09-01 04:36:22.093 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2345, output_tokens=550, cost=0.000682
+2026-09-01 04:36:22.208 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7be7f9f20d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7be7efd18d10>]}
+    └ <function run_task_groups at 0x7be7efd6e3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7be7efd18d10>]
+    └ <function run_tasks_serial at 0x7be7efd6e480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7be7efd18d10>
+    └ <function run_task_in_subprocess at 0x7be7efd6e660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7be7efd18d10>
+    │        │      └ <function run_raw_task at 0x7be7efd6e700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7be7f9b00ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7be7efd44470>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7be7f9b00860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7be7efd44470>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7be7f9b009a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7be7efd44470>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7be7f9b00a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7be7efd44470>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7be7f9cf42c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7be7f9d58fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+    │    └ <function Popen._launch at 0x7be7efd30360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7be7f086a180>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7be7f9cf4cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7be7f9cf4220>
+    └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7be7efd7dee0>, <multiprocessing.queues.SimpleQueue object at 0x7be7efdbdb...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+    │    └ <function _process_worker at 0x7be7f9afbc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2750126 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7be7efd7f770>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7be7efd19eb0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7be7efd7f770>
+        │         └ <function run_raw_task at 0x7be7efd6e700>
+        └ <concurrent.futures.process._CallItem object at 0x7be7efd7f770>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_3654_20260822T151019Z/acr_output/issue_3654_20260822T151019Z_2026-09-01_04-36-11'
+             │            │    └ <function RawLocalTask.to_task at 0x7be7efd6e020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7be7efd19eb0>
+             └ <function do_inference at 0x7be7efd6e8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7be7efe34860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7be7f06c3880>
+       │                 │         │            └ PlainTask(commit_hash='1fe9bb3f1456a61aa2a87eb162b4b0c4623bd915', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3654', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7be7efd1a690>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_3654_20260822T151019Z/acr_output/issue_3654_20260822T151019Z_2026-09-01...
+       └ <function _run_one_task at 0x7be7efe35b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7be7f06c0220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7be7f017e960>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7be7f06c3ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7be7f017e960>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nfrom strands.models.openai import OpenAIModel\n\ndef print_stacktrace(e: Exception):\n    import traceback\...
+                   │    │    └ <function Task.execute_reproducer at 0x7be7f06c2480>
+                   │    └ PlainTask(commit_hash='1fe9bb3f1456a61aa2a87eb162b4b0c4623bd915', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3654', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7be7f017e960>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 04:36:22.212 | INFO     | app.log:log_and_always_print:229 - Task issue_3654_20260822T151019Z failed with exception: .
+2026-09-01 04:36:22.213 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

@@ -1,0 +1,71 @@
+diff --git a/src/agentscope/formatter/_anthropic_formatter.py b/src/agentscope/formatter/_anthropic_formatter.py
+index 42c9ba7e..88396901 100644
+--- a/src/agentscope/formatter/_anthropic_formatter.py
++++ b/src/agentscope/formatter/_anthropic_formatter.py
+@@ -52,10 +52,17 @@ class _AnthropicFormatterBase(FormatterBase, ABC):
+         self.assert_list_of_msgs(msgs)
+ 
+         messages: list[dict] = []
+-        for msg in msgs:  # pylint: disable=too-many-nested-blocks
++        last_msg_index = len(msgs) - 1
++
++        for i, msg in enumerate(msgs):  # pylint: disable=too-many-nested-blocks
+             content_blocks: list = []
+             has_tool_result = False
+ 
++            # For the last assistant message, preserve thinking blocks exactly
++            preserve_thinking_blocks = (
++                i == last_msg_index and msg.role == "assistant"
++            )
++
+             for block in msg.get_content_blocks():
+                 if (
+                     has_tool_result
+@@ -82,25 +89,36 @@ class _AnthropicFormatterBase(FormatterBase, ABC):
+                         )
+ 
+                 elif isinstance(block, ThinkingBlock):
+-                    # Anthropic rejects thinking blocks without a valid
+-                    # signature ("Invalid `signature` in `thinking` block").
+-                    # ThinkingBlocks from other providers (OpenAI, DeepSeek,
+-                    # ...) carry no signature, so drop them instead of
+-                    # forwarding an empty one.
+                     signature = getattr(block, "signature", None)
+-                    if signature:
++                    if preserve_thinking_blocks:
++                        # Preserve thinking blocks exactly as received,
++                        # including those without signatures.
+                         content_blocks.append(
+                             {
+                                 "type": "thinking",
+                                 "thinking": block.thinking,
+-                                "signature": signature,
++                                "signature": signature or "",
+                             },
+                         )
+                     else:
+-                        logger.debug(
+-                            "Dropping ThinkingBlock without signature; "
+-                            "Anthropic requires a valid signature.",
+-                        )
++                        # Anthropic rejects thinking blocks without a valid
++                        # signature ("Invalid `signature` in `thinking` block").
++                        # ThinkingBlocks from other providers (OpenAI, DeepSeek,
++                        # ...) carry no signature, so drop them instead of
++                        # forwarding an empty one.
++                        if signature:
++                            content_blocks.append(
++                                {
++                                    "type": "thinking",
++                                    "thinking": block.thinking,
++                                    "signature": signature,
++                                },
++                            )
++                        else:
++                            logger.debug(
++                                "Dropping ThinkingBlock without signature; "
++                                "Anthropic requires a valid signature.",
++                            )
+ 
+                 elif isinstance(block, HintBlock):
+                     if content_blocks:

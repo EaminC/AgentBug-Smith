@@ -1,0 +1,2816 @@
+STDOUT:
+
+[2026-09-01 02:38:15] Total number of tasks: 1
+
+[2026-09-01 02:38:15] Total number of processes: 1
+
+[2026-09-01 02:38:15] Task group info: (number of groups: 1)
+
+[2026-09-01 02:38:15]   local: 1 tasks
+
+[2026-09-01 02:38:15] Running in single process mode.
+
+[2026-09-01 02:38:15] ============= Running task issue_2296_20260823T174322Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: bug: repository_session_manager adds incorrect number of toolResult blocks when fixing orphaned toolUse                            │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## Bug Description                                                                                                                              │
+│                                                                                                                                                 │
+│ When `AgentCoreMemorySessionManager` restores conversation history that contains orphaned `toolUse` blocks (toolUse without matching            │
+│ toolResult), the `repository_session_manager` attempts to fix the history by adding toolResult blocks. However, the fix adds an incorrect       │
+│ number of toolResult blocks, causing Bedrock's ConverseStream API to reject the request with:                                                   │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ ValidationException: The number of toolResult blocks at messages.N.content exceeds the number of toolUse blocks of previous turn.               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Steps to Reproduce                                                                                                                           │
+│                                                                                                                                                 │
+│ 1. Use `AgentCoreMemorySessionManager` with Bedrock AgentCore Memory enabled                                                                    │
+│ 2. During an agent invocation, have a tool call interrupted (e.g., MCP server timeout, network error) — this leaves a `toolUse` block in the    │
+│ assistant message without a corresponding `toolResult` in the next user message                                                                 │
+│ 3. Memory saves this incomplete conversation history                                                                                            │
+│ 4. On the next invocation in the same session, Memory restores the history                                                                      │
+│ 5. `repository_session_manager` detects the orphaned toolUse and logs:                                                                          │
+│    ```                                                                                                                                          │
+│    WARNING:strands.session.repository_session_manager:Session message history has an orphaned toolUse with no toolResult. Adding toolResult     │
+│ content blocks to create valid conversation.                                                                                                    │
+│    ```                                                                                                                                          │
+│ 6. The agent then logs:                                                                                                                         │
+│    ```                                                                                                                                          │
+│    INFO:strands.agent.agent:Agents latest message is toolUse, appending a toolResult message to have valid conversation.                        │
+│    ```                                                                                                                                          │
+│ 7. The combined fixes result in more toolResult blocks than toolUse blocks, and Bedrock rejects the request                                     │
+│                                                                                                                                                 │
+│ ## Expected Behavior                                                                                                                            │
+│                                                                                                                                                 │
+│ The repair logic should ensure the number of toolResult blocks exactly matches the number of toolUse blocks in the previous assistant message.  │
+│                                                                                                                                                 │
+│ ## Environment                                                                                                                                  │
+│                                                                                                                                                 │
+│ - strands-agents: 1.39.0                                                                                                                        │
+│ - bedrock-agentcore: 1.9.1                                                                                                                      │
+│ - Model: zai.glm-5 via Bedrock ConverseStream API                                                                                               │
+│ - Region: us-east-2                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Workaround                                                                                                                                   │
+│                                                                                                                                                 │
+│ Manually validate and fix the message history after session restoration, before calling the model.                                              │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=526, output_tokens=13, cost=0.000087
+
+===================== CONTEXT RETRIEVAL ROUND 0 ======================
+
+╭─ AutoCodeRover (context retrieval initial prompt) ─────────────────╮
+│ Based on the files, classes, methods, and code statements from the │
+│ issue related to the bug, you can use the following search APIs to │
+│ get more context of the project.                                   │
+│                                                                    │
+│  • search_class(class_name: str): Search for a class in the        │
+│    codebase.                                                       │
+│  • search_class_in_file(self, class_name, file_name: str): Search  │
+│    for a class in a given file.                                    │
+│  • search_method_in_file(method_name: str, file_path: str): Search │
+│    for a method in a given file..                                  │
+│  • search_method_in_class(method_name: str, class_name: str):      │
+│    Search for a method in a given class.                           │
+│  • search_method(method_name: str): Search for a method in the     │
+│    entire codebase.                                                │
+│  • search_code(code_str: str): Search for a code snippet in the    │
+│    entire codebase.                                                │
+│  • search_code_in_file(code_str: str, file_path: str): Search for  │
+│    a code snippet in a given file file.                            │
+│  • get_code_around_line(file_path: str, line_number: int,          │
+│    window_size: int): Get the code around a given line number in a │
+│    file. window_size is the number of lines before and after the   │
+│    line number.                                                    │
+│                                                                    │
+│ You must give correct number of arguments when invoking API calls. │
+│                                                                    │
+│ Note that you can use multiple search APIs in one round.           │
+│                                                                    │
+│ Now analyze the issue and select necessary APIs to get more        │
+│ context of the project. Each API call must have concrete arguments │
+│ as inputs.                                                         │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=831, output_tokens=57, cost=0.000159
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│ search_class("AgentCoreMemorySessionManager")                      │
+│ search_class_in_file("repository_session_manager",                 │
+│ "strands/session/repository_session_manager.py")                   │
+│ search_method_in_file("restore_conversation_history",              │
+│ "strands/session/repository_session_manager.py")                   │
+│ search_code("orphaned toolUse")                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=412, output_tokens=85, cost=0.000113
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_class("AgentCoreMemorySessionManager")                   │
+│  • search_class_in_file("repository_session_manager",              │
+│    "strands/session/repository_session_manager.py")                │
+│  • search_method_in_file("restore_conversation_history",           │
+│    "strands/session/repository_session_manager.py")                │
+│  • search_code("orphaned toolUse")                                 │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval round 0) ────────────────────────╮
+│ Result of search_class("AgentCoreMemorySessionManager"):           │
+│                                                                    │
+│ Could not find class AgentCoreMemorySessionManager in the          │
+│ codebase.                                                          │
+│                                                                    │
+│ Result of search_class_in_file("repository_session_manager",       │
+│ "strands/session/repository_session_manager.py"):                  │
+│                                                                    │
+│ Could not find class repository_session_manager in the codebase.   │
+│                                                                    │
+│ Result of search_method_in_file("restore_conversation_history",    │
+│ "strands/session/repository_session_manager.py"):                  │
+│                                                                    │
+│ The method restore_conversation_history does not appear in the     │
+│ codebase.                                                          │
+│                                                                    │
+│ Result of search_code("orphaned toolUse"):                         │
+│                                                                    │
+│ Found 3 snippets containing orphaned toolUse in the codebase:      │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [class]RepositorySessionManager[/class]                           │
+│  [func]_fix_broken_tool_use[/func]                                 │
+│  [code]                                                            │
+│  271                 )                                             │
+│  272                 messages.pop(0)                               │
+│  273                                                               │
+│  274         # Then check for orphaned toolUse messages. Snapshot  │
+│  the eligible indices before                                       │
+│  275         # iterating so that inserting a toolResult (which     │
+│  shifts later indices) does not                                    │
+│  276         # cause the loop to skip a subsequent orphaned        │
+│  toolUse. The trailing message is                                  │
+│  277         # excluded from the snapshot because that case is     │
+│  handled in the agent class when                                   │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 2:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [class]RepositorySessionManager[/class]                           │
+│  [func]_fix_broken_tool_use[/func]                                 │
+│  [code]                                                            │
+│  273                                                               │
+│  274         # Then check for orphaned toolUse messages. Snapshot  │
+│  the eligible indices before                                       │
+│  275         # iterating so that inserting a toolResult (which     │
+│  shifts later indices) does not                                    │
+│  276         # cause the loop to skip a subsequent orphaned        │
+│  toolUse. The trailing message is                                  │
+│  277         # excluded from the snapshot because that case is     │
+│  handled in the agent class when                                   │
+│  278         # a new prompt arrives, so we do not synthesize a     │
+│  toolResult into persisted                                         │
+│  279         # history for it here. Walking in reverse means each  │
+│  insert only shifts already-                                       │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 3:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [class]RepositorySessionManager[/class]                           │
+│  [func]_fix_broken_tool_use[/func]                                 │
+│  [code]                                                            │
+│  302                 continue                                      │
+│  303                                                               │
+│  304             logger.warning(                                   │
+│  305                 "Session message history has an orphaned      │
+│  toolUse with no toolResult. "                                     │
+│  306                 "Adding toolResult content blocks to create   │
+│  valid conversation."                                              │
+│  307             )                                                 │
+│  308             missing_content_blocks =                          │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 1 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1558, output_tokens=507, cost=0.000538
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│ Analyzing collected context:                                       │
+│                                                                    │
+│  1 The search for "AgentCoreMemorySessionManager" class returned   │
+│    no result, so it might be named differently or implemented      │
+│    elsewhere. Given the issue, it is related to the memory session │
+│    manager and is responsible for restoring conversation history.  │
+│  2 The "repository_session_manager" class does exist in            │
+│    strands-py/src/strands/session/repository_session_manager.py    │
+│    named "RepositorySessionManager". This class appears to contain │
+│    the bug as the issue describes the fix happening in this        │
+│    component.                                                      │
+│  3 The method "restore_conversation_history" does not exist in     │
+│    repository_session_manager.py, so the fix for toolUse and       │
+│    toolResult is probably embedded inside some other method or a   │
+│    private method.                                                 │
+│  4 Searching for the term "orphaned toolUse" yielded multiple      │
+│    results inside a method called "_fix_broken_tool_use" within    │
+│    RepositorySessionManager class in                               │
+│    repository_session_manager.py. The snippet indicates that this  │
+│    method inspects the message history to find orphaned toolUse    │
+│    messages with no corresponding toolResult. It attempts to fix   │
+│    the conversation by adding missing toolResult content blocks.   │
+│  5 The bug is that the fix adds an incorrect number of toolResult  │
+│    blocks, creating a mismatch. The code likely adds too many      │
+│    toolResult blocks or does not correctly match counts.           │
+│  6 Intended behavior is to add the exact number of missing         │
+│    toolResult blocks for each orphaned toolUse, so that the        │
+│    conversation becomes valid.                                     │
+│                                                                    │
+│ Next step: To get more context, I should:                          │
+│                                                                    │
+│  • Retrieve the full implementation of the                         │
+│    RepositorySessionManager class from                             │
+│    repository_session_manager.py.                                  │
+│  • Retrieve the full method _fix_broken_tool_use in                │
+│    RepositorySessionManager class to understand current logic.     │
+│  • Check how the method _fix_broken_tool_use is called and         │
+│    integrated in session restoration or message processing.        │
+│  • Also review any helper methods such as                          │
+│    generate_missing_tool_result_content mentioned in the snippet   │
+│    to see how the missing toolResult content blocks are generated. │
+│                                                                    │
+│ API calls to make next:                                            │
+│                                                                    │
+│  • search_class_in_file("RepositorySessionManager",                │
+│    "strands/session/repository_session_manager.py")                │
+│  • search_method_in_class("_fix_broken_tool_use",                  │
+│    "RepositorySessionManager")                                     │
+│  • search_method_in_class("generate_missing_tool_result_content",  │
+│    "RepositorySessionManager") or search for this method in        │
+│    general to find its definition.                                 │
+│  • search_method_in_file("some restoration or fix method, e.g.     │
+│    restore_messages or restore_session",                           │
+│    "strands/session/repository_session_manager.py") depending on   │
+│    what methods exist inside this file after examining the class.  │
+│    Possibly, search for public methods next.                       │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2280, output_tokens=285, cost=0.000513
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 do we need more context:                                        │
+│                                                                    │
+│  • search_class_in_file("RepositorySessionManager",                │
+│    "strands/session/repository_session_manager.py")                │
+│  • search_method_in_class("_fix_broken_tool_use",                  │
+│    "RepositorySessionManager")                                     │
+│  • search_method("generate_missing_tool_result_content")           │
+│  • search_method_in_file("",                                       │
+│    "strands/session/repository_session_manager.py") to explore     │
+│    other related public methods possibly managing session          │
+│    restoration or message fixing.                                  │
+│                                                                    │
+│  2 where are bug locations: Location 1: File:                      │
+│    strands-py/src/strands/session/repository_session_manager.py    │
+│    Class: RepositorySessionManager Method: _fix_broken_tool_use    │
+│    Intended behavior: This method should correctly identify        │
+│    orphaned toolUse blocks in the session message history and add  │
+│    exactly the number of missing toolResult blocks needed to       │
+│    restore valid conversation history. It should avoid adding      │
+│    excess toolResult blocks to maintain the required invariant     │
+│    that the number of toolResult blocks matches the number of      │
+│    toolUse blocks in the previous assistant message.               │
+│                                                                    │
+│ Location 2 (potentially): File:                                    │
+│ strands-py/src/strands/session/repository_session_manager.py       │
+│ Class: RepositorySessionManager Method:                            │
+│ generate_missing_tool_result_content (if method exists here)       │
+│ Intended behavior: This method should generate the correct content │
+│ blocks representing missing toolResult messages corresponding to   │
+│ orphaned toolUse blocks. It should ensure the count and content of │
+│ these generated blocks are consistent and sufficient for the fix   │
+│ without excess.                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=640, output_tokens=300, cost=0.000276
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_class_in_file("RepositorySessionManager",                │
+│    "strands/session/repository_session_manager.py")                │
+│  • search_method_in_class("_fix_broken_tool_use",                  │
+│    "RepositorySessionManager")                                     │
+│  • search_method("generate_missing_tool_result_content")           │
+│  • search_method_in_file("",                                       │
+│    "strands/session/repository_session_manager.py")                │
+│                                                                    │
+│ Bug locations                                                      │
+│                                                                    │
+│  • file:                                                           │
+│    strands-py/src/strands/session/repository_session_manager.py,   │
+│    class: RepositorySessionManager, method: _fix_broken_tool_use,  │
+│    intended_behavior: This method should correctly identify        │
+│    orphaned toolUse blocks in the session message history and add  │
+│    exactly the number of missing toolResult blocks needed to       │
+│    restore valid conversation history. It should avoid adding      │
+│    excess toolResult blocks to maintain the required invariant     │
+│    that the number of toolResult blocks matches the number of      │
+│    toolUse blocks in the previous assistant message.               │
+│  • file:                                                           │
+│    strands-py/src/strands/session/repository_session_manager.py,   │
+│    class: RepositorySessionManager, method:                        │
+│    generate_missing_tool_result_content, intended_behavior: This   │
+│    method should generate the correct content blocks representing  │
+│    missing toolResult messages corresponding to orphaned toolUse   │
+│    blocks. It should ensure the count and content of these         │
+│    generated blocks are consistent and sufficient for the fix      │
+│    without excess.                                                 │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval round 1) ────────────────────────╮
+│ Result of search_class_in_file("RepositorySessionManager",         │
+│ "strands/session/repository_session_manager.py"):                  │
+│                                                                    │
+│ Found 1 classes with name RepositorySessionManager in file         │
+│ strands/session/repository_session_manager.py:                     │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [class]RepositorySessionManager[/class]                           │
+│  [code]                                                            │
+│  28 class RepositorySessionManager(SessionManager):                │
+│  29     """Session manager for persisting agents in a              │
+│  SessionRepository."""                                             │
+│  30                                                                │
+│  31     def __init__(                                              │
+│  32         self,                                                  │
+│  33         session_id: str,                                       │
+│  34         session_repository: SessionRepository,                 │
+│  35         **kwargs: Any,                                         │
+│  36     ):                                                         │
+│  37         """Initialize the RepositorySessionManager.            │
+│  38                                                                │
+│  39         If no session with the specified session_id exists ye  │
+│  it will be created                                                │
+│  40         in the session_repository.                             │
+│  41                                                                │
+│  42         Args:                                                  │
+│  43             session_id: ID to use for the session. A new       │
+│  session with this id will be created if it does                   │
+│  44                 not exist in the repository yet                │
+│  45             session_repository: Underlying session repository  │
+│  to use to store the sessions state.                               │
+│  46             **kwargs: Additional keyword arguments for future  │
+│  extensibility.                                                    │
+│  47                                                                │
+│  48         """                                                    │
+│  49         self.session_repository = session_repository           │
+│  50         self.session_id = session_id                           │
+│  51         session = session_repository.read_session(session_id)  │
+│  52         # Create a session if it does not exist yet            │
+│  53         if session is None:                                    │
+│  54             logger.debug("session_id=<%s> | session not found  │
+│  creating new session", self.session_id)                           │
+│  55             self._is_new_session = True                        │
+│  56             session = Session(session_id=session_id,           │
+│  session_type=SessionType.AGENT)                                   │
+│  57             session_repository.create_session(session)         │
+│  58         else:                                                  │
+│  59             self._is_new_session = False                       │
+│  60                                                                │
+│  61         self.session = session                                 │
+│  62                                                                │
+│  63         # Keep track of the latest message of each agent in    │
+│  case we need to redact it.                                        │
+│  64         self._latest_agent_message: dict[str, SessionMessage   │
+│  None] = {}                                                        │
+│  65                                                                │
+│  66         # Track the previously synced internal state for each  │
+│  agent to detect changes.                                          │
+│  67         self._last_synced_internal_state: dict[str, dict[str,  │
+│  Any]] = {}                                                        │
+│  68                                                                │
+│  69     def append_message(self, message: Message, agent: "Agent"  │
+│  **kwargs: Any) -> None:                                           │
+│  70         """Append a message to the agent's session.            │
+│  71                                                                │
+│  72         Args:                                                  │
+│  73             message: Message to add to the agent in the sessi  │
+│  74             agent: Agent to append the message to              │
+│  75             **kwargs: Additional keyword arguments for future  │
+│  extensibility.                                                    │
+│  76         """                                                    │
+│  77         # Calculate the next index (0 if this is the first     │
+│  message, otherwise increment the previous index)                  │
+│  78         latest_agent_message =                                 │
+│  self._latest_agent_message[agent.agent_id]                        │
+│  79         if latest_agent_message:                               │
+│  80             next_index = latest_agent_message.message_id + 1   │
+│  81         else:                                                  │
+│  82             next_index = 0                                     │
+│  83                                                                │
+│  84         session_message = SessionMessage.from_message(message  │
+│  next_index)                                                       │
+│  85         self._latest_agent_message[agent.agent_id] =           │
+│  session_message                                                   │
+│  86         self.session_repository.create_message(self.session_i  │
+│  agent.agent_id, session_message)                                  │
+│  87                                                                │
+│  88     def redact_latest_message(self, redact_message: Message,   │
+│  agent: "Agent", **kwargs: Any) -> None:                           │
+│  89         """Redact the latest message appended to the session.  │
+│  90                                                                │
+│  91         Args:                                                  │
+│  92             redact_message: New message to use that contains   │
+│  the redact content                                                │
+│  93             agent: Agent to apply the message redaction to     │
+│  94             **kwargs: Additional keyword arguments for future  │
+│  extensibility.                                                    │
+│  95         """                                                    │
+│  96         latest_agent_message =                                 │
+│  self._latest_agent_message[agent.agent_id]                        │
+│  97         if latest_agent_message is None:                       │
+│  98             raise SessionException("No message to redact.")    │
+│  99         latest_agent_message.redact_message = redact_message   │
+│  100         return                                                │
+│  self.session_repository.update_message(self.session_id,           │
+│  agent.agent_id, latest_agent_message)                             │
+│  101                                                               │
+│  102     def sync_agent(self, agent: "Agent", **kwargs: Any) ->    │
+│  None:                                                             │
+│  103         """Serialize and update the agent into the session    │
+│  repository.                                                       │
+│  104                                                               │
+│  105         Only updates the agent if state has been modified or  │
+│  internal state has changed.                                       │
+│  106         This optimization reduces unnecessary I/O operations  │
+│  when the agent processes                                          │
+│  107         messages without modifying its state.                 │
+│  108                                                               │
+│  109         Args:                                                 │
+│  110             agent: Agent to sync to the session.              │
+│  111             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  112         """                                                   │
+│  113         # Get current versions and conversation manager stat  │
+│  114         current_state_version = agent.state._get_version()    │
+│  115         current_interrupt_state_version =                     │
+│  agent._interrupt_state._get_version()                             │
+│  116         current_conversation_manager_state =                  │
+│  agent.conversation_manager.get_state()                            │
+│  117         current_model_state = agent._model_state              │
+│  118                                                               │
+│  119         # Check if we have a previous state to compare again  │
+│  120         last_synced =                                         │
+│  self._last_synced_internal_state.get(agent.agent_id)              │
+│  121                                                               │
+│  122         # Determine if we need to update by comparing versio  │
+│  123         if last_synced is None:                               │
+│  124             # First sync for this agent - always update       │
+│  125             state_changed = True                              │
+│  126             internal_state_changed = True                     │
+│  127             conversation_manager_state_changed = True         │
+│  128         else:                                                 │
+│  129             state_changed = current_state_version !=          │
+│  last_synced.get("state_version")                                  │
+│  130             internal_state_changed =                          │
+│  current_interrupt_state_version != last_synced.get(               │
+│  131                 "interrupt_state_version"                     │
+│  132             ) or current_model_state !=                       │
+│  last_synced.get("model_state")                                    │
+│  133             conversation_manager_state_changed =              │
+│  current_conversation_manager_state != last_synced.get(            │
+│  134                 "conversation_manager_state"                  │
+│  135             )                                                 │
+│  136                                                               │
+│  137         if not state_changed and not internal_state_changed   │
+│  and not conversation_manager_state_changed:                       │
+│  138             logger.debug(                                     │
+│  139                 "agent_id=<%s> | session_id=<%s> | skipping   │
+│  sync, no changes detected",                                       │
+│  140                 agent.agent_id,                               │
+│  141                 self.session_id,                              │
+│  142             )                                                 │
+│  143             return                                            │
+│  144                                                               │
+│  145         logger.debug(                                         │
+│  146             "agent_id=<%s> | session_id=<%s> |                │
+│  state_changed=<%s>, internal_state_changed=<%s>, "                │
+│  147             "conversation_manager_state_changed=<%s> | synci  │
+│  agent",                                                           │
+│  148             agent.agent_id,                                   │
+│  149             self.session_id,                                  │
+│  150             state_changed,                                    │
+│  151             internal_state_changed,                           │
+│  152             conversation_manager_state_changed,               │
+│  153         )                                                     │
+│  154                                                               │
+│  155         # Perform the update                                  │
+│  156         self.session_repository.update_agent(                 │
+│  157             self.session_id,                                  │
+│  158             SessionAgent.from_agent(agent),                   │
+│  159         )                                                     │
+│  160                                                               │
+│  161         # Update tracked versions after successful sync       │
+│  162         self._last_synced_internal_state[agent.agent_id] = {  │
+│  163             "state_version": current_state_version,           │
+│  164             "interrupt_state_version":                        │
+│  current_interrupt_state_version,                                  │
+│  165             "conversation_manager_state":                     │
+│  copy.deepcopy(current_conversation_manager_state),                │
+│  166             "model_state": copy.deepcopy(current_model_state  │
+│  167         }                                                     │
+│  168                                                               │
+│  169     def initialize(self, agent: "Agent", **kwargs: Any) ->    │
+│  None:                                                             │
+│  170         """Initialize an agent with a session.                │
+│  171                                                               │
+│  172         Args:                                                 │
+│  173             agent: Agent to initialize from the session       │
+│  174             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  175         """                                                   │
+│  176         if agent.agent_id in self._latest_agent_message:      │
+│  177             raise SessionException("The `agent_id` of an age  │
+│  must be unique in a session.")                                    │
+│  178         self._latest_agent_message[agent.agent_id] = None     │
+│  179                                                               │
+│  180         # Skip read_agent call for new sessions since no      │
+│  agents can exist yet                                              │
+│  181         if self._is_new_session:                              │
+│  182             session_agent = None                              │
+│  183         else:                                                 │
+│  184             session_agent =                                   │
+│  self.session_repository.read_agent(self.session_id,               │
+│  agent.agent_id)                                                   │
+│  185                                                               │
+│  186         if session_agent is None:                             │
+│  187             logger.debug(                                     │
+│  188                 "agent_id=<%s> | session_id=<%s> | creating   │
+│  agent",                                                           │
+│  189                 agent.agent_id,                               │
+│  190                 self.session_id,                              │
+│  191             )                                                 │
+│  192                                                               │
+│  193             session_agent = SessionAgent.from_agent(agent)    │
+│  194                                                               │
+│  self.session_repository.create_agent(self.session_id,             │
+│  session_agent)                                                    │
+│  195             # Initialize messages with sequential indices     │
+│  196             session_message = None                            │
+│  197             for i, message in enumerate(agent.messages):      │
+│  198                 session_message =                             │
+│  SessionMessage.from_message(message, i)                           │
+│  199                                                               │
+│  self.session_repository.create_message(self.session_id,           │
+│  agent.agent_id, session_message)                                  │
+│  200             self._latest_agent_message[agent.agent_id] =      │
+│  session_message                                                   │
+│  201         else:                                                 │
+│  202             logger.debug(                                     │
+│  203                 "agent_id=<%s> | session_id=<%s> | restoring  │
+│  agent",                                                           │
+│  204                 agent.agent_id,                               │
+│  205                 self.session_id,                              │
+│  206             )                                                 │
+│  207             agent.state = AgentState(session_agent.state)     │
+│  208                                                               │
+│  209             session_agent.initialize_internal_state(agent)    │
+│  210                                                               │
+│  211             # Restore the conversation manager to its previo  │
+│  state, and get the optional prepend messages                      │
+│  212             prepend_messages =                                │
+│  agent.conversation_manager.restore_from_session(session_agent.co  │
+│  ersation_manager_state)                                           │
+│  213                                                               │
+│  214             if prepend_messages is None:                      │
+│  215                 prepend_messages = []                         │
+│  216                                                               │
+│  217             # List the messages currently in the session,     │
+│  using an offset of the messages previously removed                │
+│  218             # by the conversation manager.                    │
+│  219             session_messages =                                │
+│  self.session_repository.list_messages(                            │
+│  220                 session_id=self.session_id,                   │
+│  221                 agent_id=agent.agent_id,                      │
+│  222                                                               │
+│  offset=agent.conversation_manager.removed_message_count,          │
+│  223             )                                                 │
+│  224             if len(session_messages) > 0:                     │
+│  225                 self._latest_agent_message[agent.agent_id] =  │
+│  session_messages[-1]                                              │
+│  226                                                               │
+│  227             # Skip restoring messages when conversation is    │
+│  managed server-side                                               │
+│  228             if agent.model.stateful:                          │
+│  229                 logger.debug(                                 │
+│  230                     "agent_id=<%s> | session_id=<%s> |        │
+│  skipping message restore for server-managed conversation",        │
+│  231                     agent.agent_id,                           │
+│  232                     self.session_id,                          │
+│  233                 )                                             │
+│  234             else:                                             │
+│  235                 # Restore the agents messages array includin  │
+│  the optional prepend messages                                     │
+│  236                 agent.messages = prepend_messages + [         │
+│  237                     session_message.to_message() for          │
+│  session_message in session_messages                               │
+│  238                 ]                                             │
+│  239                                                               │
+│  240                 # Fix broken session histories:               │
+│  https://github.com/strands-agents/harness-sdk/issues/859          │
+│  241                 agent.messages =                              │
+│  self._fix_broken_tool_use(agent.messages)                         │
+│  242                                                               │
+│  243         self._is_new_session = False                          │
+│  244                                                               │
+│  245     def _fix_broken_tool_use(self, messages: list[Message])   │
+│  list[Message]:                                                    │
+│  246         """Fix broken tool use/result pairs in message        │
+│  history.                                                          │
+│  247                                                               │
+│  248         This method handles two issues:                       │
+│  249         1. Orphaned toolUse messages without corresponding    │
+│  toolResult.                                                       │
+│  250            Before 1.15.0, strands had a bug where they        │
+│  persisted sessions with a potentially broken messages array.      │
+│  251            This method retroactively fixes that issue by      │
+│  adding a tool_result outside of session management.               │
+│  252            After 1.15.0, this bug is no longer present.       │
+│  253         2. Orphaned toolResult messages without correspondin  │
+│  toolUse (e.g., when pagination truncates messages)                │
+│  254                                                               │
+│  255         Args:                                                 │
+│  256             messages: The list of messages to fix             │
+│  257             agent_id: The agent ID for fetching previous      │
+│  messages                                                          │
+│  258             removed_message_count: Number of messages remove  │
+│  by the conversation manager                                       │
+│  259                                                               │
+│  260         Returns:                                              │
+│  261             Fixed list of messages with proper tool use/resu  │
+│  pairs                                                             │
+│  262         """                                                   │
+│  263         # First, check if the oldest message has orphaned     │
+│  toolResult (no preceding toolUse) and remove it.                  │
+│  264         if messages:                                          │
+│  265             first_message = messages[0]                       │
+│  266             if first_message["role"] == "user" and            │
+│  any("toolResult" in content for content in                        │
+│  first_message["content"]):                                        │
+│  267                 logger.warning(                               │
+│  268                     "Session message history starts with      │
+│  orphaned toolResult with no preceding toolUse. "                  │
+│  269                     "This typically happens when messages ar  │
+│  truncated due to pagination limits. "                             │
+│  270                     "Removing orphaned toolResult message to  │
+│  maintain valid conversation structure."                           │
+│  271                 )                                             │
+│  272                 messages.pop(0)                               │
+│  273                                                               │
+│  274         # Then check for orphaned toolUse messages. Snapshot  │
+│  the eligible indices before                                       │
+│  275         # iterating so that inserting a toolResult (which     │
+│  shifts later indices) does not                                    │
+│  276         # cause the loop to skip a subsequent orphaned        │
+│  toolUse. The trailing message is                                  │
+│  277         # excluded from the snapshot because that case is     │
+│  handled in the agent class when                                   │
+│  278         # a new prompt arrives, so we do not synthesize a     │
+│  toolResult into persisted                                         │
+│  279         # history for it here. Walking in reverse means each  │
+│  insert only shifts already-                                       │
+│  280         # processed positions, so the original snapshot       │
+│  indices remain valid.                                             │
+│  281         original_last_index = len(messages) - 1               │
+│  282         tool_use_indices = [                                  │
+│  283             index                                             │
+│  284             for index, message in enumerate(messages)         │
+│  285             if index < original_last_index and any("toolUse"  │
+│  in content for content in message["content"])                     │
+│  286         ]                                                     │
+│  287         for index in reversed(tool_use_indices):              │
+│  288             message = messages[index]                         │
+│  289             tool_use_ids = [                                  │
+│  290                 content["toolUse"]["toolUseId"] for content   │
+│  message["content"] if "toolUse" in content                        │
+│  291             ]                                                 │
+│  292                                                               │
+│  293             # Check the toolResult ids already present in th  │
+│  next message.                                                     │
+│  294             tool_result_ids = [                               │
+│  295                 content["toolResult"]["toolUseId"]            │
+│  296                 for content in messages[index + 1]["content"  │
+│  297                 if "toolResult" in content                    │
+│  298             ]                                                 │
+│  299                                                               │
+│  300             missing_tool_use_ids = list(set(tool_use_ids) -   │
+│  set(tool_result_ids))                                             │
+│  301             if not missing_tool_use_ids:                      │
+│  302                 continue                                      │
+│  303                                                               │
+│  304             logger.warning(                                   │
+│  305                 "Session message history has an orphaned      │
+│  toolUse with no toolResult. "                                     │
+│  306                 "Adding toolResult content blocks to create   │
+│  valid conversation."                                              │
+│  307             )                                                 │
+│  308             missing_content_blocks =                          │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│  309                                                               │
+│  310             if tool_result_ids:                               │
+│  311                 # If there were any toolResult ids, that mea  │
+│  only some of the content blocks are missing                       │
+│  312                 messages[index +                              │
+│  1]["content"].extend(missing_content_blocks)                      │
+│  313             else:                                             │
+│  314                 # The message following the toolUse was not   │
+│  toolResult, so lets insert it                                     │
+│  315                 messages.insert(index + 1, {"role": "user",   │
+│  "content": missing_content_blocks})                               │
+│  316         return messages                                       │
+│  317                                                               │
+│  318     def sync_multi_agent(self, source: "MultiAgentBase",      │
+│  **kwargs: Any) -> None:                                           │
+│  319         """Serialize and update the multi-agent state into t  │
+│  session repository.                                               │
+│  320                                                               │
+│  321         Args:                                                 │
+│  322             source: Multi-agent source object to sync to the  │
+│  session.                                                          │
+│  323             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  324         """                                                   │
+│  325                                                               │
+│  self.session_repository.update_multi_agent(self.session_id,       │
+│  source)                                                           │
+│  326                                                               │
+│  327     def initialize_multi_agent(self, source: "MultiAgentBase  │
+│  **kwargs: Any) -> None:                                           │
+│  328         """Initialize multi-agent state from the session      │
+│  repository.                                                       │
+│  329                                                               │
+│  330         Args:                                                 │
+│  331             source: Multi-agent source object to restore sta  │
+│  into                                                              │
+│  332             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  333         """                                                   │
+│  334         # Skip read_multi_agent call for new sessions since   │
+│  multi-agents can exist yet                                        │
+│  335         if self._is_new_session:                              │
+│  336             state = None                                      │
+│  337         else:                                                 │
+│  338             state =                                           │
+│  self.session_repository.read_multi_agent(self.session_id,         │
+│  source.id, **kwargs)                                              │
+│  339                                                               │
+│  340         if state is None:                                     │
+│  341                                                               │
+│  self.session_repository.create_multi_agent(self.session_id,       │
+│  source, **kwargs)                                                 │
+│  342         else:                                                 │
+│  343             logger.debug("session_id=<%s> | restoring         │
+│  multi-agent state", self.session_id)                              │
+│  344             source.deserialize_state(state)                   │
+│  345                                                               │
+│  346         self._is_new_session = False                          │
+│  347                                                               │
+│  348     def initialize_bidi_agent(self, agent: "BidiAgent",       │
+│  **kwargs: Any) -> None:                                           │
+│  349         """Initialize a bidirectional agent with a session.   │
+│  350                                                               │
+│  351         Args:                                                 │
+│  352             agent: BidiAgent to initialize from the session   │
+│  353             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  354         """                                                   │
+│  355         if agent.agent_id in self._latest_agent_message:      │
+│  356             raise SessionException("The `agent_id` of an age  │
+│  must be unique in a session.")                                    │
+│  357         self._latest_agent_message[agent.agent_id] = None     │
+│  358                                                               │
+│  359         # Skip read_agent call for new sessions since no      │
+│  agents can exist yet                                              │
+│  360         if self._is_new_session:                              │
+│  361             session_agent = None                              │
+│  362         else:                                                 │
+│  363             session_agent =                                   │
+│  self.session_repository.read_agent(self.session_id,               │
+│  agent.agent_id)                                                   │
+│  364                                                               │
+│  365         if session_agent is None:                             │
+│  366             logger.debug(                                     │
+│  367                 "agent_id=<%s> | session_id=<%s> | creating   │
+│  bidi agent",                                                      │
+│  368                 agent.agent_id,                               │
+│  369                 self.session_id,                              │
+│  370             )                                                 │
+│  371                                                               │
+│  372             session_agent =                                   │
+│  SessionAgent.from_bidi_agent(agent)                               │
+│  373                                                               │
+│  self.session_repository.create_agent(self.session_id,             │
+│  session_agent)                                                    │
+│  374             # Initialize messages with sequential indices     │
+│  375             session_message = None                            │
+│  376             for i, message in enumerate(agent.messages):      │
+│  377                 session_message =                             │
+│  SessionMessage.from_message(message, i)                           │
+│  378                                                               │
+│  self.session_repository.create_message(self.session_id,           │
+│  agent.agent_id, session_message)                                  │
+│  379             self._latest_agent_message[agent.agent_id] =      │
+│  session_message                                                   │
+│  380         else:                                                 │
+│  381             logger.debug(                                     │
+│  382                 "agent_id=<%s> | session_id=<%s> | restoring  │
+│  bidi agent",                                                      │
+│  383                 agent.agent_id,                               │
+│  384                 self.session_id,                              │
+│  385             )                                                 │
+│  386             agent.state = AgentState(session_agent.state)     │
+│  387                                                               │
+│  388                                                               │
+│  session_agent.initialize_bidi_internal_state(agent)               │
+│  389                                                               │
+│  390             # BidiAgent has no conversation_manager, so no    │
+│  prepend_messages or removed_message_count                         │
+│  391             session_messages =                                │
+│  self.session_repository.list_messages(                            │
+│  392                 session_id=self.session_id,                   │
+│  393                 agent_id=agent.agent_id,                      │
+│  394                 offset=0,                                     │
+│  395             )                                                 │
+│  396             if len(session_messages) > 0:                     │
+│  397                 self._latest_agent_message[agent.agent_id] =  │
+│  session_messages[-1]                                              │
+│  398                                                               │
+│  399             # Restore the agents messages array               │
+│  400             agent.messages = [session_message.to_message() f  │
+│  session_message in session_messages]                              │
+│  401                                                               │
+│  402             # Fix broken session histories:                   │
+│  https://github.com/strands-agents/harness-sdk/issues/859          │
+│  403             agent.messages =                                  │
+│  self._fix_broken_tool_use(agent.messages)                         │
+│  404                                                               │
+│  405         self._is_new_session = False                          │
+│  406                                                               │
+│  407     def append_bidi_message(self, message: Message, agent:    │
+│  "BidiAgent", **kwargs: Any) -> None:                              │
+│  408         """Append a message to the bidirectional agent's      │
+│  session.                                                          │
+│  409                                                               │
+│  410         Args:                                                 │
+│  411             message: Message to add to the agent in the       │
+│  session                                                           │
+│  412             agent: BidiAgent to append the message to         │
+│  413             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  414         """                                                   │
+│  415         # Calculate the next index (0 if this is the first    │
+│  message, otherwise increment the previous index)                  │
+│  416         latest_agent_message =                                │
+│  self._latest_agent_message[agent.agent_id]                        │
+│  417         if latest_agent_message:                              │
+│  418             next_index = latest_agent_message.message_id + 1  │
+│  419         else:                                                 │
+│  420             next_index = 0                                    │
+│  421                                                               │
+│  422         session_message = SessionMessage.from_message(messag  │
+│  next_index)                                                       │
+│  423         self._latest_agent_message[agent.agent_id] =          │
+│  session_message                                                   │
+│  424                                                               │
+│  self.session_repository.create_message(self.session_id,           │
+│  agent.agent_id, session_message)                                  │
+│  425                                                               │
+│  426     def sync_bidi_agent(self, agent: "BidiAgent", **kwargs:   │
+│  Any) -> None:                                                     │
+│  427         """Serialize and update the bidirectional agent into  │
+│  the session repository.                                           │
+│  428                                                               │
+│  429         Args:                                                 │
+│  430             agent: BidiAgent to sync to the session.          │
+│  431             **kwargs: Additional keyword arguments for futur  │
+│  extensibility.                                                    │
+│  432         """                                                   │
+│  433         self.session_repository.update_agent(                 │
+│  434             self.session_id,                                  │
+│  435             SessionAgent.from_bidi_agent(agent),              │
+│  436         )                                                     │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_method_in_class("_fix_broken_tool_use",           │
+│ "RepositorySessionManager"):                                       │
+│                                                                    │
+│ Found 1 methods with name _fix_broken_tool_use in class            │
+│ RepositorySessionManager:                                          │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [class]RepositorySessionManager[/class]                           │
+│  [func]_fix_broken_tool_use[/func]                                 │
+│  [code]                                                            │
+│  245     def _fix_broken_tool_use(self, messages: list[Message])   │
+│  list[Message]:                                                    │
+│  246         """Fix broken tool use/result pairs in message        │
+│  history.                                                          │
+│  247                                                               │
+│  248         This method handles two issues:                       │
+│  249         1. Orphaned toolUse messages without corresponding    │
+│  toolResult.                                                       │
+│  250            Before 1.15.0, strands had a bug where they        │
+│  persisted sessions with a potentially broken messages array.      │
+│  251            This method retroactively fixes that issue by      │
+│  adding a tool_result outside of session management.               │
+│  252            After 1.15.0, this bug is no longer present.       │
+│  253         2. Orphaned toolResult messages without correspondin  │
+│  toolUse (e.g., when pagination truncates messages)                │
+│  254                                                               │
+│  255         Args:                                                 │
+│  256             messages: The list of messages to fix             │
+│  257             agent_id: The agent ID for fetching previous      │
+│  messages                                                          │
+│  258             removed_message_count: Number of messages remove  │
+│  by the conversation manager                                       │
+│  259                                                               │
+│  260         Returns:                                              │
+│  261             Fixed list of messages with proper tool use/resu  │
+│  pairs                                                             │
+│  262         """                                                   │
+│  263         # First, check if the oldest message has orphaned     │
+│  toolResult (no preceding toolUse) and remove it.                  │
+│  264         if messages:                                          │
+│  265             first_message = messages[0]                       │
+│  266             if first_message["role"] == "user" and            │
+│  any("toolResult" in content for content in                        │
+│  first_message["content"]):                                        │
+│  267                 logger.warning(                               │
+│  268                     "Session message history starts with      │
+│  orphaned toolResult with no preceding toolUse. "                  │
+│  269                     "This typically happens when messages ar  │
+│  truncated due to pagination limits. "                             │
+│  270                     "Removing orphaned toolResult message to  │
+│  maintain valid conversation structure."                           │
+│  271                 )                                             │
+│  272                 messages.pop(0)                               │
+│  273                                                               │
+│  274         # Then check for orphaned toolUse messages. Snapshot  │
+│  the eligible indices before                                       │
+│  275         # iterating so that inserting a toolResult (which     │
+│  shifts later indices) does not                                    │
+│  276         # cause the loop to skip a subsequent orphaned        │
+│  toolUse. The trailing message is                                  │
+│  277         # excluded from the snapshot because that case is     │
+│  handled in the agent class when                                   │
+│  278         # a new prompt arrives, so we do not synthesize a     │
+│  toolResult into persisted                                         │
+│  279         # history for it here. Walking in reverse means each  │
+│  insert only shifts already-                                       │
+│  280         # processed positions, so the original snapshot       │
+│  indices remain valid.                                             │
+│  281         original_last_index = len(messages) - 1               │
+│  282         tool_use_indices = [                                  │
+│  283             index                                             │
+│  284             for index, message in enumerate(messages)         │
+│  285             if index < original_last_index and any("toolUse"  │
+│  in content for content in message["content"])                     │
+│  286         ]                                                     │
+│  287         for index in reversed(tool_use_indices):              │
+│  288             message = messages[index]                         │
+│  289             tool_use_ids = [                                  │
+│  290                 content["toolUse"]["toolUseId"] for content   │
+│  message["content"] if "toolUse" in content                        │
+│  291             ]                                                 │
+│  292                                                               │
+│  293             # Check the toolResult ids already present in th  │
+│  next message.                                                     │
+│  294             tool_result_ids = [                               │
+│  295                 content["toolResult"]["toolUseId"]            │
+│  296                 for content in messages[index + 1]["content"  │
+│  297                 if "toolResult" in content                    │
+│  298             ]                                                 │
+│  299                                                               │
+│  300             missing_tool_use_ids = list(set(tool_use_ids) -   │
+│  set(tool_result_ids))                                             │
+│  301             if not missing_tool_use_ids:                      │
+│  302                 continue                                      │
+│  303                                                               │
+│  304             logger.warning(                                   │
+│  305                 "Session message history has an orphaned      │
+│  toolUse with no toolResult. "                                     │
+│  306                 "Adding toolResult content blocks to create   │
+│  valid conversation."                                              │
+│  307             )                                                 │
+│  308             missing_content_blocks =                          │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│  309                                                               │
+│  310             if tool_result_ids:                               │
+│  311                 # If there were any toolResult ids, that mea  │
+│  only some of the content blocks are missing                       │
+│  312                 messages[index +                              │
+│  1]["content"].extend(missing_content_blocks)                      │
+│  313             else:                                             │
+│  314                 # The message following the toolUse was not   │
+│  toolResult, so lets insert it                                     │
+│  315                 messages.insert(index + 1, {"role": "user",   │
+│  "content": missing_content_blocks})                               │
+│  316         return messages                                       │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_method("generate_missing_tool_result_content"):   │
+│                                                                    │
+│ Found 1 methods with name generate_missing_tool_result_content in  │
+│ the codebase:                                                      │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/tools/_tool_helpers.py[/file]        │
+│   [func]generate_missing_tool_result_content[/func]                │
+│  [code]                                                            │
+│  19 def generate_missing_tool_result_content(tool_use_ids:         │
+│  list[str]) -> list[ContentBlock]:                                 │
+│  20     """Generate ToolResult content blocks for orphaned ToolUs  │
+│  message."""                                                       │
+│  21     return [                                                   │
+│  22         {                                                      │
+│  23             "toolResult": {                                    │
+│  24                 "toolUseId": tool_use_id,                      │
+│  25                 "status": "error",                             │
+│  26                 "content": [{"text": "Tool was interrupted."}  │
+│  27             }                                                  │
+│  28         }                                                      │
+│  29         for tool_use_id in tool_use_ids                        │
+│  30     ]                                                          │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_method_in_file("",                                │
+│ "strands/session/repository_session_manager.py"):                  │
+│                                                                    │
+│ The method  does not appear in the codebase.                       │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 2 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8001, output_tokens=400, cost=0.001440
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│ Analyzing collected context:                                       │
+│                                                                    │
+│  1 The class RepositorySessionManager manages persisting agent     │
+│    sessions in a repository. The method _fix_broken_tool_use       │
+│    attempts to fix broken message histories specifically related   │
+│    to orphaned toolUse and toolResult pairs.                       │
+│  2 The method _fix_broken_tool_use:                                │
+│                                                                    │
+│  • First, removes any initial orphaned toolResult user message     │
+│    (which has no preceding toolUse).                               │
+│  • Then finds orphaned toolUse messages missing toolResult content │
+│    in the next user message.                                       │
+│  • For each orphaned toolUse, it generates missing toolResult      │
+│    content blocks via generate_missing_tool_result_content.        │
+│  • If the next message already contains some toolResult blocks, it │
+│    extends these with missing blocks; otherwise, it inserts a new  │
+│    user message with the missing toolResult blocks.                │
+│                                                                    │
+│  3 The function generate_missing_tool_result_content simply        │
+│    generates toolResult content blocks with error status and "Tool │
+│    was interrupted." text for the given toolUseIds.                │
+│  4 The bug described is that the fix adds an incorrect number of   │
+│    toolResult blocks, so sometimes there are more toolResult       │
+│    blocks than toolUse blocks, causing request rejection.          │
+│  5 The likely issue is in the logic where it extends or inserts    │
+│    toolResult blocks - possibly it counts or merges these content  │
+│    blocks incorrectly, or it does not validate total counts after  │
+│    insertion/modification.                                         │
+│  6 The intended behavior is that for each orphaned toolUse,        │
+│    exactly one corresponding toolResult block is added. The number │
+│    of toolResult blocks in the user message following the          │
+│    assistant message with toolUse blocks must match the toolUse    │
+│    blocks count.                                                   │
+│  7 This patch/location should preserve the rest of the session     │
+│    management and only fix the addition of missing toolResult      │
+│    blocks.                                                         │
+│                                                                    │
+│ In summary, the bug is definitely in                               │
+│ RepositorySessionManager._fix_broken_tool_use and possibly related │
+│ to generate_missing_tool_result_content handling. The fix involves │
+│ correctly counting and adding missing toolResult blocks so that    │
+│ the total matches the toolUse count exactly.                       │
+│                                                                    │
+│ No further context is required now; the analysis is sufficient to  │
+│ understand and fix the bug.                                        │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8616, output_tokens=223, cost=0.001426
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 do we need more context:                                        │
+│  2 where are bug locations: Location 1: File:                      │
+│    strands-py/src/strands/session/repository_session_manager.py    │
+│    Class: RepositorySessionManager Method: _fix_broken_tool_use    │
+│    Intended behavior: This method should correctly identify        │
+│    orphaned toolUse blocks in the message history and add the      │
+│    exact number of missing toolResult content blocks, ensuring the │
+│    number of toolResult blocks matches the number of toolUse       │
+│    blocks in the previous assistant message. It should handle      │
+│    partial or total absence of toolResult blocks in the next user  │
+│    message without adding excess blocks, preserving valid          │
+│    conversation state for Bedrock API acceptance.                  │
+│                                                                    │
+│ Location 2: File: strands-py/src/strands/tools/_tool_helpers.py    │
+│ Function: generate_missing_tool_result_content Intended behavior:  │
+│ This function should generate accurate toolResult content blocks   │
+│ corresponding to the provided toolUse IDs with consistent error    │
+│ status and content. It should produce one toolResult block per     │
+│ orphaned toolUse ID. The existing functionality can be maintained, │
+│ but if needed it should be reviewed to ensure strict one-to-one    │
+│ correspondence in counts.                                          │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=578, output_tokens=251, cost=0.000237
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ Bug locations                                                      │
+│                                                                    │
+│  • file:                                                           │
+│    strands-py/src/strands/session/repository_session_manager.py,   │
+│    class: RepositorySessionManager, method: _fix_broken_tool_use,  │
+│    intended_behavior: This method should correctly identify        │
+│    orphaned toolUse blocks in the message history and add the      │
+│    exact number of missing toolResult content blocks, ensuring the │
+│    number of toolResult blocks matches the number of toolUse       │
+│    blocks in the previous assistant message. It should handle      │
+│    partial or total absence of toolResult blocks in the next user  │
+│    message without adding excess blocks, preserving valid          │
+│    conversation state for Bedrock API acceptance.                  │
+│  • file: strands-py/src/strands/tools/_tool_helpers.py, class: ``, │
+│    method: generate_missing_tool_result_content,                   │
+│    intended_behavior: This function should generate accurate       │
+│    toolResult content blocks corresponding to the provided toolUse │
+│    IDs with consistent error status and content. It should produce │
+│    one toolResult block per orphaned toolUse ID. The existing      │
+│    functionality can be maintained, but if needed it should be     │
+│    reviewed to ensure strict one-to-one correspondence in counts.  │
+╰────────────────────────────────────────────────────────────────────╯
+
+========================== PATCH GENERATION ==========================
+
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Write a patch for the issue, based on the relevant code context.   │
+│ First explain the reasoning, and then write the actual patch. When │
+│ writing the patch, remember the following:                         │
+│                                                                    │
+│  • You do not have to modify every location provided - just make   │
+│    the necessary changes.                                          │
+│  • Pay attention to the addtional context as well - sometimes it   │
+│    might be better to fix there.                                   │
+│  • You should import necessary libraries if needed.                │
+│                                                                    │
+│ Return the patch in the format below. Within [file][/file],        │
+│ replace ... with actual file path. Within [original][/original],   │
+│ replace ... with the original code snippet from the program.       │
+│ Within [patched][/patched], replace ... with the fixed version of  │
+│ the original code. When adding orignal code and updated code, pay  │
+│ attention to indentation, as the code is in Python. You can write  │
+│ multiple modifications if needed.                                  │
+│                                                                    │
+│ Example format:                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 1                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 2                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 3                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│ ...                                                                │
+│                                                                    │
+│                                                                    │
+│  NOTE:                                                             │
+│  - In your patch, DO NOT include the line numbers at the beginnin  │
+│  of each line!                                                     │
+│  - Inside [original] and [/original], you should provide the       │
+│  original code snippet from the program.                           │
+│  This original code snippet MUST match exactly to a continuous     │
+│  block of code in the original program,                            │
+│  since the system will use this to locate the code to be modified  │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=6317, output_tokens=2305, cost=0.002331
+╭─ Patch Generation ─────────────────────────────────────────────────╮
+│ The issue is that when fixing orphaned toolUse blocks, the code    │
+│ inserts or extends toolResult blocks incorrectly, resulting in an  │
+│ excess number of toolResult blocks compared to toolUse blocks from │
+│ the previous assistant message. This fails Bedrock’s validation.   │
+│                                                                    │
+│ Looking at the current fix logic, it fetches all toolUse IDs in    │
+│ the assistant message at index i and compares them with existing   │
+│ toolResult IDs in the next user message at index i+1. For missing  │
+│ toolUse IDs, it calls generate_missing_tool_result_content() and   │
+│ appends or inserts the corresponding toolResult blocks.            │
+│                                                                    │
+│ However, the bug often arises because the next message can already │
+│ partially contain toolResult blocks that do not correspond         │
+│ one-to-one to the toolUse blocks of the previous message or due to │
+│ duplication.                                                       │
+│                                                                    │
+│ To fix this:                                                       │
+│                                                                    │
+│  • We should count how many toolUse blocks exist in the current    │
+│    message.                                                        │
+│  • We should count how many toolResult blocks exist in the next    │
+│    message that correspond to these toolUse blocks.                │
+│  • The key requirement: the number of toolResult blocks must NOT   │
+│    exceed the number of toolUse blocks in the preceding assistant  │
+│    message.                                                        │
+│                                                                    │
+│ Currently, the code deduces missing_tool_use_ids from set          │
+│ differences of IDs. But because IDs can repeat or mismatch, a set  │
+│ difference isn’t always sufficient to conclude how many blocks to  │
+│ add.                                                               │
+│                                                                    │
+│ A more straightforward fix is to:                                  │
+│                                                                    │
+│  • Count number of toolUse blocks in the current message           │
+│    (tool_use_count)                                                │
+│  • Count number of toolResult blocks in the next message that have │
+│    matching toolUseIds (tool_result_count_matching)                │
+│  • The number of missing toolResults to add = tool_use_count -     │
+│    tool_result_count_matching                                      │
+│                                                                    │
+│ This ensures matching counts, and if the next message already      │
+│ contains more toolResults than toolUse blocks, do nothing          │
+│ (possibly log a warning/error?).                                   │
+│                                                                    │
+│ So the fix is:                                                     │
+│                                                                    │
+│  • For each toolUseId in the current message, count how many times │
+│    it appears (some may be duplicate IDs).                         │
+│  • For the next message, count how many toolResult with matching   │
+│    toolUseId exist.                                                │
+│  • Add only missing counts to next message, never exceeding the    │
+│    number of toolUse blocks.                                       │
+│                                                                    │
+│ Since toolUseId may not be unique across multiple blocks, it may   │
+│ be easier to compute counts by enumerating.                        │
+│                                                                    │
+│ Alternatively, given the current approach stores toolUseId         │
+│ distinctly per block, defining equality via IDs should be fine,    │
+│ just ensure missing blocks counting is exact.                      │
+│                                                                    │
+│ We can modify the loop at _fix_broken_tool_use to build a list of  │
+│ missing toolUseIds matching the counts, instead of set difference. │
+│                                                                    │
+│ Implementation details:                                            │
+│                                                                    │
+│  • Build a list of all toolUseIds in current message, including    │
+│    duplicates.                                                     │
+│  • Build a list of all toolResult toolUseIds in next message.      │
+│  • For each toolUseId in toolUseIds, if it appears in              │
+│    toolResultIds, remove one occurrence from toolResultIds list.   │
+│  • The remaining toolUseIds are missing.                           │
+│                                                                    │
+│ This way, we respect duplicate counts of the same ID.              │
+│                                                                    │
+│ Then generate toolResult content blocks only for these missing     │
+│ IDs.                                                               │
+│                                                                    │
+│ If the next message's content is not a toolResult message, insert  │
+│ a new one.                                                         │
+│                                                                    │
+│ Otherwise, append missing blocks.                                  │
+│                                                                    │
+│ This will fix the problem of excess toolResult blocks and ensure   │
+│ exact matching counts.                                             │
+│                                                                    │
+│ ────────────────────────────────────────────────────────────────── │
+│ Patch only _fix_broken_tool_use method in                          │
+│ repository_session_manager.py.                                     │
+│                                                                    │
+│ ────────────────────────────────────────────────────────────────── │
+│ Patch:                                                             │
+│                                                                    │
+│                                                                    │
+│  [file]strands-py/src/strands/session/repository_session_manager.  │
+│  [/file]                                                           │
+│  [original]    def _fix_broken_tool_use(self, messages:            │
+│  list[Message]) -> list[Message]:                                  │
+│          """Fix broken tool use/result pairs in message history.   │
+│                                                                    │
+│          This method handles two issues:                           │
+│          1. Orphaned toolUse messages without corresponding        │
+│  toolResult.                                                       │
+│             Before 1.15.0, strands had a bug where they persisted  │
+│  sessions with a potentially broken messages array.                │
+│             This method retroactively fixes that issue by adding   │
+│  tool_result outside of session management.                        │
+│             After 1.15.0, this bug is no longer present.           │
+│          2. Orphaned toolResult messages without corresponding     │
+│  toolUse (e.g., when pagination truncates messages)                │
+│                                                                    │
+│          Args:                                                     │
+│              messages: The list of messages to fix                 │
+│              agent_id: The agent ID for fetching previous message  │
+│              removed_message_count: Number of messages removed by  │
+│  the conversation manager                                          │
+│                                                                    │
+│          Returns:                                                  │
+│              Fixed list of messages with proper tool use/result    │
+│  pairs                                                             │
+│          """                                                       │
+│          # First, check if the oldest message has orphaned         │
+│  toolResult (no preceding toolUse) and remove it.                  │
+│          if messages:                                              │
+│              first_message = messages[0]                           │
+│              if first_message["role"] == "user" and                │
+│  any("toolResult" in content for content in                        │
+│  first_message["content"]):                                        │
+│                  logger.warning(                                   │
+│                      "Session message history starts with orphane  │
+│  toolResult with no preceding toolUse. "                           │
+│                      "This typically happens when messages are     │
+│  truncated due to pagination limits. "                             │
+│                      "Removing orphaned toolResult message to      │
+│  maintain valid conversation structure."                           │
+│                  )                                                 │
+│                  messages.pop(0)                                   │
+│                                                                    │
+│          # Then check for orphaned toolUse messages. Snapshot the  │
+│  eligible indices before                                           │
+│          # iterating so that inserting a toolResult (which shifts  │
+│  later indices) does not                                           │
+│          # cause the loop to skip a subsequent orphaned toolUse.   │
+│  The trailing message is                                           │
+│          # excluded from the snapshot because that case is handle  │
+│  in the agent class when                                           │
+│          # a new prompt arrives, so we do not synthesize a         │
+│  toolResult into persisted                                         │
+│          # history for it here. Walking in reverse means each      │
+│  insert only shifts already-                                       │
+│          # processed positions, so the original snapshot indices   │
+│  remain valid.                                                     │
+│          original_last_index = len(messages) - 1                   │
+│          tool_use_indices = [                                      │
+│              index                                                 │
+│              for index, message in enumerate(messages)             │
+│              if index < original_last_index and any("toolUse" in   │
+│  content for content in message["content"])                        │
+│          ]                                                         │
+│          for index in reversed(tool_use_indices):                  │
+│              message = messages[index]                             │
+│              tool_use_ids = [                                      │
+│                  content["toolUse"]["toolUseId"] for content in    │
+│  message["content"] if "toolUse" in content                        │
+│              ]                                                     │
+│                                                                    │
+│              # Check the toolResult ids already present in the ne  │
+│  message.                                                          │
+│              tool_result_ids = [                                   │
+│                  content["toolResult"]["toolUseId"]                │
+│                  for content in messages[index + 1]["content"]     │
+│                  if "toolResult" in content                        │
+│              ]                                                     │
+│                                                                    │
+│              missing_tool_use_ids = list(set(tool_use_ids) -       │
+│  set(tool_result_ids))                                             │
+│              if not missing_tool_use_ids:                          │
+│                  continue                                          │
+│                                                                    │
+│              logger.warning(                                       │
+│                  "Session message history has an orphaned toolUse  │
+│  with no toolResult. "                                             │
+│                  "Adding toolResult content blocks to create vali  │
+│  conversation."                                                    │
+│              )                                                     │
+│              missing_content_blocks =                              │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│                                                                    │
+│              if tool_result_ids:                                   │
+│                  # If there were any toolResult ids, that means    │
+│  only some of the content blocks are missing                       │
+│                  messages[index +                                  │
+│  1]["content"].extend(missing_content_blocks)                      │
+│              else:                                                 │
+│                  # The message following the toolUse was not a     │
+│  toolResult, so lets insert it                                     │
+│                  messages.insert(index + 1, {"role": "user",       │
+│  "content": missing_content_blocks})                               │
+│          return messages                                           │
+│  [/original]                                                       │
+│  [patched]    def _fix_broken_tool_use(self, messages:             │
+│  list[Message]) -> list[Message]:                                  │
+│          """Fix broken tool use/result pairs in message history.   │
+│                                                                    │
+│          This method handles two issues:                           │
+│          1. Orphaned toolUse messages without corresponding        │
+│  toolResult.                                                       │
+│             Before 1.15.0, strands had a bug where they persisted  │
+│  sessions with a potentially broken messages array.                │
+│             This method retroactively fixes that issue by adding   │
+│  tool_result outside of session management.                        │
+│             After 1.15.0, this bug is no longer present.           │
+│          2. Orphaned toolResult messages without corresponding     │
+│  toolUse (e.g., when pagination truncates messages)                │
+│                                                                    │
+│          Args:                                                     │
+│              messages: The list of messages to fix                 │
+│              agent_id: The agent ID for fetching previous message  │
+│              removed_message_count: Number of messages removed by  │
+│  the conversation manager                                          │
+│                                                                    │
+│          Returns:                                                  │
+│              Fixed list of messages with proper tool use/result    │
+│  pairs                                                             │
+│          """                                                       │
+│          # First, check if the oldest message has orphaned         │
+│  toolResult (no preceding toolUse) and remove it.                  │
+│          if messages:                                              │
+│              first_message = messages[0]                           │
+│              if first_message["role"] == "user" and                │
+│  any("toolResult" in content for content in                        │
+│  first_message["content"]):                                        │
+│                  logger.warning(                                   │
+│                      "Session message history starts with orphane  │
+│  toolResult with no preceding toolUse. "                           │
+│                      "This typically happens when messages are     │
+│  truncated due to pagination limits. "                             │
+│                      "Removing orphaned toolResult message to      │
+│  maintain valid conversation structure."                           │
+│                  )                                                 │
+│                  messages.pop(0)                                   │
+│                                                                    │
+│          # Then check for orphaned toolUse messages. Snapshot the  │
+│  eligible indices before                                           │
+│          # iterating so that inserting a toolResult (which shifts  │
+│  later indices) does not                                           │
+│          # cause the loop to skip a subsequent orphaned toolUse.   │
+│  The trailing message is                                           │
+│          # excluded from the snapshot because that case is handle  │
+│  in the agent class when                                           │
+│          # a new prompt arrives, so we do not synthesize a         │
+│  toolResult into persisted                                         │
+│          # history for it here. Walking in reverse means each      │
+│  insert only shifts already-                                       │
+│          # processed positions, so the original snapshot indices   │
+│  remain valid.                                                     │
+│          original_last_index = len(messages) - 1                   │
+│          tool_use_indices = [                                      │
+│              index                                                 │
+│              for index, message in enumerate(messages)             │
+│              if index < original_last_index and any("toolUse" in   │
+│  content for content in message["content"])                        │
+│          ]                                                         │
+│          for index in reversed(tool_use_indices):                  │
+│              message = messages[index]                             │
+│              # Get list of all toolUseIds (including duplicates)   │
+│              tool_use_ids = [                                      │
+│                  content["toolUse"]["toolUseId"] for content in    │
+│  message["content"] if "toolUse" in content                        │
+│              ]                                                     │
+│              # Next message                                        │
+│              next_message = messages[index + 1]                    │
+│              # Get list of all toolResult toolUseIds (including    │
+│  duplicates) in next message                                       │
+│              tool_result_ids = [                                   │
+│                  content["toolResult"]["toolUseId"]                │
+│                  for content in next_message["content"]            │
+│                  if "toolResult" in content                        │
+│              ]                                                     │
+│                                                                    │
+│              # Count missing toolUseIds factoring duplicates       │
+│  properly                                                          │
+│              remaining_tool_result_ids = tool_result_ids.copy()    │
+│              missing_tool_use_ids = []                             │
+│              for tuid in tool_use_ids:                             │
+│                  if tuid in remaining_tool_result_ids:             │
+│                      remaining_tool_result_ids.remove(tuid)        │
+│                  else:                                             │
+│                      missing_tool_use_ids.append(tuid)             │
+│                                                                    │
+│              if not missing_tool_use_ids:                          │
+│                  continue                                          │
+│                                                                    │
+│              logger.warning(                                       │
+│                  "Session message history has an orphaned toolUse  │
+│  with no toolResult. "                                             │
+│                  "Adding toolResult content blocks to create vali  │
+│  conversation."                                                    │
+│              )                                                     │
+│              missing_content_blocks =                              │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│                                                                    │
+│              # Determine if next message is already a toolResult   │
+│  message (all content blocks "toolResult")                         │
+│              if all("toolResult" in content for content in         │
+│  next_message["content"]):                                         │
+│                  # Extend existing toolResult content blocks with  │
+│  missing ones                                                      │
+│                  next_message["content"].extend(missing_content_b  │
+│  cks)                                                              │
+│              else:                                                 │
+│                  # Insert new toolResult message after current     │
+│  index                                                             │
+│                  messages.insert(index + 1, {"role": "user",       │
+│  "content": missing_content_blocks})                               │
+│          return messages                                           │
+│  [/patched]                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Patch is applicable                                                │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (Extracted patch) ──────────────────────────────────╮
+│                                                                    │
+│  diff --git                                                        │
+│  a/strands-py/src/strands/session/repository_session_manager.py    │
+│  b/strands-py/src/strands/session/repository_session_manager.py    │
+│  index c507f32cb..d2b672788 100644                                 │
+│  --- a/strands-py/src/strands/session/repository_session_manager.  │
+│  +++ b/strands-py/src/strands/session/repository_session_manager.  │
+│  @@ -286,18 +286,28 @@ class                                       │
+│  RepositorySessionManager(SessionManager):                         │
+│           ]                                                        │
+│           for index in reversed(tool_use_indices):                 │
+│               message = messages[index]                            │
+│  +            # Get list of all toolUseIds (including duplicates)  │
+│               tool_use_ids = [                                     │
+│                   content["toolUse"]["toolUseId"] for content in   │
+│  message["content"] if "toolUse" in content                        │
+│               ]                                                    │
+│  -                                                                 │
+│  -            # Check the toolResult ids already present in the    │
+│  next message.                                                     │
+│  +            # Next message                                       │
+│  +            next_message = messages[index + 1]                   │
+│  +            # Get list of all toolResult toolUseIds (including   │
+│  duplicates) in next message                                       │
+│               tool_result_ids = [                                  │
+│                   content["toolResult"]["toolUseId"]               │
+│  -                for content in messages[index + 1]["content"]    │
+│  +                for content in next_message["content"]           │
+│                   if "toolResult" in content                       │
+│               ]                                                    │
+│                                                                    │
+│  -            missing_tool_use_ids = list(set(tool_use_ids) -      │
+│  set(tool_result_ids))                                             │
+│  +            # Count missing toolUseIds factoring duplicates      │
+│  properly                                                          │
+│  +            remaining_tool_result_ids = tool_result_ids.copy()   │
+│  +            missing_tool_use_ids = []                            │
+│  +            for tuid in tool_use_ids:                            │
+│  +                if tuid in remaining_tool_result_ids:            │
+│  +                    remaining_tool_result_ids.remove(tuid)       │
+│  +                else:                                            │
+│  +                    missing_tool_use_ids.append(tuid)            │
+│  +                                                                 │
+│               if not missing_tool_use_ids:                         │
+│                   continue                                         │
+│                                                                    │
+│  @@ -307,11 +317,12 @@ class                                       │
+│  RepositorySessionManager(SessionManager):                         │
+│               )                                                    │
+│               missing_content_blocks =                             │
+│  generate_missing_tool_result_content(missing_tool_use_ids)        │
+│                                                                    │
+│  -            if tool_result_ids:                                  │
+│  -                # If there were any toolResult ids, that means   │
+│  only some of the content blocks are missing                       │
+│  -                messages[index +                                 │
+│  1]["content"].extend(missing_content_blocks)                      │
+│  +            # Determine if next message is already a toolResult  │
+│  message (all content blocks "toolResult")                         │
+│  +            if all("toolResult" in content for content in        │
+│  next_message["content"]):                                         │
+│  +                # Extend existing toolResult content blocks wit  │
+│  missing ones                                                      │
+│  +                                                                 │
+│  next_message["content"].extend(missing_content_blocks)            │
+│               else:                                                │
+│  -                # The message following the toolUse was not a    │
+│  toolResult, so lets insert it                                     │
+│  +                # Insert new toolResult message after current    │
+│  index                                                             │
+│                   messages.insert(index + 1, {"role": "user",      │
+│  "content": missing_content_blocks})                               │
+│           return messages                                          │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 02:39:26] Task issue_2296_20260823T174322Z completed successfully.
+
+[2026-09-01 02:39:26] Please find the generated patch at: 
+/root/auto-code-rover/patches/result_issue_2296_20260823T174322Z/acr_output/issue_2296_20260823T174322Z_2026-09-01_02-38-15/output_0/extracted_patc
+h_0.diff
+
+[2026-09-01 02:39:26] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 02:38:15.492 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_2296_20260823T174322Z =============
+2026-09-01 02:38:15.921 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 02:38:18.701 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=526, output_tokens=13, cost=0.000087
+2026-09-01 02:38:18.703 | INFO     | app.inference:_run_one_task:290 - Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-09-01 02:38:18.710 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 02:38:20.664 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=831, output_tokens=57, cost=0.000159
+2026-09-01 02:38:20.669 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 02:38:24.324 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=412, output_tokens=85, cost=0.000113
+2026-09-01 02:38:24.326 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 02:38:24.326 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"AgentCoreMemorySessionManager\")",
+        "search_class_in_file(\"repository_session_manager\", \"strands/session/repository_session_manager.py\")",
+        "search_method_in_file(\"restore_conversation_history\", \"strands/session/repository_session_manager.py\")",
+        "search_code(\"orphaned toolUse\")"
+    ],
+    "bug_locations": []
+}
+2026-09-01 02:38:24.358 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-09-01 02:38:24.359 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-09-01 02:38:30.563 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1558, output_tokens=507, cost=0.000538
+2026-09-01 02:38:30.571 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 02:38:35.482 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2280, output_tokens=285, cost=0.000513
+2026-09-01 02:38:35.486 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 02:38:40.478 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=640, output_tokens=300, cost=0.000276
+2026-09-01 02:38:40.480 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 02:38:40.480 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+  "API_calls": [
+    "search_class_in_file(\"RepositorySessionManager\", \"strands/session/repository_session_manager.py\")",
+    "search_method_in_class(\"_fix_broken_tool_use\", \"RepositorySessionManager\")",
+    "search_method(\"generate_missing_tool_result_content\")",
+    "search_method_in_file(\"\", \"strands/session/repository_session_manager.py\")"
+  ],
+  "bug_locations": [
+    {
+      "file": "strands-py/src/strands/session/repository_session_manager.py",
+      "class": "RepositorySessionManager",
+      "method": "_fix_broken_tool_use",
+      "intended_behavior": "This method should correctly identify orphaned toolUse blocks in the session message history and add exactly the number of missing toolResult blocks needed to restore valid conversation history. It should avoid adding excess toolResult blocks to maintain the required invariant that the number of toolResult blocks matches the number of toolUse blocks in the previous assistant message."
+    },
+    {
+      "file": "strands-py/src/strands/session/repository_session_manager.py",
+      "class": "RepositorySessionManager",
+      "method": "generate_missing_tool_result_content",
+      "intended_behavior": "This method should generate the correct content blocks representing missing toolResult messages corresponding to orphaned toolUse blocks. It should ensure the count and content of these generated blocks are consistent and sufficient for the fix without excess."
+    }
+  ]
+}
+2026-09-01 02:38:40.546 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-09-01 02:38:40.547 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-09-01 02:38:46.353 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8001, output_tokens=400, cost=0.001440
+2026-09-01 02:38:46.359 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 02:38:50.737 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=8616, output_tokens=223, cost=0.001426
+2026-09-01 02:38:50.740 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 02:38:54.357 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=578, output_tokens=251, cost=0.000237
+2026-09-01 02:38:54.358 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 02:38:54.358 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+  "API_calls": [],
+  "bug_locations": [
+    {
+      "file": "strands-py/src/strands/session/repository_session_manager.py",
+      "class": "RepositorySessionManager",
+      "method": "_fix_broken_tool_use",
+      "intended_behavior": "This method should correctly identify orphaned toolUse blocks in the message history and add the exact number of missing toolResult content blocks, ensuring the number of toolResult blocks matches the number of toolUse blocks in the previous assistant message. It should handle partial or total absence of toolResult blocks in the next user message without adding excess blocks, preserving valid conversation state for Bedrock API acceptance."
+    },
+    {
+      "file": "strands-py/src/strands/tools/_tool_helpers.py",
+      "class": "",
+      "method": "generate_missing_tool_result_content",
+      "intended_behavior": "This function should generate accurate toolResult content blocks corresponding to the provided toolUse IDs with consistent error status and content. It should produce one toolResult block per orphaned toolUse ID. The existing functionality can be maintained, but if needed it should be reviewed to ensure strict one-to-one correspondence in counts."
+    }
+  ]
+}
+2026-09-01 02:38:54.363 | DEBUG    | app.search.search_manage:search_iterative:143 - Bug location extracted successfully: [<file>strands-py/src/strands/session/repository_session_manager.py</file>
+<class>RepositorySessionManager</class>
+<method>_fix_broken_tool_use</method>
+<code>
+245     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+246         """Fix broken tool use/result pairs in message history.
+247 
+248         This method handles two issues:
+249         1. Orphaned toolUse messages without corresponding toolResult.
+250            Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+251            This method retroactively fixes that issue by adding a tool_result outside of session management.
+252            After 1.15.0, this bug is no longer present.
+253         2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+254 
+255         Args:
+256             messages: The list of messages to fix
+257             agent_id: The agent ID for fetching previous messages
+258             removed_message_count: Number of messages removed by the conversation manager
+259 
+260         Returns:
+261             Fixed list of messages with proper tool use/result pairs
+262         """
+263         # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+264         if messages:
+265             first_message = messages[0]
+266             if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+267                 logger.warning(
+268                     "Session message history starts with orphaned toolResult with no preceding toolUse. "
+269                     "This typically happens when messages are truncated due to pagination limits. "
+270                     "Removing orphaned toolResult message to maintain valid conversation structure."
+271                 )
+272                 messages.pop(0)
+273 
+274         # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+275         # iterating so that inserting a toolResult (which shifts later indices) does not
+276         # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+277         # excluded from the snapshot because that case is handled in the agent class when
+278         # a new prompt arrives, so we do not synthesize a toolResult into persisted
+279         # history for it here. Walking in reverse means each insert only shifts already-
+280         # processed positions, so the original snapshot indices remain valid.
+281         original_last_index = len(messages) - 1
+282         tool_use_indices = [
+283             index
+284             for index, message in enumerate(messages)
+285             if index < original_last_index and any("toolUse" in content for content in message["content"])
+286         ]
+287         for index in reversed(tool_use_indices):
+288             message = messages[index]
+289             tool_use_ids = [
+290                 content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+291             ]
+292 
+293             # Check the toolResult ids already present in the next message.
+294             tool_result_ids = [
+295                 content["toolResult"]["toolUseId"]
+296                 for content in messages[index + 1]["content"]
+297                 if "toolResult" in content
+298             ]
+299 
+300             missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+301             if not missing_tool_use_ids:
+302                 continue
+303 
+304             logger.warning(
+305                 "Session message history has an orphaned toolUse with no toolResult. "
+306                 "Adding toolResult content blocks to create valid conversation."
+307             )
+308             missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+309 
+310             if tool_result_ids:
+311                 # If there were any toolResult ids, that means only some of the content blocks are missing
+312                 messages[index + 1]["content"].extend(missing_content_blocks)
+313             else:
+314                 # The message following the toolUse was not a toolResult, so lets insert it
+315                 messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+316         return messages
+
+</code><intended_behavior>This method should correctly identify orphaned toolUse blocks in the message history and add the exact number of missing toolResult content blocks, ensuring the number of toolResult blocks matches the number of toolUse blocks in the previous assistant message. It should handle partial or total absence of toolResult blocks in the next user message without adding excess blocks, preserving valid conversation state for Bedrock API acceptance.</intended_behavior>, <file>strands-py/src/strands/session/repository_session_manager.py</file>
+<class>RepositorySessionManager</class>
+<method>None</method>
+<code>
+28 class RepositorySessionManager(SessionManager):
+29     """Session manager for persisting agents in a SessionRepository."""
+30 
+31     def __init__(
+32         self,
+33         session_id: str,
+34         session_repository: SessionRepository,
+35         **kwargs: Any,
+36     ):
+37         """Initialize the RepositorySessionManager.
+38 
+39         If no session with the specified session_id exists yet, it will be created
+40         in the session_repository.
+41 
+42         Args:
+43             session_id: ID to use for the session. A new session with this id will be created if it does
+44                 not exist in the repository yet
+45             session_repository: Underlying session repository to use to store the sessions state.
+46             **kwargs: Additional keyword arguments for future extensibility.
+47 
+48         """
+49         self.session_repository = session_repository
+50         self.session_id = session_id
+51         session = session_repository.read_session(session_id)
+52         # Create a session if it does not exist yet
+53         if session is None:
+54             logger.debug("session_id=<%s> | session not found, creating new session", self.session_id)
+55             self._is_new_session = True
+56             session = Session(session_id=session_id, session_type=SessionType.AGENT)
+57             session_repository.create_session(session)
+58         else:
+59             self._is_new_session = False
+60 
+61         self.session = session
+62 
+63         # Keep track of the latest message of each agent in case we need to redact it.
+64         self._latest_agent_message: dict[str, SessionMessage | None] = {}
+65 
+66         # Track the previously synced internal state for each agent to detect changes.
+67         self._last_synced_internal_state: dict[str, dict[str, Any]] = {}
+68 
+69     def append_message(self, message: Message, agent: "Agent", **kwargs: Any) -> None:
+70         """Append a message to the agent's session.
+71 
+72         Args:
+73             message: Message to add to the agent in the session
+74             agent: Agent to append the message to
+75             **kwargs: Additional keyword arguments for future extensibility.
+76         """
+77         # Calculate the next index (0 if this is the first message, otherwise increment the previous index)
+78         latest_agent_message = self._latest_agent_message[agent.agent_id]
+79         if latest_agent_message:
+80             next_index = latest_agent_message.message_id + 1
+81         else:
+82             next_index = 0
+83 
+84         session_message = SessionMessage.from_message(message, next_index)
+85         self._latest_agent_message[agent.agent_id] = session_message
+86         self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+87 
+88     def redact_latest_message(self, redact_message: Message, agent: "Agent", **kwargs: Any) -> None:
+89         """Redact the latest message appended to the session.
+90 
+91         Args:
+92             redact_message: New message to use that contains the redact content
+93             agent: Agent to apply the message redaction to
+94             **kwargs: Additional keyword arguments for future extensibility.
+95         """
+96         latest_agent_message = self._latest_agent_message[agent.agent_id]
+97         if latest_agent_message is None:
+98             raise SessionException("No message to redact.")
+99         latest_agent_message.redact_message = redact_message
+100         return self.session_repository.update_message(self.session_id, agent.agent_id, latest_agent_message)
+101 
+102     def sync_agent(self, agent: "Agent", **kwargs: Any) -> None:
+103         """Serialize and update the agent into the session repository.
+104 
+105         Only updates the agent if state has been modified or internal state has changed.
+106         This optimization reduces unnecessary I/O operations when the agent processes
+107         messages without modifying its state.
+108 
+109         Args:
+110             agent: Agent to sync to the session.
+111             **kwargs: Additional keyword arguments for future extensibility.
+112         """
+113         # Get current versions and conversation manager state
+114         current_state_version = agent.state._get_version()
+115         current_interrupt_state_version = agent._interrupt_state._get_version()
+116         current_conversation_manager_state = agent.conversation_manager.get_state()
+117         current_model_state = agent._model_state
+118 
+119         # Check if we have a previous state to compare against
+120         last_synced = self._last_synced_internal_state.get(agent.agent_id)
+121 
+122         # Determine if we need to update by comparing versions
+123         if last_synced is None:
+124             # First sync for this agent - always update
+125             state_changed = True
+126             internal_state_changed = True
+127             conversation_manager_state_changed = True
+128         else:
+129             state_changed = current_state_version != last_synced.get("state_version")
+130             internal_state_changed = current_interrupt_state_version != last_synced.get(
+131                 "interrupt_state_version"
+132             ) or current_model_state != last_synced.get("model_state")
+133             conversation_manager_state_changed = current_conversation_manager_state != last_synced.get(
+134                 "conversation_manager_state"
+135             )
+136 
+137         if not state_changed and not internal_state_changed and not conversation_manager_state_changed:
+138             logger.debug(
+139                 "agent_id=<%s> | session_id=<%s> | skipping sync, no changes detected",
+140                 agent.agent_id,
+141                 self.session_id,
+142             )
+143             return
+144 
+145         logger.debug(
+146             "agent_id=<%s> | session_id=<%s> | state_changed=<%s>, internal_state_changed=<%s>, "
+147             "conversation_manager_state_changed=<%s> | syncing agent",
+148             agent.agent_id,
+149             self.session_id,
+150             state_changed,
+151             internal_state_changed,
+152             conversation_manager_state_changed,
+153         )
+154 
+155         # Perform the update
+156         self.session_repository.update_agent(
+157             self.session_id,
+158             SessionAgent.from_agent(agent),
+159         )
+160 
+161         # Update tracked versions after successful sync
+162         self._last_synced_internal_state[agent.agent_id] = {
+163             "state_version": current_state_version,
+164             "interrupt_state_version": current_interrupt_state_version,
+165             "conversation_manager_state": copy.deepcopy(current_conversation_manager_state),
+166             "model_state": copy.deepcopy(current_model_state),
+167         }
+168 
+169     def initialize(self, agent: "Agent", **kwargs: Any) -> None:
+170         """Initialize an agent with a session.
+171 
+172         Args:
+173             agent: Agent to initialize from the session
+174             **kwargs: Additional keyword arguments for future extensibility.
+175         """
+176         if agent.agent_id in self._latest_agent_message:
+177             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+178         self._latest_agent_message[agent.agent_id] = None
+179 
+180         # Skip read_agent call for new sessions since no agents can exist yet
+181         if self._is_new_session:
+182             session_agent = None
+183         else:
+184             session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+185 
+186         if session_agent is None:
+187             logger.debug(
+188                 "agent_id=<%s> | session_id=<%s> | creating agent",
+189                 agent.agent_id,
+190                 self.session_id,
+191             )
+192 
+193             session_agent = SessionAgent.from_agent(agent)
+194             self.session_repository.create_agent(self.session_id, session_agent)
+195             # Initialize messages with sequential indices
+196             session_message = None
+197             for i, message in enumerate(agent.messages):
+198                 session_message = SessionMessage.from_message(message, i)
+199                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+200             self._latest_agent_message[agent.agent_id] = session_message
+201         else:
+202             logger.debug(
+203                 "agent_id=<%s> | session_id=<%s> | restoring agent",
+204                 agent.agent_id,
+205                 self.session_id,
+206             )
+207             agent.state = AgentState(session_agent.state)
+208 
+209             session_agent.initialize_internal_state(agent)
+210 
+211             # Restore the conversation manager to its previous state, and get the optional prepend messages
+212             prepend_messages = agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state)
+213 
+214             if prepend_messages is None:
+215                 prepend_messages = []
+216 
+217             # List the messages currently in the session, using an offset of the messages previously removed
+218             # by the conversation manager.
+219             session_messages = self.session_repository.list_messages(
+220                 session_id=self.session_id,
+221                 agent_id=agent.agent_id,
+222                 offset=agent.conversation_manager.removed_message_count,
+223             )
+224             if len(session_messages) > 0:
+225                 self._latest_agent_message[agent.agent_id] = session_messages[-1]
+226 
+227             # Skip restoring messages when conversation is managed server-side
+228             if agent.model.stateful:
+229                 logger.debug(
+230                     "agent_id=<%s> | session_id=<%s> | skipping message restore for server-managed conversation",
+231                     agent.agent_id,
+232                     self.session_id,
+233                 )
+234             else:
+235                 # Restore the agents messages array including the optional prepend messages
+236                 agent.messages = prepend_messages + [
+237                     session_message.to_message() for session_message in session_messages
+238                 ]
+239 
+240                 # Fix broken session histories: https://github.com/strands-agents/harness-sdk/issues/859
+241                 agent.messages = self._fix_broken_tool_use(agent.messages)
+242 
+243         self._is_new_session = False
+244 
+245     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+246         """Fix broken tool use/result pairs in message history.
+247 
+248         This method handles two issues:
+249         1. Orphaned toolUse messages without corresponding toolResult.
+250            Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+251            This method retroactively fixes that issue by adding a tool_result outside of session management.
+252            After 1.15.0, this bug is no longer present.
+253         2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+254 
+255         Args:
+256             messages: The list of messages to fix
+257             agent_id: The agent ID for fetching previous messages
+258             removed_message_count: Number of messages removed by the conversation manager
+259 
+260         Returns:
+261             Fixed list of messages with proper tool use/result pairs
+262         """
+263         # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+264         if messages:
+265             first_message = messages[0]
+266             if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+267                 logger.warning(
+268                     "Session message history starts with orphaned toolResult with no preceding toolUse. "
+269                     "This typically happens when messages are truncated due to pagination limits. "
+270                     "Removing orphaned toolResult message to maintain valid conversation structure."
+271                 )
+272                 messages.pop(0)
+273 
+274         # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+275         # iterating so that inserting a toolResult (which shifts later indices) does not
+276         # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+277         # excluded from the snapshot because that case is handled in the agent class when
+278         # a new prompt arrives, so we do not synthesize a toolResult into persisted
+279         # history for it here. Walking in reverse means each insert only shifts already-
+280         # processed positions, so the original snapshot indices remain valid.
+281         original_last_index = len(messages) - 1
+282         tool_use_indices = [
+283             index
+284             for index, message in enumerate(messages)
+285             if index < original_last_index and any("toolUse" in content for content in message["content"])
+286         ]
+287         for index in reversed(tool_use_indices):
+288             message = messages[index]
+289             tool_use_ids = [
+290                 content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+291             ]
+292 
+293             # Check the toolResult ids already present in the next message.
+294             tool_result_ids = [
+295                 content["toolResult"]["toolUseId"]
+296                 for content in messages[index + 1]["content"]
+297                 if "toolResult" in content
+298             ]
+299 
+300             missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+301             if not missing_tool_use_ids:
+302                 continue
+303 
+304             logger.warning(
+305                 "Session message history has an orphaned toolUse with no toolResult. "
+306                 "Adding toolResult content blocks to create valid conversation."
+307             )
+308             missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+309 
+310             if tool_result_ids:
+311                 # If there were any toolResult ids, that means only some of the content blocks are missing
+312                 messages[index + 1]["content"].extend(missing_content_blocks)
+313             else:
+314                 # The message following the toolUse was not a toolResult, so lets insert it
+315                 messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+316         return messages
+317 
+318     def sync_multi_agent(self, source: "MultiAgentBase", **kwargs: Any) -> None:
+319         """Serialize and update the multi-agent state into the session repository.
+320 
+321         Args:
+322             source: Multi-agent source object to sync to the session.
+323             **kwargs: Additional keyword arguments for future extensibility.
+324         """
+325         self.session_repository.update_multi_agent(self.session_id, source)
+326 
+327     def initialize_multi_agent(self, source: "MultiAgentBase", **kwargs: Any) -> None:
+328         """Initialize multi-agent state from the session repository.
+329 
+330         Args:
+331             source: Multi-agent source object to restore state into
+332             **kwargs: Additional keyword arguments for future extensibility.
+333         """
+334         # Skip read_multi_agent call for new sessions since no multi-agents can exist yet
+335         if self._is_new_session:
+336             state = None
+337         else:
+338             state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
+339 
+340         if state is None:
+341             self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
+342         else:
+343             logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
+344             source.deserialize_state(state)
+345 
+346         self._is_new_session = False
+347 
+348     def initialize_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+349         """Initialize a bidirectional agent with a session.
+350 
+351         Args:
+352             agent: BidiAgent to initialize from the session
+353             **kwargs: Additional keyword arguments for future extensibility.
+354         """
+355         if agent.agent_id in self._latest_agent_message:
+356             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+357         self._latest_agent_message[agent.agent_id] = None
+358 
+359         # Skip read_agent call for new sessions since no agents can exist yet
+360         if self._is_new_session:
+361             session_agent = None
+362         else:
+363             session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+364 
+365         if session_agent is None:
+366             logger.debug(
+367                 "agent_id=<%s> | session_id=<%s> | creating bidi agent",
+368                 agent.agent_id,
+369                 self.session_id,
+370             )
+371 
+372             session_agent = SessionAgent.from_bidi_agent(agent)
+373             self.session_repository.create_agent(self.session_id, session_agent)
+374             # Initialize messages with sequential indices
+375             session_message = None
+376             for i, message in enumerate(agent.messages):
+377                 session_message = SessionMessage.from_message(message, i)
+378                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+379             self._latest_agent_message[agent.agent_id] = session_message
+380         else:
+381             logger.debug(
+382                 "agent_id=<%s> | session_id=<%s> | restoring bidi agent",
+383                 agent.agent_id,
+384                 self.session_id,
+385             )
+386             agent.state = AgentState(session_agent.state)
+387 
+388             session_agent.initialize_bidi_internal_state(agent)
+389 
+390             # BidiAgent has no conversation_manager, so no prepend_messages or removed_message_count
+391             session_messages = self.session_repository.list_messages(
+392                 session_id=self.session_id,
+393                 agent_id=agent.agent_id,
+394                 offset=0,
+395             )
+396             if len(session_messages) > 0:
+397                 self._latest_agent_message[agent.agent_id] = session_messages[-1]
+398 
+399             # Restore the agents messages array
+400             agent.messages = [session_message.to_message() for session_message in session_messages]
+401 
+402             # Fix broken session histories: https://github.com/strands-agents/harness-sdk/issues/859
+403             agent.messages = self._fix_broken_tool_use(agent.messages)
+404 
+405         self._is_new_session = False
+406 
+407     def append_bidi_message(self, message: Message, agent: "BidiAgent", **kwargs: Any) -> None:
+408         """Append a message to the bidirectional agent's session.
+409 
+410         Args:
+411             message: Message to add to the agent in the session
+412             agent: BidiAgent to append the message to
+413             **kwargs: Additional keyword arguments for future extensibility.
+414         """
+415         # Calculate the next index (0 if this is the first message, otherwise increment the previous index)
+416         latest_agent_message = self._latest_agent_message[agent.agent_id]
+417         if latest_agent_message:
+418             next_index = latest_agent_message.message_id + 1
+419         else:
+420             next_index = 0
+421 
+422         session_message = SessionMessage.from_message(message, next_index)
+423         self._latest_agent_message[agent.agent_id] = session_message
+424         self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+425 
+426     def sync_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+427         """Serialize and update the bidirectional agent into the session repository.
+428 
+429         Args:
+430             agent: BidiAgent to sync to the session.
+431             **kwargs: Additional keyword arguments for future extensibility.
+432         """
+433         self.session_repository.update_agent(
+434             self.session_id,
+435             SessionAgent.from_bidi_agent(agent),
+436         )
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>strands-py/src/strands/tools/_tool_helpers.py</file>
+<class>None</class>
+<method>generate_missing_tool_result_content</method>
+<code>
+19 def generate_missing_tool_result_content(tool_use_ids: list[str]) -> list[ContentBlock]:
+20     """Generate ToolResult content blocks for orphaned ToolUse message."""
+21     return [
+22         {
+23             "toolResult": {
+24                 "toolUseId": tool_use_id,
+25                 "status": "error",
+26                 "content": [{"text": "Tool was interrupted."}],
+27             }
+28         }
+29         for tool_use_id in tool_use_ids
+30     ]
+
+</code><intended_behavior>This function should generate accurate toolResult content blocks corresponding to the provided toolUse IDs with consistent error status and content. It should produce one toolResult block per orphaned toolUse ID. The existing functionality can be maintained, but if needed it should be reviewed to ensure strict one-to-one correspondence in counts.</intended_behavior>]
+2026-09-01 02:38:54.363 | INFO     | app.inference:_run_one_task:307 - Search completed. Bug locations: [<file>strands-py/src/strands/session/repository_session_manager.py</file>
+<class>RepositorySessionManager</class>
+<method>_fix_broken_tool_use</method>
+<code>
+245     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+246         """Fix broken tool use/result pairs in message history.
+247 
+248         This method handles two issues:
+249         1. Orphaned toolUse messages without corresponding toolResult.
+250            Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+251            This method retroactively fixes that issue by adding a tool_result outside of session management.
+252            After 1.15.0, this bug is no longer present.
+253         2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+254 
+255         Args:
+256             messages: The list of messages to fix
+257             agent_id: The agent ID for fetching previous messages
+258             removed_message_count: Number of messages removed by the conversation manager
+259 
+260         Returns:
+261             Fixed list of messages with proper tool use/result pairs
+262         """
+263         # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+264         if messages:
+265             first_message = messages[0]
+266             if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+267                 logger.warning(
+268                     "Session message history starts with orphaned toolResult with no preceding toolUse. "
+269                     "This typically happens when messages are truncated due to pagination limits. "
+270                     "Removing orphaned toolResult message to maintain valid conversation structure."
+271                 )
+272                 messages.pop(0)
+273 
+274         # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+275         # iterating so that inserting a toolResult (which shifts later indices) does not
+276         # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+277         # excluded from the snapshot because that case is handled in the agent class when
+278         # a new prompt arrives, so we do not synthesize a toolResult into persisted
+279         # history for it here. Walking in reverse means each insert only shifts already-
+280         # processed positions, so the original snapshot indices remain valid.
+281         original_last_index = len(messages) - 1
+282         tool_use_indices = [
+283             index
+284             for index, message in enumerate(messages)
+285             if index < original_last_index and any("toolUse" in content for content in message["content"])
+286         ]
+287         for index in reversed(tool_use_indices):
+288             message = messages[index]
+289             tool_use_ids = [
+290                 content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+291             ]
+292 
+293             # Check the toolResult ids already present in the next message.
+294             tool_result_ids = [
+295                 content["toolResult"]["toolUseId"]
+296                 for content in messages[index + 1]["content"]
+297                 if "toolResult" in content
+298             ]
+299 
+300             missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+301             if not missing_tool_use_ids:
+302                 continue
+303 
+304             logger.warning(
+305                 "Session message history has an orphaned toolUse with no toolResult. "
+306                 "Adding toolResult content blocks to create valid conversation."
+307             )
+308             missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+309 
+310             if tool_result_ids:
+311                 # If there were any toolResult ids, that means only some of the content blocks are missing
+312                 messages[index + 1]["content"].extend(missing_content_blocks)
+313             else:
+314                 # The message following the toolUse was not a toolResult, so lets insert it
+315                 messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+316         return messages
+
+</code><intended_behavior>This method should correctly identify orphaned toolUse blocks in the message history and add the exact number of missing toolResult content blocks, ensuring the number of toolResult blocks matches the number of toolUse blocks in the previous assistant message. It should handle partial or total absence of toolResult blocks in the next user message without adding excess blocks, preserving valid conversation state for Bedrock API acceptance.</intended_behavior>, <file>strands-py/src/strands/session/repository_session_manager.py</file>
+<class>RepositorySessionManager</class>
+<method>None</method>
+<code>
+28 class RepositorySessionManager(SessionManager):
+29     """Session manager for persisting agents in a SessionRepository."""
+30 
+31     def __init__(
+32         self,
+33         session_id: str,
+34         session_repository: SessionRepository,
+35         **kwargs: Any,
+36     ):
+37         """Initialize the RepositorySessionManager.
+38 
+39         If no session with the specified session_id exists yet, it will be created
+40         in the session_repository.
+41 
+42         Args:
+43             session_id: ID to use for the session. A new session with this id will be created if it does
+44                 not exist in the repository yet
+45             session_repository: Underlying session repository to use to store the sessions state.
+46             **kwargs: Additional keyword arguments for future extensibility.
+47 
+48         """
+49         self.session_repository = session_repository
+50         self.session_id = session_id
+51         session = session_repository.read_session(session_id)
+52         # Create a session if it does not exist yet
+53         if session is None:
+54             logger.debug("session_id=<%s> | session not found, creating new session", self.session_id)
+55             self._is_new_session = True
+56             session = Session(session_id=session_id, session_type=SessionType.AGENT)
+57             session_repository.create_session(session)
+58         else:
+59             self._is_new_session = False
+60 
+61         self.session = session
+62 
+63         # Keep track of the latest message of each agent in case we need to redact it.
+64         self._latest_agent_message: dict[str, SessionMessage | None] = {}
+65 
+66         # Track the previously synced internal state for each agent to detect changes.
+67         self._last_synced_internal_state: dict[str, dict[str, Any]] = {}
+68 
+69     def append_message(self, message: Message, agent: "Agent", **kwargs: Any) -> None:
+70         """Append a message to the agent's session.
+71 
+72         Args:
+73             message: Message to add to the agent in the session
+74             agent: Agent to append the message to
+75             **kwargs: Additional keyword arguments for future extensibility.
+76         """
+77         # Calculate the next index (0 if this is the first message, otherwise increment the previous index)
+78         latest_agent_message = self._latest_agent_message[agent.agent_id]
+79         if latest_agent_message:
+80             next_index = latest_agent_message.message_id + 1
+81         else:
+82             next_index = 0
+83 
+84         session_message = SessionMessage.from_message(message, next_index)
+85         self._latest_agent_message[agent.agent_id] = session_message
+86         self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+87 
+88     def redact_latest_message(self, redact_message: Message, agent: "Agent", **kwargs: Any) -> None:
+89         """Redact the latest message appended to the session.
+90 
+91         Args:
+92             redact_message: New message to use that contains the redact content
+93             agent: Agent to apply the message redaction to
+94             **kwargs: Additional keyword arguments for future extensibility.
+95         """
+96         latest_agent_message = self._latest_agent_message[agent.agent_id]
+97         if latest_agent_message is None:
+98             raise SessionException("No message to redact.")
+99         latest_agent_message.redact_message = redact_message
+100         return self.session_repository.update_message(self.session_id, agent.agent_id, latest_agent_message)
+101 
+102     def sync_agent(self, agent: "Agent", **kwargs: Any) -> None:
+103         """Serialize and update the agent into the session repository.
+104 
+105         Only updates the agent if state has been modified or internal state has changed.
+106         This optimization reduces unnecessary I/O operations when the agent processes
+107         messages without modifying its state.
+108 
+109         Args:
+110             agent: Agent to sync to the session.
+111             **kwargs: Additional keyword arguments for future extensibility.
+112         """
+113         # Get current versions and conversation manager state
+114         current_state_version = agent.state._get_version()
+115         current_interrupt_state_version = agent._interrupt_state._get_version()
+116         current_conversation_manager_state = agent.conversation_manager.get_state()
+117         current_model_state = agent._model_state
+118 
+119         # Check if we have a previous state to compare against
+120         last_synced = self._last_synced_internal_state.get(agent.agent_id)
+121 
+122         # Determine if we need to update by comparing versions
+123         if last_synced is None:
+124             # First sync for this agent - always update
+125             state_changed = True
+126             internal_state_changed = True
+127             conversation_manager_state_changed = True
+128         else:
+129             state_changed = current_state_version != last_synced.get("state_version")
+130             internal_state_changed = current_interrupt_state_version != last_synced.get(
+131                 "interrupt_state_version"
+132             ) or current_model_state != last_synced.get("model_state")
+133             conversation_manager_state_changed = current_conversation_manager_state != last_synced.get(
+134                 "conversation_manager_state"
+135             )
+136 
+137         if not state_changed and not internal_state_changed and not conversation_manager_state_changed:
+138             logger.debug(
+139                 "agent_id=<%s> | session_id=<%s> | skipping sync, no changes detected",
+140                 agent.agent_id,
+141                 self.session_id,
+142             )
+143             return
+144 
+145         logger.debug(
+146             "agent_id=<%s> | session_id=<%s> | state_changed=<%s>, internal_state_changed=<%s>, "
+147             "conversation_manager_state_changed=<%s> | syncing agent",
+148             agent.agent_id,
+149             self.session_id,
+150             state_changed,
+151             internal_state_changed,
+152             conversation_manager_state_changed,
+153         )
+154 
+155         # Perform the update
+156         self.session_repository.update_agent(
+157             self.session_id,
+158             SessionAgent.from_agent(agent),
+159         )
+160 
+161         # Update tracked versions after successful sync
+162         self._last_synced_internal_state[agent.agent_id] = {
+163             "state_version": current_state_version,
+164             "interrupt_state_version": current_interrupt_state_version,
+165             "conversation_manager_state": copy.deepcopy(current_conversation_manager_state),
+166             "model_state": copy.deepcopy(current_model_state),
+167         }
+168 
+169     def initialize(self, agent: "Agent", **kwargs: Any) -> None:
+170         """Initialize an agent with a session.
+171 
+172         Args:
+173             agent: Agent to initialize from the session
+174             **kwargs: Additional keyword arguments for future extensibility.
+175         """
+176         if agent.agent_id in self._latest_agent_message:
+177             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+178         self._latest_agent_message[agent.agent_id] = None
+179 
+180         # Skip read_agent call for new sessions since no agents can exist yet
+181         if self._is_new_session:
+182             session_agent = None
+183         else:
+184             session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+185 
+186         if session_agent is None:
+187             logger.debug(
+188                 "agent_id=<%s> | session_id=<%s> | creating agent",
+189                 agent.agent_id,
+190                 self.session_id,
+191             )
+192 
+193             session_agent = SessionAgent.from_agent(agent)
+194             self.session_repository.create_agent(self.session_id, session_agent)
+195             # Initialize messages with sequential indices
+196             session_message = None
+197             for i, message in enumerate(agent.messages):
+198                 session_message = SessionMessage.from_message(message, i)
+199                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+200             self._latest_agent_message[agent.agent_id] = session_message
+201         else:
+202             logger.debug(
+203                 "agent_id=<%s> | session_id=<%s> | restoring agent",
+204                 agent.agent_id,
+205                 self.session_id,
+206             )
+207             agent.state = AgentState(session_agent.state)
+208 
+209             session_agent.initialize_internal_state(agent)
+210 
+211             # Restore the conversation manager to its previous state, and get the optional prepend messages
+212             prepend_messages = agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state)
+213 
+214             if prepend_messages is None:
+215                 prepend_messages = []
+216 
+217             # List the messages currently in the session, using an offset of the messages previously removed
+218             # by the conversation manager.
+219             session_messages = self.session_repository.list_messages(
+220                 session_id=self.session_id,
+221                 agent_id=agent.agent_id,
+222                 offset=agent.conversation_manager.removed_message_count,
+223             )
+224             if len(session_messages) > 0:
+225                 self._latest_agent_message[agent.agent_id] = session_messages[-1]
+226 
+227             # Skip restoring messages when conversation is managed server-side
+228             if agent.model.stateful:
+229                 logger.debug(
+230                     "agent_id=<%s> | session_id=<%s> | skipping message restore for server-managed conversation",
+231                     agent.agent_id,
+232                     self.session_id,
+233                 )
+234             else:
+235                 # Restore the agents messages array including the optional prepend messages
+236                 agent.messages = prepend_messages + [
+237                     session_message.to_message() for session_message in session_messages
+238                 ]
+239 
+240                 # Fix broken session histories: https://github.com/strands-agents/harness-sdk/issues/859
+241                 agent.messages = self._fix_broken_tool_use(agent.messages)
+242 
+243         self._is_new_session = False
+244 
+245     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+246         """Fix broken tool use/result pairs in message history.
+247 
+248         This method handles two issues:
+249         1. Orphaned toolUse messages without corresponding toolResult.
+250            Before 1.15.0, strands had a bug where they persisted sessions with a potentially broken messages array.
+251            This method retroactively fixes that issue by adding a tool_result outside of session management.
+252            After 1.15.0, this bug is no longer present.
+253         2. Orphaned toolResult messages without corresponding toolUse (e.g., when pagination truncates messages)
+254 
+255         Args:
+256             messages: The list of messages to fix
+257             agent_id: The agent ID for fetching previous messages
+258             removed_message_count: Number of messages removed by the conversation manager
+259 
+260         Returns:
+261             Fixed list of messages with proper tool use/result pairs
+262         """
+263         # First, check if the oldest message has orphaned toolResult (no preceding toolUse) and remove it.
+264         if messages:
+265             first_message = messages[0]
+266             if first_message["role"] == "user" and any("toolResult" in content for content in first_message["content"]):
+267                 logger.warning(
+268                     "Session message history starts with orphaned toolResult with no preceding toolUse. "
+269                     "This typically happens when messages are truncated due to pagination limits. "
+270                     "Removing orphaned toolResult message to maintain valid conversation structure."
+271                 )
+272                 messages.pop(0)
+273 
+274         # Then check for orphaned toolUse messages. Snapshot the eligible indices before
+275         # iterating so that inserting a toolResult (which shifts later indices) does not
+276         # cause the loop to skip a subsequent orphaned toolUse. The trailing message is
+277         # excluded from the snapshot because that case is handled in the agent class when
+278         # a new prompt arrives, so we do not synthesize a toolResult into persisted
+279         # history for it here. Walking in reverse means each insert only shifts already-
+280         # processed positions, so the original snapshot indices remain valid.
+281         original_last_index = len(messages) - 1
+282         tool_use_indices = [
+283             index
+284             for index, message in enumerate(messages)
+285             if index < original_last_index and any("toolUse" in content for content in message["content"])
+286         ]
+287         for index in reversed(tool_use_indices):
+288             message = messages[index]
+289             tool_use_ids = [
+290                 content["toolUse"]["toolUseId"] for content in message["content"] if "toolUse" in content
+291             ]
+292 
+293             # Check the toolResult ids already present in the next message.
+294             tool_result_ids = [
+295                 content["toolResult"]["toolUseId"]
+296                 for content in messages[index + 1]["content"]
+297                 if "toolResult" in content
+298             ]
+299 
+300             missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+301             if not missing_tool_use_ids:
+302                 continue
+303 
+304             logger.warning(
+305                 "Session message history has an orphaned toolUse with no toolResult. "
+306                 "Adding toolResult content blocks to create valid conversation."
+307             )
+308             missing_content_blocks = generate_missing_tool_result_content(missing_tool_use_ids)
+309 
+310             if tool_result_ids:
+311                 # If there were any toolResult ids, that means only some of the content blocks are missing
+312                 messages[index + 1]["content"].extend(missing_content_blocks)
+313             else:
+314                 # The message following the toolUse was not a toolResult, so lets insert it
+315                 messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+316         return messages
+317 
+318     def sync_multi_agent(self, source: "MultiAgentBase", **kwargs: Any) -> None:
+319         """Serialize and update the multi-agent state into the session repository.
+320 
+321         Args:
+322             source: Multi-agent source object to sync to the session.
+323             **kwargs: Additional keyword arguments for future extensibility.
+324         """
+325         self.session_repository.update_multi_agent(self.session_id, source)
+326 
+327     def initialize_multi_agent(self, source: "MultiAgentBase", **kwargs: Any) -> None:
+328         """Initialize multi-agent state from the session repository.
+329 
+330         Args:
+331             source: Multi-agent source object to restore state into
+332             **kwargs: Additional keyword arguments for future extensibility.
+333         """
+334         # Skip read_multi_agent call for new sessions since no multi-agents can exist yet
+335         if self._is_new_session:
+336             state = None
+337         else:
+338             state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
+339 
+340         if state is None:
+341             self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
+342         else:
+343             logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
+344             source.deserialize_state(state)
+345 
+346         self._is_new_session = False
+347 
+348     def initialize_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+349         """Initialize a bidirectional agent with a session.
+350 
+351         Args:
+352             agent: BidiAgent to initialize from the session
+353             **kwargs: Additional keyword arguments for future extensibility.
+354         """
+355         if agent.agent_id in self._latest_agent_message:
+356             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+357         self._latest_agent_message[agent.agent_id] = None
+358 
+359         # Skip read_agent call for new sessions since no agents can exist yet
+360         if self._is_new_session:
+361             session_agent = None
+362         else:
+363             session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+364 
+365         if session_agent is None:
+366             logger.debug(
+367                 "agent_id=<%s> | session_id=<%s> | creating bidi agent",
+368                 agent.agent_id,
+369                 self.session_id,
+370             )
+371 
+372             session_agent = SessionAgent.from_bidi_agent(agent)
+373             self.session_repository.create_agent(self.session_id, session_agent)
+374             # Initialize messages with sequential indices
+375             session_message = None
+376             for i, message in enumerate(agent.messages):
+377                 session_message = SessionMessage.from_message(message, i)
+378                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+379             self._latest_agent_message[agent.agent_id] = session_message
+380         else:
+381             logger.debug(
+382                 "agent_id=<%s> | session_id=<%s> | restoring bidi agent",
+383                 agent.agent_id,
+384                 self.session_id,
+385             )
+386             agent.state = AgentState(session_agent.state)
+387 
+388             session_agent.initialize_bidi_internal_state(agent)
+389 
+390             # BidiAgent has no conversation_manager, so no prepend_messages or removed_message_count
+391             session_messages = self.session_repository.list_messages(
+392                 session_id=self.session_id,
+393                 agent_id=agent.agent_id,
+394                 offset=0,
+395             )
+396             if len(session_messages) > 0:
+397                 self._latest_agent_message[agent.agent_id] = session_messages[-1]
+398 
+399             # Restore the agents messages array
+400             agent.messages = [session_message.to_message() for session_message in session_messages]
+401 
+402             # Fix broken session histories: https://github.com/strands-agents/harness-sdk/issues/859
+403             agent.messages = self._fix_broken_tool_use(agent.messages)
+404 
+405         self._is_new_session = False
+406 
+407     def append_bidi_message(self, message: Message, agent: "BidiAgent", **kwargs: Any) -> None:
+408         """Append a message to the bidirectional agent's session.
+409 
+410         Args:
+411             message: Message to add to the agent in the session
+412             agent: BidiAgent to append the message to
+413             **kwargs: Additional keyword arguments for future extensibility.
+414         """
+415         # Calculate the next index (0 if this is the first message, otherwise increment the previous index)
+416         latest_agent_message = self._latest_agent_message[agent.agent_id]
+417         if latest_agent_message:
+418             next_index = latest_agent_message.message_id + 1
+419         else:
+420             next_index = 0
+421 
+422         session_message = SessionMessage.from_message(message, next_index)
+423         self._latest_agent_message[agent.agent_id] = session_message
+424         self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+425 
+426     def sync_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+427         """Serialize and update the bidirectional agent into the session repository.
+428 
+429         Args:
+430             agent: BidiAgent to sync to the session.
+431             **kwargs: Additional keyword arguments for future extensibility.
+432         """
+433         self.session_repository.update_agent(
+434             self.session_id,
+435             SessionAgent.from_bidi_agent(agent),
+436         )
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>strands-py/src/strands/tools/_tool_helpers.py</file>
+<class>None</class>
+<method>generate_missing_tool_result_content</method>
+<code>
+19 def generate_missing_tool_result_content(tool_use_ids: list[str]) -> list[ContentBlock]:
+20     """Generate ToolResult content blocks for orphaned ToolUse message."""
+21     return [
+22         {
+23             "toolResult": {
+24                 "toolUseId": tool_use_id,
+25                 "status": "error",
+26                 "content": [{"text": "Tool was interrupted."}],
+27             }
+28         }
+29         for tool_use_id in tool_use_ids
+30     ]
+
+</code><intended_behavior>This function should generate accurate toolResult content blocks corresponding to the provided toolUse IDs with consistent error status and content. It should produce one toolResult block per orphaned toolUse ID. The existing functionality can be maintained, but if needed it should be reviewed to ensure strict one-to-one correspondence in counts.</intended_behavior>]
+2026-09-01 02:38:54.364 | DEBUG    | app.inference:_run_one_task:315 - Gathered enough information. Invoking write_patch.
+2026-09-01 02:38:54.364 | INFO     | app.inference:write_patch_iterative:69 - Start generating patches without reviewer
+2026-09-01 02:38:54.364 | DEBUG    | app.agents.agent_write_patch:_write_patch:173 - <agent write patch> is_first_try: True
+2026-09-01 02:39:25.331 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=6317, output_tokens=2305, cost=0.002331
+2026-09-01 02:39:26.254 | INFO     | app.inference:write_patch_iterative:76 - Generated applicable patch: 0
+2026-09-01 02:39:26.254 | INFO     | app.inference:write_patch_iterative:80 - Begin evaluating patch: 0
+2026-09-01 02:39:26.255 | INFO     | app.inference:write_patch_iterative:88 - Patch 0 passed evaluation. Ending patch generation
+2026-09-01 02:39:26.255 | INFO     | app.inference:_run_one_task:337 - Invoked write_patch. Since there is no reproducer, the workflow will be terminated.
+2026-09-01 02:39:26.255 | INFO     | app.inference:run_one_task:129 - Overall retry 0 succeeded; ending workflow
+2026-09-01 02:39:26.255 | INFO     | app.inference:run_one_task:134 - Starting patch selection
+2026-09-01 02:39:26.260 | INFO     | app.inference:run_one_task:139 - Selected patch output_0/extracted_patch_0.diff. Reason: no-agent,single-pass-regression
+2026-09-01 02:39:26.360 | INFO     | app.log:log_and_always_print:229 - Task issue_2296_20260823T174322Z completed successfully.
+2026-09-01 02:39:26.361 | INFO     | app.log:log_and_always_print:229 - Please find the generated patch at: /root/auto-code-rover/patches/result_issue_2296_20260823T174322Z/acr_output/issue_2296_20260823T174322Z_2026-09-01_02-38-15/output_0/extracted_patch_0.diff

@@ -1,0 +1,575 @@
+STDOUT:
+
+[2026-09-01 01:47:21] Total number of tasks: 1
+
+[2026-09-01 01:47:21] Total number of processes: 1
+
+[2026-09-01 01:47:21] Task group info: (number of groups: 1)
+
+[2026-09-01 01:47:21]   local: 1 tasks
+
+[2026-09-01 01:47:21] Running in single process mode.
+
+[2026-09-01 01:47:21] ============= Running task issue_2090_20260729T190151Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Context compression can split a multi-tool call/result batch and send an invalid provider request                           │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## Prerequisites                                                                                                                                │
+│                                                                                                                                                 │
+│ -  I have searched the existing issues and discussions, and this is not a duplicate.                                                            │
+│ -  This is a bug, not a usage question.                                                                                                         │
+│                                                                                                                                                 │
+│ ## Background / Description                                                                                                                     │
+│                                                                                                                                                 │
+│ Context compression can split a valid multi-tool assistant message between a tool call and its matching result.                                 │
+│                                                                                                                                                 │
+│ I reproduced this on the current `main` branch at commit `1f433fd7ff2b27f9d98f9385779b5c436c6487ee`.                                            │
+│                                                                                                                                                 │
+│ A normal Agent run with two tool calls naturally generated one `AssistantMsg` with the following `Msg.content` shape. The block order and IDs   │
+│ below are from the real run; only the repeated tool output text is abbreviated:                                                                 │
+│                                                                                                                                                 │
+│ ```json                                                                                                                                         │
+│ [                                                                                                                                               │
+│   {                                                                                                                                             │
+│     "type": "thinking",                                                                                                                         │
+│     "id": "fb50b86ab2174054888b74b52850d400"                                                                                                    │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "tool_call",                                                                                                                        │
+│     "id": "call_00_uER2QtaMLuqheXpzyCT47644",                                                                                                   │
+│     "name": "first_long_tool",                                                                                                                  │
+│     "input": "{\"value\": \"hello\"}"                                                                                                           │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "tool_call",                                                                                                                        │
+│     "id": "call_01_BII3hlgWzRcrVWaM7HTk7265",                                                                                                   │
+│     "name": "second_long_tool",                                                                                                                 │
+│     "input": "{\"value\": \"world\"}"                                                                                                           │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "tool_result",                                                                                                                      │
+│     "id": "call_00_uER2QtaMLuqheXpzyCT47644",                                                                                                   │
+│     "name": "first_long_tool",                                                                                                                  │
+│     "output": ["FIRST:hello: ... repeated ..."]                                                                                                 │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "tool_result",                                                                                                                      │
+│     "id": "call_01_BII3hlgWzRcrVWaM7HTk7265",                                                                                                   │
+│     "name": "second_long_tool",                                                                                                                 │
+│     "output": ["SECOND:world: ... repeated ..."]                                                                                                │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "thinking",                                                                                                                         │
+│     "id": "a6b20208e3b34407b8692f14245c2fc8"                                                                                                    │
+│   },                                                                                                                                            │
+│   {                                                                                                                                             │
+│     "type": "text",                                                                                                                             │
+│     "id": "70b6fc8e0cc445cd8992ad89d2c4a345",                                                                                                   │
+│     "text": "Both tools have been called..."                                                                                                    │
+│   }                                                                                                                                             │
+│ ]                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ With a reserve budget of 548 tokens, `Agent._split_context_for_compression()` produced:                                                         │
+│                                                                                                                                                 │
+│ ```text                                                                                                                                         │
+│ to_compress:                                                                                                                                    │
+│ thinking, call1, call2, result1                                                                                                                 │
+│                                                                                                                                                 │
+│ to_reserve:                                                                                                                                     │
+│ result2, thinking, text                                                                                                                         │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The compression request therefore contains two tool calls but only the result for the first call. A strict OpenAI-compatible provider rejects   │
+│ the request before AgentScope can update `state.context`.                                                                                       │
+│                                                                                                                                                 │
+│ ### Expected behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ - Context compression should never split matching tool calls and results.                                                                       │
+│ - If a complete multi-tool batch cannot fit in the reserve budget, the complete batch should be moved to the compressed side.                   │
+│ - Both the compression request and the reserved context should remain valid.                                                                    │
+│                                                                                                                                                 │
+│ ### Root cause                                                                                                                                  │
+│                                                                                                                                                 │
+│ The current boundary adjustment is performed only once.                                                                                         │
+│                                                                                                                                                 │
+│ Starting from a boundary after `call1`, it detects that `result1` is unmatched in the reserved suffix and moves the boundary through `result1`. │
+│ This also moves `call2` to the compressed side while leaving `result2` reserved, creating a new unmatched pair that is not checked again:       │
+│                                                                                                                                                 │
+│ ```text                                                                                                                                         │
+│ Original:                                                                                                                                       │
+│ call1, call2, result1, result2                                                                                                                  │
+│                                                                                                                                                 │
+│ Initial boundary:                                                                                                                               │
+│ call1 | call2, result1, result2                                                                                                                 │
+│                                                                                                                                                 │
+│ After the one-pass adjustment:                                                                                                                  │
+│ call1, call2, result1 | result2                                                                                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This is an independently reproducible context-compression bug. I am not claiming that it is the root cause of the separately reported #2067.    │
+│                                                                                                                                                 │
+│ ## Error Messages                                                                                                                               │
+│                                                                                                                                                 │
+│ ```shell                                                                                                                                        │
+│ BadRequestError: Error code: 400 - {                                                                                                            │
+│   'error': {                                                                                                                                    │
+│     'message': "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool  │
+│ messages following tool_calls message)",                                                                                                        │
+│     'type': 'invalid_request_error',                                                                                                            │
+│     'param': None,                                                                                                                              │
+│     'code': 'invalid_request_error'                                                                                                             │
+│   }                                                                                                                                             │
+│ }                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Steps to Reproduce                                                                                                                           │
+│                                                                                                                                                 │
+│ Run the following from an AgentScope source checkout so that `tests.utils.MockModel` is available:                                              │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import asyncio                                                                                                                                  │
+│ import json                                                                                                                                     │
+│                                                                                                                                                 │
+│ from tests.utils import MockModel                                                                                                               │
+│                                                                                                                                                 │
+│ from agentscope.agent import Agent                                                                                                              │
+│ from agentscope.formatter import OpenAIChatFormatter                                                                                            │
+│ from agentscope.message import (                                                                                                                │
+│     AssistantMsg,                                                                                                                               │
+│     TextBlock,                                                                                                                                  │
+│     ToolCallBlock,                                                                                                                              │
+│     ToolResultBlock,                                                                                                                            │
+│     ToolResultState,                                                                                                                            │
+│     UserMsg,                                                                                                                                    │
+│ )                                                                                                                                               │
+│ from agentscope.state import AgentState                                                                                                         │
+│ from agentscope.tool import Toolkit                                                                                                             │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ async def main():                                                                                                                               │
+│     agent = Agent(                                                                                                                              │
+│         name="Friday",                                                                                                                          │
+│         system_prompt="",                                                                                                                       │
+│         model=MockModel(context_size=1000),                                                                                                     │
+│         toolkit=Toolkit(),                                                                                                                      │
+│         state=AgentState(                                                                                                                       │
+│             session_id="multi-tool-compression",                                                                                                │
+│             context=[                                                                                                                           │
+│                 UserMsg("User", "old" * 80),                                                                                                    │
+│                 AssistantMsg(                                                                                                                   │
+│                     "Friday",                                                                                                                   │
+│                     [                                                                                                                           │
+│                         ToolCallBlock(                                                                                                          │
+│                             id="tc1",                                                                                                           │
+│                             name="first_tool",                                                                                                  │
+│                             input=json.dumps({"value": "a" * 80}),                                                                              │
+│                         ),                                                                                                                      │
+│                         ToolCallBlock(                                                                                                          │
+│                             id="tc2",                                                                                                           │
+│                             name="second_tool",                                                                                                 │
+│                             input=json.dumps({"value": "b" * 80}),                                                                              │
+│                         ),                                                                                                                      │
+│                         ToolResultBlock(                                                                                                        │
+│                             id="tc1",                                                                                                           │
+│                             name="first_tool",                                                                                                  │
+│                             output=[TextBlock(text="first result " * 8)],                                                                       │
+│                             state=ToolResultState.SUCCESS,                                                                                      │
+│                         ),                                                                                                                      │
+│                         ToolResultBlock(                                                                                                        │
+│                             id="tc2",                                                                                                           │
+│                             name="second_tool",                                                                                                 │
+│                             output=[TextBlock(text="second result " * 8)],                                                                      │
+│                             state=ToolResultState.SUCCESS,                                                                                      │
+│                         ),                                                                                                                      │
+│                         TextBlock(text="Both tools completed."),                                                                                │
+│                     ],                                                                                                                          │
+│                 ),                                                                                                                              │
+│                 UserMsg("User", "latest question"),                                                                                             │
+│             ],                                                                                                                                  │
+│         ),                                                                                                                                      │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│     to_compress, to_reserve = (                                                                                                                 │
+│         await agent._split_context_for_compression(                                                                                             │
+│             to_reserved_tokens=86,                                                                                                              │
+│             tools=[],                                                                                                                           │
+│         )                                                                                                                                       │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│     print([                                                                                                                                     │
+│         [(block.type, block.id) for block in msg.get_content_blocks()]                                                                          │
+│         for msg in to_compress                                                                                                                  │
+│     ])                                                                                                                                          │
+│     print([                                                                                                                                     │
+│         [(block.type, block.id) for block in msg.get_content_blocks()]                                                                          │
+│         for msg in to_reserve                                                                                                                   │
+│     ])                                                                                                                                          │
+│                                                                                                                                                 │
+│     formatted = await OpenAIChatFormatter().format(to_reserve)                                                                                  │
+│     print(json.dumps(formatted, indent=2))                                                                                                      │
+│                                                                                                                                                 │
+│     assert formatted[0]["role"] == "tool"                                                                                                       │
+│     assert formatted[0]["tool_call_id"] == "tc2"                                                                                                │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ asyncio.run(main())                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Run:                                                                                                                                            │
+│                                                                                                                                                 │
+│ ```shell                                                                                                                                        │
+│ python reproduce.py                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The reserved context starts with an orphan tool result for `tc2`.                                                                               │
+│                                                                                                                                                 │
+│ ## Environment                                                                                                                                  │
+│                                                                                                                                                 │
+│ - AgentScope Version: 2.0.4 / main commit `1f433fd7ff2b27f9d98f9385779b5c436c6487ee`                                                            │
+│ - Python Version: 3.11.9                                                                                                                        │
+│ - OS: Windows 10.0.22621                                                                                                                        │
+│ - Live verification provider: DeepSeek `deepseek-v4-pro` through the OpenAI-compatible API                                                      │
+│                                                                                                                                                 │
+│ ## Proposed fix                                                                                                                                 │
+│                                                                                                                                                 │
+│ A focused fix could repeatedly validate the adjusted boundary until it becomes stable. This preserves the existing block-level compression      │
+│ behavior while ensuring that moving one result cannot create another split pair.                                                                │
+│                                                                                                                                                 │
+│ No public API change or new dependency should be needed. If this scope looks appropriate, I would be happy to submit a focused PR with a        │
+│ deterministic multi-tool regression test.                                                                                                       │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1696, output_tokens=13, cost=0.000262
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1874, output_tokens=937, cost=0.000843
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  import sys                                                        │
+│  import asyncio                                                    │
+│  import json                                                       │
+│                                                                    │
+│  from tests.utils import MockModel                                 │
+│                                                                    │
+│  from agentscope.agent import Agent                                │
+│  from agentscope.formatter import OpenAIChatFormatter              │
+│  from agentscope.message import (                                  │
+│      AssistantMsg,                                                 │
+│      TextBlock,                                                    │
+│      ToolCallBlock,                                                │
+│      ToolResultBlock,                                              │
+│      ToolResultState,                                              │
+│      UserMsg,                                                      │
+│  )                                                                 │
+│  from agentscope.state import AgentState                           │
+│  from agentscope.tool import Toolkit                               │
+│                                                                    │
+│                                                                    │
+│  async def main():                                                 │
+│      agent = Agent(                                                │
+│          name="Friday",                                            │
+│          system_prompt="",                                         │
+│          model=MockModel(context_size=1000),                       │
+│          toolkit=Toolkit(),                                        │
+│          state=AgentState(                                         │
+│              session_id="multi-tool-compression",                  │
+│              context=[                                             │
+│                  UserMsg("User", "old" * 80),                      │
+│                  AssistantMsg(                                     │
+│                      "Friday",                                     │
+│                      [                                             │
+│                          ToolCallBlock(                            │
+│                              id="tc1",                             │
+│                              name="first_tool",                    │
+│                              input=json.dumps({"value": "a" * 80}  │
+│                          ),                                        │
+│                          ToolCallBlock(                            │
+│                              id="tc2",                             │
+│                              name="second_tool",                   │
+│                              input=json.dumps({"value": "b" * 80}  │
+│                          ),                                        │
+│                          ToolResultBlock(                          │
+│                              id="tc1",                             │
+│                              name="first_tool",                    │
+│                              output=[TextBlock(text="first result  │
+│  * 8)],                                                            │
+│                              state=ToolResultState.SUCCESS,        │
+│                          ),                                        │
+│                          ToolResultBlock(                          │
+│                              id="tc2",                             │
+│                              name="second_tool",                   │
+│                              output=[TextBlock(text="second resul  │
+│  " * 8)],                                                          │
+│                              state=ToolResultState.SUCCESS,        │
+│                          ),                                        │
+│                          TextBlock(text="Both tools completed."),  │
+│                      ],                                            │
+│                  ),                                                │
+│                  UserMsg("User", "latest question"),               │
+│              ],                                                    │
+│          ),                                                        │
+│      )                                                             │
+│                                                                    │
+│      to_compress, to_reserve = (                                   │
+│          await agent._split_context_for_compression(               │
+│              to_reserved_tokens=86,                                │
+│              tools=[],                                             │
+│          )                                                         │
+│      )                                                             │
+│                                                                    │
+│      # We expect the reserved context to start with a tool_result  │
+│  matching the last tool_call in reserved.                          │
+│      # If the bug is present, the first reserved block is an       │
+│  unmatched tool_result.                                            │
+│                                                                    │
+│      # Collect first blocks of each AssistantMsg in reserved:      │
+│      reserved_first_blocks = []                                    │
+│      for msg in to_reserve:                                        │
+│          content = msg.get_content_blocks()                        │
+│          if not content:                                           │
+│              continue                                              │
+│          reserved_first_blocks.append((content[0].type,            │
+│  content[0].id))                                                   │
+│                                                                    │
+│      # In particular, check if there is any orphan tool_result     │
+│  separated from its matching tool_call.                            │
+│      # The repro shows that the first block in reserved is a       │
+│  tool_result block for tc2 but call2 is compressed side.           │
+│                                                                    │
+│      # Also check for unmatched tool_result in reserved:           │
+│      try:                                                          │
+│          # We expect: reserved must not start with tool_result     │
+│  missing matching tool_call in reserved                            │
+│          # Here we conservatively assert no "tool_result" appears  │
+│  before the matching "tool_call" in reserved                       │
+│                                                                    │
+│          # Gather tool_call ids in reserved                        │
+│          reserved_tool_call_ids = set()                            │
+│          for msg in to_reserve:                                    │
+│              for block in msg.get_content_blocks():                │
+│                  if block.type == "tool_call":                     │
+│                      reserved_tool_call_ids.add(block.id)          │
+│                                                                    │
+│          # Check tool_result blocks in reserved                    │
+│          for msg in to_reserve:                                    │
+│              for block in msg.get_content_blocks():                │
+│                  if block.type == "tool_result":                   │
+│                      # If the tool_result id is not in             │
+│  reserved_tool_call_ids,                                           │
+│                      # we have an orphan tool_result in reserved   │
+│  (the bug)                                                         │
+│                      if block.id not in reserved_tool_call_ids:    │
+│                          raise AssertionError(                     │
+│                              f"Orphan tool_result with             │
+│  id={block.id} in reserved context without matching tool_call."    │
+│                          )                                         │
+│      except AssertionError as e:                                   │
+│          print_stacktrace(e)                                       │
+│          raise                                                     │
+│                                                                    │
+│      # If no assertion error, exit with 0                          │
+│      print("No orphan tool_result found in reserved context,       │
+│  compression is correct.")                                         │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      try:                                                          │
+│          asyncio.run(main())                                       │
+│      except AssertionError:                                        │
+│          sys.exit(1)                                               │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 01:47:35] Task issue_2090_20260729T190151Z failed with exception: .
+
+[2026-09-01 01:47:35] No patch generated. You can try running ACR again.
+
+[2026-09-01 01:47:35] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 01:47:21.142 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_2090_20260729T190151Z =============
+2026-09-01 01:47:21.297 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 01:47:23.915 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1696, output_tokens=13, cost=0.000262
+2026-09-01 01:47:35.202 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1874, output_tokens=937, cost=0.000843
+2026-09-01 01:47:35.332 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x70b681f24d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x70b6778e5070>]}
+    └ <function run_task_groups at 0x70b67792a340>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x70b6778e5070>]
+    └ <function run_tasks_serial at 0x70b67792a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x70b6778e5070>
+    └ <function run_task_in_subprocess at 0x70b67792a5c0>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x70b6778e5070>
+    │        │      └ <function run_raw_task at 0x70b67792a660>
+    │        └ <function ProcessPoolExecutor.submit at 0x70b6817ecae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x70b677c49580>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x70b6817ec860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x70b677c49580>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x70b6817ec9a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x70b677c49580>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x70b6817eca40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x70b677c49580>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x70b6819e02c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x70b681a44fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+    │    └ <function Popen._launch at 0x70b6778dc2c0>
+    └ <multiprocessing.popen_fork.Popen object at 0x70b677922540>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x70b6819e0cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x70b6819e0220>
+    └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x70b6778e5b50>, <multiprocessing.queues.SimpleQueue object at 0x70b6783957...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+    │    └ <function _process_worker at 0x70b6817e7c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2714426 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x70b6819b2b40>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x70b6778e6120>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x70b6819b2b40>
+        │         └ <function run_raw_task at 0x70b67792a660>
+        └ <concurrent.futures.process._CallItem object at 0x70b6819b2b40>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_2090_20260729T190151Z/acr_output/issue_2090_20260729T190151Z_2026-09-01_01-47-21'
+             │            │    └ <function RawLocalTask.to_task at 0x70b677929f80>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x70b6778e6120>
+             └ <function do_inference at 0x70b67792a840>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x70b6779f07c0>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x70b67827f7e0>
+       │                 │         │            └ PlainTask(commit_hash='89ce2cf6666ec6f699d55f3e930e7582e85bc8a9', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2090', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x70b677dbdfd0>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_2090_20260729T190151Z/acr_output/issue_2090_20260729T190151Z_2026-09-01...
+       └ <function _run_one_task at 0x70b6779f1a80>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x70b67827c180>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x70b6778e4a70>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x70b67827fc40>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x70b6778e4a70>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x70b67827e3e0>
+                   │    └ PlainTask(commit_hash='89ce2cf6666ec6f699d55f3e930e7582e85bc8a9', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2090', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x70b6778e4a70>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 01:47:35.337 | INFO     | app.log:log_and_always_print:229 - Task issue_2090_20260729T190151Z failed with exception: .
+2026-09-01 01:47:35.338 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

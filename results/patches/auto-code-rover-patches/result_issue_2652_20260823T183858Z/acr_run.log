@@ -1,0 +1,372 @@
+STDOUT:
+
+[2026-09-01 03:33:33] Total number of tasks: 1
+
+[2026-09-01 03:33:33] Total number of processes: 1
+
+[2026-09-01 03:33:33] Task group info: (number of groups: 1)
+
+[2026-09-01 03:33:33]   local: 1 tasks
+
+[2026-09-01 03:33:33] Running in single process mode.
+
+[2026-09-01 03:33:33] ============= Running task issue_2652_20260823T183858Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] Empty content block ({}) in BedrockModel raises bare StopIteration → corrupts Future under asyncio.to_thread (Py 3.11 hang)  │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the latest minor and patch version of Strands                                                                              │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched ./issues and there are no duplicates of my issue (related: #1993, #1056 — same line 740, different trigger; neither covers   │
+│ the empty-dict / `StopIteration` case)                                                                                                          │
+│                                                                                                                                                 │
+│ ### SDK Language                                                                                                                                │
+│                                                                                                                                                 │
+│ Python                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ 1.42.0 (line unchanged on `main` as of this report)                                                                                             │
+│                                                                                                                                                 │
+│ ### Language Runtime Version                                                                                                                    │
+│                                                                                                                                                 │
+│ Python 3.11                                                                                                                                     │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ Amazon Linux 2023 (reproduces on any Python 3.11)                                                                                               │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ `BedrockModel._format_request_message_content` (`strands/models/bedrock.py:740`) ends with:                                                     │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")                                                                     │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ When a content block is an **empty dict** `{}` (no recognized key), `next(iter(content))` is evaluated *while building the f-string* — and on   │
+│ an empty dict it raises a bare **`StopIteration`** before the intended `TypeError` is ever constructed.                                         │
+│                                                                                                                                                 │
+│ Minimal repro (no async, no OTEL — shows the bare `StopIteration` directly):                                                                    │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ from strands.models.bedrock import BedrockModel                                                                                                 │
+│                                                                                                                                                 │
+│ m = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")                                                                       │
+│ # A message whose content list contains an empty block:                                                                                         │
+│ m._format_bedrock_messages([{"role": "user", "content": [{}]}])                                                                                 │
+│ # -> raises StopIteration (not the intended TypeError)                                                                                          │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ In real use this surfaces when conversation **history** contains a message with an empty content block (e.g. a tool/UI integration that         │
+│ persists a block with no recognized key). The block falls through every `if "x" in content` branch to line 740.                                 │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ An unsupported or empty content block should raise a catchable, descriptive `TypeError` (as the code intends and the docstring promises:        │
+│ "Raises: TypeError: If the content block type is not supported by Bedrock."), regardless of whether the block is empty.                         │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ A bare `StopIteration` escapes. Because `_format_request_message_content` is reached via `_stream`, which the SDK dispatches through            │
+│ `asyncio.to_thread`, the `StopIteration` propagates into the chained `concurrent.futures.Future`. On **Python 3.11**, `Future.set_exception`    │
+│ rejects it:                                                                                                                                     │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ TypeError: StopIteration interacts badly with generators and cannot be raised into a Future                                                     │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This fires in a **detached `_chain_future._set_state` callback** with **no application frames** in the visible traceback — the originating      │
+│ `bedrock.py:740` is erased from the surfaced error, making it extremely hard to diagnose (the agent simply hangs, with only asyncio-internal    │
+│ frames shown). Captured stack at the point of escape:                                                                                           │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│   File ".../strands/models/bedrock.py", line 963, in _stream                                                                                    │
+│     request = self._format_request(messages, tool_specs, system_prompt_content, tool_choice)                                                    │
+│   File ".../strands/models/bedrock.py", line 274, in _format_request                                                                            │
+│     "messages": self._format_bedrock_messages(messages),                                                                                        │
+│   File ".../strands/models/bedrock.py", line 489, in _format_bedrock_messages                                                                   │
+│     formatted_content = self._format_request_message_content(content_block)                                                                     │
+│   File ".../strands/models/bedrock.py", line 740, in _format_request_message_content                                                            │
+│     raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")                                                                 │
+│                                      ^^^^^^^^^^^^^^^^^^^                                                                                        │
+│ StopIteration                                                                                                                                   │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ (On Python 3.12+ the symptom changes — `Future.set_exception` wraps `StopIteration` as a `RuntimeError` rather than re-raising `TypeError` — so │
+│ the turn fails fast instead of hanging indefinitely, but the underlying bug remains.)                                                           │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ The hang is especially severe because the offending content block lives in conversation **history**: once an empty block is persisted, *every   │
+│ subsequent turn* that loads that history hits line 740 and wedges, even though the turn itself is otherwise valid.                              │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ Make line 740 robust to empty/keyless content so it always raises the intended `TypeError`, never a bare `StopIteration`:                       │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ content_type = next(iter(content), None)                                                                                                        │
+│ raise TypeError(f"content_type=<{content_type}> | unsupported type")                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The key point: `next(iter(content))` must never be the expression that raises, because a bare `StopIteration` is mis-propagated by asyncio when │
+│ the call runs under `asyncio.to_thread`. An explicit empty-block guard at the top of the method would also work.                                │
+│                                                                                                                                                 │
+│ Note #1993 hardened this same path by adding `reasoningContent` to a skip-list, but the underlying `next(iter(...))` fragility — and            │
+│ specifically the empty-dict case — were not addressed.                                                                                          │
+│                                                                                                                                                 │
+│ ### Related Issues                                                                                                                              │
+│                                                                                                                                                 │
+│ - #1993 (OpenAIResponsesModel / `reasoningContent` block → `TypeError` at this line)                                                            │
+│ - #1056 (`reasoning_content` unsupported type)                                                                                                  │
+│                                                                                                                                                 │
+│ Both hit line 740 with a *populated* unsupported block, so `next(iter(content))` returns a key and the intended `TypeError` is raised cleanly.  │
+│ This report is the **empty-dict `{}` → bare `StopIteration`** variant, which additionally triggers the async Future corruption / hang.          │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1314, output_tokens=13, cost=0.000205
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1492, output_tokens=396, cost=0.000461
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  import sys                                                        │
+│                                                                    │
+│  try:                                                              │
+│      from strands.models.bedrock import BedrockModel               │
+│  except ImportError as e:                                          │
+│      print(f"ERROR: Cannot import BedrockModel from                │
+│  strands.models.bedrock: {e}", file=sys.stderr)                    │
+│      sys.exit(1)                                                   │
+│                                                                    │
+│                                                                    │
+│  def main():                                                       │
+│      m =                                                           │
+│  BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v  │
+│  0")                                                               │
+│      try:                                                          │
+│          # This should raise the intended TypeError, but if the b  │
+│  is present,                                                       │
+│          # next(iter({})) raises StopIteration instead.            │
+│          m._format_bedrock_messages([{"role": "user", "content":   │
+│  [{}]}])                                                           │
+│      except StopIteration as e:                                    │
+│          # The bug is present: StopIteration bubbles up instead o  │
+│  intended TypeError.                                               │
+│          print_stacktrace(e)                                       │
+│          # Fail the script with an assertion error indicating the  │
+│  bug reproduces.                                                   │
+│          raise AssertionError("Bug reproduced: bare StopIteration  │
+│  raised instead of TypeError") from e                              │
+│      except TypeError:                                             │
+│          # Expected: TypeError raised, no bare StopIteration.      │
+│          pass                                                      │
+│      else:                                                         │
+│          # No exception raised: unexpected, fail.                  │
+│          raise AssertionError("No exception raised for unsupporte  │
+│  empty content block")                                             │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 03:33:42] Task issue_2652_20260823T183858Z failed with exception: .
+
+[2026-09-01 03:33:42] No patch generated. You can try running ACR again.
+
+[2026-09-01 03:33:42] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 03:33:33.686 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_2652_20260823T183858Z =============
+2026-09-01 03:33:34.073 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 03:33:36.836 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1314, output_tokens=13, cost=0.000205
+2026-09-01 03:33:42.239 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1492, output_tokens=396, cost=0.000461
+2026-09-01 03:33:42.361 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x77b05f420d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x77b0551c8f50>]}
+    └ <function run_task_groups at 0x77b055216340>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x77b0551c8f50>]
+    └ <function run_tasks_serial at 0x77b0552163e0>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x77b0551c8f50>
+    └ <function run_task_in_subprocess at 0x77b0552165c0>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x77b0551c8f50>
+    │        │      └ <function run_raw_task at 0x77b055216660>
+    │        └ <function ProcessPoolExecutor.submit at 0x77b05f060ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77b0558401d0>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x77b05f060860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77b0558401d0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x77b05f0609a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77b0558401d0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x77b05f060a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77b0558401d0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x77b05f2542c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x77b05f2b8fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+    │    └ <function Popen._launch at 0x77b0551c02c0>
+    └ <multiprocessing.popen_fork.Popen object at 0x77b0551c9520>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x77b05f254cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x77b05f254220>
+    └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x77b05520a9c0>, <multiprocessing.queues.SimpleQueue object at 0x77b05520ab...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+    │    └ <function _process_worker at 0x77b05f05bc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2742048 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x77b0556ff650>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x77b0551c9d90>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x77b0556ff650>
+        │         └ <function run_raw_task at 0x77b055216660>
+        └ <concurrent.futures.process._CallItem object at 0x77b0556ff650>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_2652_20260823T183858Z/acr_output/issue_2652_20260823T183858Z_2026-09-01_03-33-33'
+             │            │    └ <function RawLocalTask.to_task at 0x77b055215f80>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x77b0551c9d90>
+             └ <function do_inference at 0x77b055216840>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x77b0552dc7c0>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x77b055b6b7e0>
+       │                 │         │            └ PlainTask(commit_hash='27aca694c3cfe9de94244923456dc74bdff784fc', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2652', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x77b0551c9d60>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_2652_20260823T183858Z/acr_output/issue_2652_20260823T183858Z_2026-09-01...
+       └ <function _run_one_task at 0x77b0552dda80>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x77b055b68180>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x77b0555b82f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x77b055b6bc40>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x77b0555b82f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\n\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(...
+                   │    │    └ <function Task.execute_reproducer at 0x77b055b6a3e0>
+                   │    └ PlainTask(commit_hash='27aca694c3cfe9de94244923456dc74bdff784fc', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2652', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x77b0555b82f0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 03:33:42.366 | INFO     | app.log:log_and_always_print:229 - Task issue_2652_20260823T183858Z failed with exception: .
+2026-09-01 03:33:42.368 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

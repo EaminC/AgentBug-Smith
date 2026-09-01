@@ -1,0 +1,439 @@
+STDOUT:
+
+[2026-09-01 04:35:09] Total number of tasks: 1
+
+[2026-09-01 04:35:09] Total number of processes: 1
+
+[2026-09-01 04:35:09] Task group info: (number of groups: 1)
+
+[2026-09-01 04:35:09]   local: 1 tasks
+
+[2026-09-01 04:35:09] Running in single process mode.
+
+[2026-09-01 04:35:09] ============= Running task issue_3623_20260822T144230Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: AfterModelCallEvent.retry drops the discarded call's token usage from accumulated_usage                                            │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched [./issues](./issues?q=) and there are no duplicates of my issue                                                              │
+│                                                                                                                                                 │
+│ ### SDK Language                                                                                                                                │
+│                                                                                                                                                 │
+│ Python                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ Installed from source, commit `23541039` (42 commits past `python/v1.50.2`)                                                                     │
+│                                                                                                                                                 │
+│ ### Language Runtime Version                                                                                                                    │
+│                                                                                                                                                 │
+│ Python 3.12.3                                                                                                                                   │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ Linux (Docker `python:3.12-slim`)                                                                                                               │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ git clone                                                                                                                                       │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ Register an `AfterModelCallEvent` hook that retries the first model response (based on its content) and accepts the second. Give the two        │
+│ responses different `usage` in their stream `metadata` event so the two can be told apart.                                                      │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import asyncio                                                                                                                                  │
+│ import strands                                                                                                                                  │
+│ from strands import Agent                                                                                                                       │
+│ from strands.models import Model                                                                                                                │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ class ScriptedModel(Model):                                                                                                                     │
+│     def __init__(self, responses):                                                                                                              │
+│         self._responses = responses                                                                                                             │
+│         self._index = 0                                                                                                                         │
+│                                                                                                                                                 │
+│     def format_request(self, messages, tool_specs=None, system_prompt=None):                                                                    │
+│         return None                                                                                                                             │
+│                                                                                                                                                 │
+│     def format_chunk(self, event):                                                                                                              │
+│         return event                                                                                                                            │
+│                                                                                                                                                 │
+│     def get_config(self):                                                                                                                       │
+│         return {}                                                                                                                               │
+│                                                                                                                                                 │
+│     def update_config(self, **kwargs):                                                                                                          │
+│         pass                                                                                                                                    │
+│                                                                                                                                                 │
+│     async def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):                                                      │
+│         return                                                                                                                                  │
+│         yield                                                                                                                                   │
+│                                                                                                                                                 │
+│     async def stream(self, messages, tool_specs=None, system_prompt=None, tool_choice=None, **kwargs):                                          │
+│         text, usage = self._responses                                                                                                           │
+│         self._index += 1                                                                                                                        │
+│         yield {"messageStart": {"role": "assistant"}}                                                                                           │
+│         yield {"contentBlockStart": {"start": {}}}                                                                                              │
+│         yield {"contentBlockDelta": {"delta": {"text": text}}}                                                                                  │
+│         yield {"contentBlockStop": {}}                                                                                                          │
+│         yield {"messageStop": {"stopReason": "end_turn"}}                                                                                       │
+│         yield {"metadata": {"usage": usage, "metrics": {"latencyMs": 0}}}                                                                       │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ async def main():                                                                                                                               │
+│     model = ScriptedModel(                                                                                                                      │
+│         [                                                                                                                                       │
+│             ("Short", {"inputTokens": 1000, "outputTokens": 1000, "totalTokens": 2000}),                                                        │
+│             ("This is a much longer and more detailed response",                                                                                │
+│              {"inputTokens": 7, "outputTokens": 7, "totalTokens": 14}),                                                                         │
+│         ]                                                                                                                                       │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│     class MinLengthRetryHook:                                                                                                                   │
+│         def register_hooks(self, registry):                                                                                                     │
+│             registry.add_callback(strands.hooks.AfterModelCallEvent, self.handle_after_model_call)                                              │
+│                                                                                                                                                 │
+│         async def handle_after_model_call(self, event):                                                                                         │
+│             if event.stop_response:                                                                                                             │
+│                 text = "".join(b.get("text", "") for b in event.stop_response.message.get("content", []))                                       │
+│                 if len(text) < 10:                                                                                                              │
+│                     event.retry = True                                                                                                          │
+│                                                                                                                                                 │
+│     agent = Agent(model=model, hooks=[MinLengthRetryHook()])                                                                                    │
+│     result = agent("Generate a response")                                                                                                       │
+│     print("final text:", result.message["content"][0]["text"])                                                                                  │
+│     print("accumulated_usage:", agent.event_loop_metrics.accumulated_usage)                                                                     │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ asyncio.run(main())                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Run with `pip install -e strands-py` (no extras needed), no live model provider required.                                                       │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ Both model calls actually happened and both reported real usage. `agent.event_loop_metrics.accumulated_usage` should reflect that the first     │
+│ (retried) call was a real, billed call too, so the total should be at least 1007/1007.                                                          │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ `accumulated_usage` only shows the second call's usage:                                                                                         │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ accumulated_usage: {'inputTokens': 7, 'outputTokens': 7, 'totalTokens': 14}                                                                     │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The first call's 1000/1000 tokens never show up anywhere. The hook only rejected the *response*, not the fact that the call was made, so from a │
+│ billing/accounting standpoint those tokens are just gone.                                                                                       │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ This also means a `Limits(total_tokens=...)` cap can undercount real spend whenever a hook retries a model call: the retried-away call's usage  │
+│ never reaches the running total that the limit is checked against.                                                                              │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1010, output_tokens=13, cost=0.000159
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1188, output_tokens=784, cost=0.000649
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│                                                                    │
+│  import asyncio                                                    │
+│  import strands                                                    │
+│  from strands import Agent                                         │
+│  from strands.models import Model                                  │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  class ScriptedModel(Model):                                       │
+│      def __init__(self, responses):                                │
+│          self._responses = responses                               │
+│          self._index = 0                                           │
+│                                                                    │
+│      def format_request(self, messages, tool_specs=None,           │
+│  system_prompt=None):                                              │
+│          return None                                               │
+│                                                                    │
+│      def format_chunk(self, event):                                │
+│          return event                                              │
+│                                                                    │
+│      def get_config(self):                                         │
+│          return {}                                                 │
+│                                                                    │
+│      def update_config(self, **kwargs):                            │
+│          pass                                                      │
+│                                                                    │
+│      async def structured_output(self, output_model, prompt,       │
+│  system_prompt=None, **kwargs):                                    │
+│          return                                                    │
+│          yield                                                     │
+│                                                                    │
+│      async def stream(self, messages, tool_specs=None,             │
+│  system_prompt=None, tool_choice=None, **kwargs):                  │
+│          # yield the scripted answer and usage metadata            │
+│          text, usage = self._responses[self._index]                │
+│          self._index += 1                                          │
+│          yield {"messageStart": {"role": "assistant"}}             │
+│          yield {"contentBlockStart": {"start": {}}}                │
+│          yield {"contentBlockDelta": {"delta": {"text": text}}}    │
+│          yield {"contentBlockStop": {}}                            │
+│          yield {"messageStop": {"stopReason": "end_turn"}}         │
+│          yield {"metadata": {"usage": usage, "metrics":            │
+│  {"latencyMs": 0}}}                                                │
+│                                                                    │
+│                                                                    │
+│  async def main():                                                 │
+│      model = ScriptedModel(                                        │
+│          [                                                         │
+│              ("Short", {"inputTokens": 1000, "outputTokens": 1000  │
+│  "totalTokens": 2000}),                                            │
+│              ("This is a much longer and more detailed response",  │
+│               {"inputTokens": 7, "outputTokens": 7, "totalTokens"  │
+│  14}),                                                             │
+│          ]                                                         │
+│      )                                                             │
+│                                                                    │
+│      class MinLengthRetryHook:                                     │
+│          def register_hooks(self, registry):                       │
+│              registry.add_callback(strands.hooks.AfterModelCallEv  │
+│  t, self.handle_after_model_call)                                  │
+│                                                                    │
+│          async def handle_after_model_call(self, event):           │
+│              if event.stop_response:                               │
+│                  text = "".join(b.get("text", "") for b in         │
+│  event.stop_response.message.get("content", []))                   │
+│                  if len(text) < 10:                                │
+│                      event.retry = True                            │
+│                                                                    │
+│      agent = Agent(model=model, hooks=[MinLengthRetryHook()])      │
+│                                                                    │
+│      result = agent("Generate a response")                         │
+│                                                                    │
+│      # We want the accumulated_usage across all calls including    │
+│  retried calls.                                                    │
+│      accumulated = agent.event_loop_metrics.accumulated_usage      │
+│                                                                    │
+│      try:                                                          │
+│          # The first call has 1000/1000 usage, second has 7/7.     │
+│          # The bug: accumulated_usage misses the first call usage  │
+│  entirely.                                                         │
+│          # So check that totalTokens >= 2000, otherwise raise to   │
+│  show bug.                                                         │
+│          if accumulated.get("totalTokens", 0) < 2000:              │
+│              raise AssertionError(                                 │
+│                  f"accumulated_usage only shows second call usage  │
+│  missing retried call. accumulated_usage: {accumulated}"           │
+│              )                                                     │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          raise                                                     │
+│                                                                    │
+│      print("Test passed. accumulated_usage includes retried call   │
+│  usage.")                                                          │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      import sys                                                    │
+│                                                                    │
+│      try:                                                          │
+│          asyncio.run(main())                                       │
+│      except AssertionError:                                        │
+│          sys.exit(1)                                               │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 04:35:22] Task issue_3623_20260822T144230Z failed with exception: .
+
+[2026-09-01 04:35:22] No patch generated. You can try running ACR again.
+
+[2026-09-01 04:35:22] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 04:35:09.693 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_3623_20260822T144230Z =============
+2026-09-01 04:35:09.935 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 04:35:12.600 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1010, output_tokens=13, cost=0.000159
+2026-09-01 04:35:22.147 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1188, output_tokens=784, cost=0.000649
+2026-09-01 04:35:22.289 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x760ca9700d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x760c9f8d3dd0>]}
+    └ <function run_task_groups at 0x760c9f562340>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x760c9f8d3dd0>]
+    └ <function run_tasks_serial at 0x760c9f5623e0>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x760c9f8d3dd0>
+    └ <function run_task_in_subprocess at 0x760c9f5625c0>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x760c9f8d3dd0>
+    │        │      └ <function run_raw_task at 0x760c9f562660>
+    │        └ <function ProcessPoolExecutor.submit at 0x760ca9300ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x760c9fa89100>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x760ca9300860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x760c9fa89100>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x760ca93009a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x760c9fa89100>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x760ca9300a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x760c9fa89100>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x760ca94dc2c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x760ca9540fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+    │    └ <function Popen._launch at 0x760c9f4f82c0>
+    └ <multiprocessing.popen_fork.Popen object at 0x760c9f553200>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x760ca94dccc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x760ca94dc220>
+    └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x760c9f552bd0>, <multiprocessing.queues.SimpleQueue object at 0x760c9f5533...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+    │    └ <function _process_worker at 0x760ca92fbc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2749712 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x760ca94aeb10>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x760c9f515e20>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x760ca94aeb10>
+        │         └ <function run_raw_task at 0x760c9f562660>
+        └ <concurrent.futures.process._CallItem object at 0x760ca94aeb10>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_3623_20260822T144230Z/acr_output/issue_3623_20260822T144230Z_2026-09-01_04-35-09'
+             │            │    └ <function RawLocalTask.to_task at 0x760c9f561f80>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x760c9f515e20>
+             └ <function do_inference at 0x760c9f562840>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x760c9f6187c0>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x760c9fea77e0>
+       │                 │         │            └ PlainTask(commit_hash='23541039fa1fef14bbfd738d54aface5ffefd625', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3623', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x760c9f601340>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_3623_20260822T144230Z/acr_output/issue_3623_20260822T144230Z_2026-09-01...
+       └ <function _run_one_task at 0x760c9f619a80>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x760c9fea4180>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x760c9f871580>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x760c9fea7c40>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x760c9f871580>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\n\nimport asyncio\nimport strands\nfrom strands import Agent\nfrom strands.models import Model\n\n\ndef prin...
+                   │    │    └ <function Task.execute_reproducer at 0x760c9fea63e0>
+                   │    └ PlainTask(commit_hash='23541039fa1fef14bbfd738d54aface5ffefd625', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3623', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x760c9f871580>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 04:35:22.293 | INFO     | app.log:log_and_always_print:229 - Task issue_3623_20260822T144230Z failed with exception: .
+2026-09-01 04:35:22.294 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

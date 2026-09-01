@@ -1,0 +1,365 @@
+STDOUT:
+
+[2026-08-31 23:48:31] Total number of tasks: 1
+
+[2026-08-31 23:48:31] Total number of processes: 1
+
+[2026-08-31 23:48:31] Task group info: (number of groups: 1)
+
+[2026-08-31 23:48:31]   local: 1 tasks
+
+[2026-08-31 23:48:31] Running in single process mode.
+
+[2026-08-31 23:48:31] ============= Running task issue_1702_20260729T084553Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: FunctionTool fails when the documented plain function tool returns a string                                                 │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## Describe the bug                                                                                                                             │
+│                                                                                                                                                 │
+│ The documentation shows that a plain Python function can be wrapped as a tool:                                                                  │
+│                                                                                                                                                 │
+│ https://docs.agentscope.io/v2/building-blocks/tool#wrap-function-as-tool                                                                        │
+│                                                                                                                                                 │
+│ In that section, the `get_weather` example returns a plain `str`:                                                                               │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ def get_weather(location: str) -> str:                                                                                                          │
+│     """Get weather information.                                                                                                                 │
+│                                                                                                                                                 │
+│     Args:                                                                                                                                       │
+│         location (`str`):                                                                                                                       │
+│             The location to get weather for.                                                                                                    │
+│     """                                                                                                                                         │
+│     return f"The weather in {location} is sunny."                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This suggests that a normal Python function returning `str` can be wrapped and used as a tool.                                                  │
+│                                                                                                                                                 │
+│ However, when such a function is wrapped with `FunctionTool`, the tool call fails at runtime. `FunctionTool.__call__()` currently returns the   │
+│ wrapped function result directly, while `Toolkit.call_tool()` only accepts tool results in AgentScope's internal tool result format.            │
+│                                                                                                                                                 │
+│ As a result, the documented `get_weather(...) -> str` style function does not work unless users manually return `ToolChunk`.                    │
+│                                                                                                                                                 │
+│ ## To Reproduce                                                                                                                                 │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import asyncio                                                                                                                                  │
+│ import json                                                                                                                                     │
+│                                                                                                                                                 │
+│ from agentscope.message import ToolCallBlock                                                                                                    │
+│ from agentscope.state import AgentState                                                                                                         │
+│ from agentscope.tool import FunctionTool, Toolkit                                                                                               │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ def get_weather(location: str) -> str:                                                                                                          │
+│     """Get weather information.                                                                                                                 │
+│                                                                                                                                                 │
+│     Args:                                                                                                                                       │
+│         location (`str`):                                                                                                                       │
+│             The location to get weather for.                                                                                                    │
+│     """                                                                                                                                         │
+│     return f"The weather in {location} is sunny."                                                                                               │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ async def main() -> None:                                                                                                                       │
+│     toolkit = Toolkit(tools=[FunctionTool(get_weather)])                                                                                        │
+│                                                                                                                                                 │
+│     tool_call = ToolCallBlock(                                                                                                                  │
+│         id="call_get_weather",                                                                                                                  │
+│         name="get_weather",                                                                                                                     │
+│         input=json.dumps({"location": "Chengdu"}),                                                                                              │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│     async for item in toolkit.call_tool(tool_call, AgentState()):                                                                               │
+│         print(item)                                                                                                                             │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ asyncio.run(main())                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Run:                                                                                                                                            │
+│                                                                                                                                                 │
+│ ```bash                                                                                                                                         │
+│ python reproduce_function_tool_plain_return.py                                                                                                  │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Error messages                                                                                                                               │
+│                                                                                                                                                 │
+│ The call fails because the wrapped function returns `str`:                                                                                      │
+│                                                                                                                                                 │
+│ ```text                                                                                                                                         │
+│ DeveloperOrientedException: The tool function must return a ToolChunk object, or an AsyncGenerator/Generator of ToolChunk objects, but got      │
+│ <class 'str'>.                                                                                                                                  │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Expected behavior                                                                                                                            │
+│                                                                                                                                                 │
+│ The documented function should work when wrapped as a tool:                                                                                     │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ def get_weather(location: str) -> str:                                                                                                          │
+│     return f"The weather in {location} is sunny."                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ It should produce a successful text tool result instead of raising a `DeveloperOrientedException`.                                              │
+│                                                                                                                                                 │
+│ If `FunctionTool` intentionally requires wrapped functions to return `ToolChunk`, then the documentation should state that explicitly and       │
+│ update the `get_weather` example accordingly.                                                                                                   │
+│                                                                                                                                                 │
+│ ## Environment                                                                                                                                  │
+│                                                                                                                                                 │
+│ - AgentScope Version: 2.0.0, source checkout from `main` at commit `fca8f160`                                                                   │
+│ - Python Version: 3.11.14                                                                                                                       │
+│ - OS: macOS 26.5 arm64                                                                                                                          │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=700, output_tokens=13, cost=0.000113
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=878, output_tokens=403, cost=0.000374
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import asyncio                                                    │
+│  import json                                                       │
+│  import sys                                                        │
+│                                                                    │
+│  from agentscope.message import ToolCallBlock                      │
+│  from agentscope.state import AgentState                           │
+│  from agentscope.tool import FunctionTool, Toolkit                 │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  def get_weather(location: str) -> str:                            │
+│      """Get weather information.                                   │
+│                                                                    │
+│      Args:                                                         │
+│          location (`str`):                                         │
+│              The location to get weather for.                      │
+│      """                                                           │
+│      return f"The weather in {location} is sunny."                 │
+│                                                                    │
+│                                                                    │
+│  async def main() -> None:                                         │
+│      toolkit = Toolkit(tools=[FunctionTool(get_weather)])          │
+│                                                                    │
+│      tool_call = ToolCallBlock(                                    │
+│          id="call_get_weather",                                    │
+│          name="get_weather",                                       │
+│          input=json.dumps({"location": "Chengdu"}),                │
+│      )                                                             │
+│                                                                    │
+│      try:                                                          │
+│          async for item in toolkit.call_tool(tool_call,            │
+│  AgentState()):                                                    │
+│              # Should produce some ToolChunk or compatible output  │
+│  not error.                                                        │
+│              pass                                                  │
+│      except Exception as e:                                        │
+│          # If the error about return type is present, print        │
+│  stacktrace and raise AssertionError                               │
+│          if "The tool function must return a ToolChunk object" in  │
+│  str(e):                                                           │
+│              print_stacktrace(e)                                   │
+│              raise AssertionError(                                 │
+│                  "FunctionTool does not accept plain str return,   │
+│  reproducing the reported issue."                                  │
+│              ) from e                                              │
+│          else:                                                     │
+│              # Unexpected exception, just re-raise                 │
+│              raise                                                 │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      asyncio.run(main())                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-08-31 23:48:40] Task issue_1702_20260729T084553Z failed with exception: .
+
+[2026-08-31 23:48:40] No patch generated. You can try running ACR again.
+
+[2026-08-31 23:48:40] Finished all tasks sequentially.
+
+
+STDERR:
+2026-08-31 23:48:31.784 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1702_20260729T084553Z =============
+2026-08-31 23:48:31.910 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-08-31 23:48:34.472 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=700, output_tokens=13, cost=0.000113
+2026-08-31 23:48:40.609 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=878, output_tokens=403, cost=0.000374
+2026-08-31 23:48:40.752 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7e6e9d420d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7e6e931b4ef0>]}
+    └ <function run_task_groups at 0x7e6e9327e340>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7e6e931b4ef0>]
+    └ <function run_tasks_serial at 0x7e6e9327e3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7e6e931b4ef0>
+    └ <function run_task_in_subprocess at 0x7e6e9327e5c0>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7e6e931b4ef0>
+    │        │      └ <function run_raw_task at 0x7e6e9327e660>
+    │        └ <function ProcessPoolExecutor.submit at 0x7e6e9d060ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7e6e9350f680>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7e6e9d060860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7e6e9350f680>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7e6e9d0609a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7e6e9350f680>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7e6e9d060a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7e6e9350f680>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7e6e9d2542c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7e6e9d2b8fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+    │    └ <function Popen._launch at 0x7e6e931dc2c0>
+    └ <multiprocessing.popen_fork.Popen object at 0x7e6e931b5850>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7e6e9d254cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7e6e9d254220>
+    └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7e6e93222cf0>, <multiprocessing.queues.SimpleQueue object at 0x7e6e932225...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+    │    └ <function _process_worker at 0x7e6e9d05bc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2675860 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7e6e9d226b40>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7e6e931b5e50>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7e6e9d226b40>
+        │         └ <function run_raw_task at 0x7e6e9327e660>
+        └ <concurrent.futures.process._CallItem object at 0x7e6e9d226b40>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1702_20260729T084553Z/acr_output/issue_1702_20260729T084553Z_2026-08-31_23-48-31'
+             │            │    └ <function RawLocalTask.to_task at 0x7e6e9327df80>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7e6e931b5e50>
+             └ <function do_inference at 0x7e6e9327e840>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7e6e932e87c0>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7e6e93b777e0>
+       │                 │         │            └ PlainTask(commit_hash='926108a14d58757379bfa3d4af8d21fca898b82d', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1702', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7e6e93e41c40>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1702_20260729T084553Z/acr_output/issue_1702_20260729T084553Z_2026-08-31...
+       └ <function _run_one_task at 0x7e6e932e9a80>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7e6e93b74180>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7e6e932d30e0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7e6e93b77c40>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7e6e932d30e0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport asyncio\nimport json\nimport sys\n\nfrom agentscope.message import ToolCallBlock\nfrom agentscope.st...
+                   │    │    └ <function Task.execute_reproducer at 0x7e6e93b763e0>
+                   │    └ PlainTask(commit_hash='926108a14d58757379bfa3d4af8d21fca898b82d', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1702', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7e6e932d30e0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-08-31 23:48:40.756 | INFO     | app.log:log_and_always_print:229 - Task issue_1702_20260729T084553Z failed with exception: .
+2026-08-31 23:48:40.757 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

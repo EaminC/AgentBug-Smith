@@ -1,0 +1,354 @@
+STDOUT:
+
+[2026-09-01 00:05:37] Total number of tasks: 1
+
+[2026-09-01 00:05:37] Total number of processes: 1
+
+[2026-09-01 00:05:37] Task group info: (number of groups: 1)
+
+[2026-09-01 00:05:37]   local: 1 tasks
+
+[2026-09-01 00:05:37] Running in single process mode.
+
+[2026-09-01 00:05:37] ============= Running task issue_1704_20260730T020559Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: RedisMemory.add() leaks msg keys with TTL=-1 due to pipeline SCAN race                                                      │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ **Describe the bug**                                                                                                                            │
+│                                                                                                                                                 │
+│ Due to the usage of redis pipeline usage. When RedisMemory.add() stores a new message, the last msg key created in each add() call never gets a │
+│ TTL set. Over multiple conversation turns, this causes orphan keys to accumulate in Redis and never expire.                                     │
+│                                                                                                                                                 │
+│ **Root Cause**                                                                                                                                  │
+│ In _working_memory/_redis_memory.py, add() (line ~540-554) uses a pipeline to batch Redis operations:                                           │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ pipe = self._client.pipeline()                                                                                                                  │
+│                                                                                                                                                 │
+│ for m in messages_to_add:                                                                                                                       │
+│     await pipe.set(                                    # ① SET queued, NOT written yet                                                          │
+│         self._get_message_key(m.id),                                                                                                            │
+│         json.dumps(m.to_dict(), ensure_ascii=False),                                                                                            │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│ await self._refresh_session_ttl(pipe=pipe)            # ② SCAN Redis → add expire for found keys                                                │
+│ await pipe.execute()                                   # ③ SET + EXPIRE committed together                                                      │
+│ _refresh_session_ttl() (line ~277-313) uses SCAN to discover all session keys, then adds EXPIRE commands to the same pipeline:                  │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ async def _refresh_session_ttl(self, pipe=None):                                                                                                │
+│     ...                                                                                                                                         │
+│     cursor, keys = await self._client.scan(            # SCAN runs IMMEDIATELY                                                                  │
+│         cursor, match=self._get_session_pattern(),                                                                                              │
+│     )                                                                                                                                           │
+│     for key in keys:                                                                                                                            │
+│         await pipe.expire(key, self.key_ttl)           # EXPIRE queued in pipe                                                                  │
+│ The problem: At step ②, SCAN runs immediately against Redis's current state. But the pipe.set() at step ① has not been committed yet — it's     │
+│ still queued in the pipeline. So SCAN cannot see the new msg key, and no EXPIRE command is queued for it. When pipe.execute() runs at step ③,   │
+│ the new msg key is created but has no TTL (TTL=-1).                                                                                             │
+│                                                                                                                                                 │
+│ The next add() call WILL find this key via SCAN and fix its TTL, but the last msg key in the current call remains uncovered.                    │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ **To Reproduce**                                                                                                                                │
+│ import asyncio                                                                                                                                  │
+│ from agentscope.memory import RedisMemory                                                                                                       │
+│                                                                                                                                                 │
+│ async def test():                                                                                                                               │
+│     mem = RedisMemory(                                                                                                                          │
+│         session_id="test-session",                                                                                                              │
+│         user_id="test-user",                                                                                                                    │
+│         host="127.0.0.1",                                                                                                                       │
+│         port=6379,                                                                                                                              │
+│         password="...",                                                                                                                         │
+│         key_prefix="test:",                                                                                                                     │
+│         key_ttl=10,                     # TTL 10 seconds                                                                                        │
+│     )                                                                                                                                           │
+│     from agentscope.message import Msg                                                                                                          │
+│     await mem.add(Msg("user", "hello", "user"))                                                                                                 │
+│     # Wait a few seconds, then check Redis:                                                                                                     │
+│     #   test:user_id:test-user:session:test-session:messages  → TTL ~10s ✅                                                                     │
+│     #   test:user_id:test-user:session:test-session:msg:xxx   → TTL=-1  ❌                                                                      │
+│                                                                                                                                                 │
+│ **Expected behavior**                                                                                                                           │
+│ All keys created by add() should have TTL set, so they expire automatically when the session expires.                                           │
+│                                                                                                                                                 │
+│ **Error messages**                                                                                                                              │
+│ None                                                                                                                                            │
+│                                                                                                                                                 │
+│ **Environment (please complete the following information):**                                                                                    │
+│                                                                                                                                                 │
+│ - AgentScope Version: 1.0.19.post1                                                                                                              │
+│ - Python Version: 3.11.15                                                                                                                       │
+│ - OS: windows                                                                                                                                   │
+│                                                                                                                                                 │
+│ **Suggested Fix**                                                                                                                               │
+│ Call pipe.expire() immediately after pipe.set() for the new message key:                                                                        │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ for m in messages_to_add:                                                                                                                       │
+│     await pipe.set(                                                                                                                             │
+│         self._get_message_key(m.id),                                                                                                            │
+│         json.dumps(m.to_dict(), ensure_ascii=False),                                                                                            │
+│     )                                                                                                                                           │
+│     if self.key_ttl is not None:                                                                                                                │
+│         await pipe.expire(self._get_message_key(m.id), self.key_ttl)  # ← add this                                                              │
+│ The same should apply to pipe.rpush() for the session key (line ~532) and mark-related keys (lines ~547-549) if they are also new.              │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=869, output_tokens=13, cost=0.000138
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1047, output_tokens=518, cost=0.000468
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import asyncio                                                    │
+│  import sys                                                        │
+│  import json                                                       │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  async def main():                                                 │
+│      try:                                                          │
+│          from agentscope.memory import RedisMemory                 │
+│          from agentscope.message import Msg                        │
+│      except ImportError as e:                                      │
+│          print("Make sure you run this script in the project root  │
+│  where agentscope is installed.")                                  │
+│          print_stacktrace(e)                                       │
+│          sys.exit(1)                                               │
+│                                                                    │
+│      # Create RedisMemory instance with short TTL for quick test   │
+│      mem = RedisMemory(                                            │
+│          session_id="test-session",                                │
+│          user_id="test-user",                                      │
+│          host="127.0.0.1",                                         │
+│          port=6379,                                                │
+│          password=None,                                            │
+│          key_prefix="test:",                                       │
+│          key_ttl=10,  # TTL 10 seconds                             │
+│      )                                                             │
+│                                                                    │
+│      # Add a message to RedisMemory                                │
+│      msg = Msg("user", "hello", "user")                            │
+│      await mem.add(msg)                                            │
+│                                                                    │
+│      # Wait a short moment to ensure commands have been executed   │
+│      await asyncio.sleep(0.5)                                      │
+│                                                                    │
+│      # Now check TTL of last msg key stored by add()               │
+│      key = mem._get_message_key(msg.id)                            │
+│                                                                    │
+│      ttl = await mem._client.ttl(key)                              │
+│      # print for reference (can be removed)                        │
+│      print(f"TTL for key {key}: {ttl}")                            │
+│                                                                    │
+│      # Per reported bug, TTL could be -1 indicating no expiration  │
+│  set                                                               │
+│      # Assert TTL > 0 to detect the bug                            │
+│      assert ttl > 0, (                                             │
+│          "Bug detected: message key stored by RedisMemory.add() h  │
+│  no TTL (ttl=-1). "                                                │
+│          "This indicates keys leak due to pipeline SCAN race."     │
+│      )                                                             │
+│                                                                    │
+│      # If assertion passes, exit with 0 meaning issue fixed        │
+│      print("Test passed: message key has TTL set properly.")       │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      try:                                                          │
+│          asyncio.run(main())                                       │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          sys.exit(1)                                               │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 00:05:47] Task issue_1704_20260730T020559Z failed with exception: .
+
+[2026-09-01 00:05:47] No patch generated. You can try running ACR again.
+
+[2026-09-01 00:05:47] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 00:05:37.532 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1704_20260730T020559Z =============
+2026-09-01 00:05:37.651 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 00:05:40.168 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=869, output_tokens=13, cost=0.000138
+2026-09-01 00:05:47.096 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1047, output_tokens=518, cost=0.000468
+2026-09-01 00:05:47.196 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x716b39020d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x716b2ece5160>]}
+    └ <function run_task_groups at 0x716b2ed2a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x716b2ece5160>]
+    └ <function run_tasks_serial at 0x716b2ed2a480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x716b2ece5160>
+    └ <function run_task_in_subprocess at 0x716b2ed2a660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x716b2ece5160>
+    │        │      └ <function run_raw_task at 0x716b2ed2a700>
+    │        └ <function ProcessPoolExecutor.submit at 0x716b38c30ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x716b2f262960>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x716b38c30860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x716b2f262960>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x716b38c309a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x716b2f262960>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x716b38c30a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x716b2f262960>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x716b38e182c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x716b38e7cfe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+    │    └ <function Popen._launch at 0x716b2ecdc360>
+    └ <multiprocessing.popen_fork.Popen object at 0x716b2ece5c40>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x716b38e18cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x716b38e18220>
+    └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x716b2ece5ac0>, <multiprocessing.queues.SimpleQueue object at 0x716b2f1a10...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+    │    └ <function _process_worker at 0x716b38c2bc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2679584 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x716b2ed22300>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x716b2ece6030>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x716b2ed22300>
+        │         └ <function run_raw_task at 0x716b2ed2a700>
+        └ <concurrent.futures.process._CallItem object at 0x716b2ed22300>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1704_20260730T020559Z/acr_output/issue_1704_20260730T020559Z_2026-09-01_00-05-37'
+             │            │    └ <function RawLocalTask.to_task at 0x716b2ed2a020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x716b2ece6030>
+             └ <function do_inference at 0x716b2ed2a8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x716b2edf0860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x716b2f67f880>
+       │                 │         │            └ PlainTask(commit_hash='ef7546206971ef87b8f5cf837b6441a8b1bf0d8b', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1704', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x716b2ece6db0>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1704_20260730T020559Z/acr_output/issue_1704_20260730T020559Z_2026-09-01...
+       └ <function _run_one_task at 0x716b2edf1b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x716b2f67c220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x716b2f0cfad0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x716b2f67fce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x716b2f0cfad0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport asyncio\nimport sys\nimport json\n\ndef print_stacktrace(e: Exception):\n    import traceback\n    t...
+                   │    │    └ <function Task.execute_reproducer at 0x716b2f67e480>
+                   │    └ PlainTask(commit_hash='ef7546206971ef87b8f5cf837b6441a8b1bf0d8b', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1704', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x716b2f0cfad0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 00:05:47.200 | INFO     | app.log:log_and_always_print:229 - Task issue_1704_20260730T020559Z failed with exception: .
+2026-09-01 00:05:47.201 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

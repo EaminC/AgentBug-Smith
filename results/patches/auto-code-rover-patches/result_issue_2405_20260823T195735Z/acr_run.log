@@ -1,0 +1,386 @@
+STDOUT:
+
+[2026-09-01 03:00:04] Total number of tasks: 1
+
+[2026-09-01 03:00:04] Total number of processes: 1
+
+[2026-09-01 03:00:04] Task group info: (number of groups: 1)
+
+[2026-09-01 03:00:04]   local: 1 tasks
+
+[2026-09-01 03:00:04] Running in single process mode.
+
+[2026-09-01 03:00:04] ============= Running task issue_2405_20260823T195735Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] Strands python OpenAI responses calls duplicate tool definitions on each turn                                                │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched [./issues](./issues?q=) and there are no duplicates of my issue                                                              │
+│                                                                                                                                                 │
+│ ### SDK Language                                                                                                                                │
+│                                                                                                                                                 │
+│ Python                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ 1.41.0                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Language Runtime Version                                                                                                                    │
+│                                                                                                                                                 │
+│ Python 3.12.9                                                                                                                                   │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ macOS 15.7.2                                                                                                                                    │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ **Problem Description**                                                                                                                         │
+│ While running Strands agents (OpenAI using the Responses API) I noticed unexpected context growth around tool calls. My tool definition size    │
+│ overall is around 10K tokens (I have a lot of tools) and each time Strands would internally call a tool and then make the next call to OpenAI,  │
+│ the context would grow by around 10K more than I was expecting, it was super weird, and I was hitting context limits.                           │
+│                                                                                                                                                 │
+│ **Investigation**                                                                                                                               │
+│ OpenAIResponsesModel._format_request shallow-copies params via ** spread,                                                                       │
+│ so request["tools"] and self.config["params"]["tools"] are the SAME list.                                                                       │
+│ .extend() permanently mutates the config, adding a full copy of every tool                                                                      │
+│ spec on every API call.                                                                                                                         │
+│                                                                                                                                                 │
+│ **Testcase**                                                                                                                                    │
+│ Run this file (you need to put an OPENAI_API_KEY into the env first)                                                                            │
+│ (https://github.com/user-attachments/files/28440956/strands_tool_duplication_bug.py)                                                            │
+│ The idea is that it has an "hello world" tool, and we instruct the agent to call that tool 3 times. We override the _format_request method so   │
+│ we have a place to print the tools array before it gets sent to the next OpenAI call by Strands.                                                │
+│                                                                                                                                                 │
+│ **Testcase Output on Strands 1.41.0***                                                                                                          │
+│ $ python3 strands_tool_duplication_bug.py                                                                                                       │
+│ ```Initial config params tools: 1 entries                                                                                                       │
+│                                                                                                                                                 │
+│ Running agent...                                                                                                                                │
+│                                                                                                                                                 │
+│   API call #1: 2 tools (expect 2): ['web_search', 'hello_world']                                                                                │
+│                                                                                                                                                 │
+│ Tool #1: hello_world                                                                                                                            │
+│   API call #2: 3 tools (expect 2): ['web_search', 'hello_world', 'hello_world']                                                                 │
+│                                                                                                                                                 │
+│ Tool #2: hello_world                                                                                                                            │
+│   API call #3: 4 tools (expect 2): ['web_search', 'hello_world', 'hello_world', 'hello_world']                                                  │
+│                                                                                                                                                 │
+│ Tool #3: hello_world                                                                                                                            │
+│   API call #4: 5 tools (expect 2): ['web_search', 'hello_world', 'hello_world', 'hello_world', 'hello_world']                                   │
+│ Done.                                                                                                                                           │
+│ Agent output: Done.                                                                                                                             │
+│                                                                                                                                                 │
+│ Final config['params']['tools']: 5 entries                                                                                                      │
+│ Expected: 2 (1 web_search + 1 hello_world)                                                                                                      │
+│                                                                                                                                                 │
+│ BUG CONFIRMED: _format_request mutates self.config['params']['tools']                                                                           │
+│ via shared list reference, duplicating all tool specs on every call.                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ I expected that each followup call to OpenAI that was orchestrated by Strands would pass the same (original) list of tools.                     │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ Each followup call to OpenAI that was orchestrated by Strands is passing an increasingly long list of tools, one extra duplicate of each tool   │
+│ is added each round trip, so it can grow quite large.                                                                                           │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ I have tried to search for duplicates and be responsible about filing, but this is my first time, so if I missed something, I apologize and go  │
+│ easy on me!                                                                                                                                     │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ _No response_                                                                                                                                   │
+│                                                                                                                                                 │
+│ ### Related Issues                                                                                                                              │
+│                                                                                                                                                 │
+│ _No response_                                                                                                                                   │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=854, output_tokens=13, cost=0.000136
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1032, output_tokens=667, cost=0.000555
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import copy                                                       │
+│  from typing import List                                           │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  # Simulate a minimal-ish strands environment with the minimal bu  │
+│  reproduction:                                                     │
+│  class OpenAIResponsesModel:                                       │
+│      def __init__(self, config: dict):                             │
+│          # config expected to have "params" dict with a "tools"    │
+│  list inside                                                       │
+│          # This is the original config the user configures, holdi  │
+│  potentially a shared "tools" list                                 │
+│          self.config = config                                      │
+│                                                                    │
+│      def _format_request(self, params: dict):                      │
+│          # here the bug is that params is shallow-copied by        │
+│  **params, so params["tools"] list is the same list inside         │
+│  config["params"]["tools"]                                         │
+│          request = {**params}                                      │
+│                                                                    │
+│          # The bug line: extend mutates params["tools"], which is  │
+│  self.config["params"]["tools"] as well                            │
+│          # We simulate that it extends tools by all tool specs     │
+│  again on every call,                                              │
+│          # causing exponential growth of the list.                 │
+│          # In the bug: this line is causing the mutation:          │
+│          request["tools"].extend(request["tools"])                 │
+│                                                                    │
+│          return request                                            │
+│                                                                    │
+│                                                                    │
+│  def main():                                                       │
+│      import sys                                                    │
+│                                                                    │
+│      # Initial tools: one "web_search" added by default + one      │
+│  "hello_world" user tool                                           │
+│      initial_tools = ["web_search", "hello_world"]                 │
+│      config = {"params": {"tools": initial_tools.copy()}}          │
+│                                                                    │
+│      model = OpenAIResponsesModel(config)                          │
+│                                                                    │
+│      print(f"Initial config params tools:                          │
+│  {len(config['params']['tools'])} entries")                        │
+│                                                                    │
+│      # We run 4 calls simulating multiple agent turn calls         │
+│      for i in range(1, 5):                                         │
+│          # Each time call _format_request with                     │
+│  params=self.config["params"]                                      │
+│          # which shares tools list                                 │
+│          try:                                                      │
+│              req = model._format_request(model.config["params"])   │
+│          except Exception as e:                                    │
+│              print_stacktrace(e)                                   │
+│              sys.exit(1)                                           │
+│                                                                    │
+│          current_tools = req["tools"]                              │
+│          print(f"\n  API call #{i}: {len(current_tools)} tools     │
+│  (expect {len(initial_tools)}): {current_tools}")                  │
+│                                                                    │
+│          # Assert that we did NOT duplicate tools beyond original  │
+│  expected count                                                    │
+│          try:                                                      │
+│              # The assertion fails if the bug is present:          │
+│              assert len(current_tools) == len(initial_tools), (    │
+│                  f"BUG: _format_request mutated                    │
+│  config['params']['tools'] - expected {len(initial_tools)} tools,  │
+│                  f"got {len(current_tools)} tools"                 │
+│              )                                                     │
+│          except AssertionError as e:                               │
+│              print_stacktrace(e)                                   │
+│              raise                                                 │
+│                                                                    │
+│      print("\nDone.")                                              │
+│      print("Agent output: Done.")                                  │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 03:00:18] Task issue_2405_20260823T195735Z failed with exception: .
+
+[2026-09-01 03:00:18] No patch generated. You can try running ACR again.
+
+[2026-09-01 03:00:18] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 03:00:04.981 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_2405_20260823T195735Z =============
+2026-09-01 03:00:05.504 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 03:00:08.536 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=854, output_tokens=13, cost=0.000136
+2026-09-01 03:00:18.037 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1032, output_tokens=667, cost=0.000555
+2026-09-01 03:00:18.151 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7f76df900d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7f76d5764e90>]}
+    └ <function run_task_groups at 0x7f76d578e3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7f76d5764e90>]
+    └ <function run_tasks_serial at 0x7f76d578e480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7f76d5764e90>
+    └ <function run_task_in_subprocess at 0x7f76d578e660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7f76d5764e90>
+    │        │      └ <function run_raw_task at 0x7f76d578e700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7f76df4f4ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f76d5c52c30>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7f76df4f4860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f76d5c52c30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7f76df4f49a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f76d5c52c30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7f76df4f4a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f76d5c52c30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7f76df6d02c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7f76df734fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+    │    └ <function Popen._launch at 0x7f76d5750360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7f76d5738ec0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7f76df6d0cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7f76df6d0220>
+    └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7f76d583ef00>, <multiprocessing.queues.SimpleQueue object at 0x7f76d579eb...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+    │    └ <function _process_worker at 0x7f76df4efc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2737352 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7f76d5c886b0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7f76d5739af0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7f76d5c886b0>
+        │         └ <function run_raw_task at 0x7f76d578e700>
+        └ <concurrent.futures.process._CallItem object at 0x7f76d5c886b0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_2405_20260823T195735Z/acr_output/issue_2405_20260823T195735Z_2026-09-01_03-00-04'
+             │            │    └ <function RawLocalTask.to_task at 0x7f76d578e020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7f76d5739af0>
+             └ <function do_inference at 0x7f76d578e8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7f76d5854860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7f76d60e3880>
+       │                 │         │            └ PlainTask(commit_hash='5fd6c1753859b222a90b21cc9003bf20abcfbbe2', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2405', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7f76d5df8a40>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_2405_20260823T195735Z/acr_output/issue_2405_20260823T195735Z_2026-09-01...
+       └ <function _run_one_task at 0x7f76d5855b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7f76d60e0220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7f76d57b54f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7f76d60e3ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7f76d57b54f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport copy\nfrom typing import List\n\ndef print_stacktrace(e: Exception):\n    import traceback\n    impo...
+                   │    │    └ <function Task.execute_reproducer at 0x7f76d60e2480>
+                   │    └ PlainTask(commit_hash='5fd6c1753859b222a90b21cc9003bf20abcfbbe2', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2405', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7f76d57b54f0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 03:00:18.154 | INFO     | app.log:log_and_always_print:229 - Task issue_2405_20260823T195735Z failed with exception: .
+2026-09-01 03:00:18.155 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

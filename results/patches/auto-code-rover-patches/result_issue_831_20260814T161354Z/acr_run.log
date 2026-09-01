@@ -1,0 +1,380 @@
+STDOUT:
+
+[2026-09-01 06:27:08] Total number of tasks: 1
+
+[2026-09-01 06:27:08] Total number of processes: 1
+
+[2026-09-01 06:27:08] Task group info: (number of groups: 1)
+
+[2026-09-01 06:27:08]   local: 1 tasks
+
+[2026-09-01 06:27:08] Running in single process mode.
+
+[2026-09-01 06:27:08] ============= Running task issue_831_20260814T161354Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] CallbackHandler not being invoked with `Agent.structured_output`                                                             │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched [./issues](./issues?q=) and there are no duplicates of my issue                                                              │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ 1.7.1                                                                                                                                           │
+│                                                                                                                                                 │
+│ ### Python Version                                                                                                                              │
+│                                                                                                                                                 │
+│ 3.12.11                                                                                                                                         │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ 15.6.1                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ from pydantic import BaseModel, Field                                                                                                           │
+│ from strands.models import BedrockModel                                                                                                         │
+│ import json                                                                                                                                     │
+│ from strands import Agent                                                                                                                       │
+│                                                                                                                                                 │
+│ class ContactCard(BaseModel):                                                                                                                   │
+│     name: str = Field(description="The name of the person")                                                                                     │
+│     age: int = Field(description="The age of the person")                                                                                       │
+│     address: str = Field(description="The address of the person")                                                                               │
+│                                                                                                                                                 │
+│ # Create BedrockModel with custom timeout configuration                                                                                         │
+│ bedrock_model = BedrockModel(                                                                                                                   │
+│     model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",                                                                                      │
+│     region_name='us-west-2',                                                                                                                    │
+│     additional_request_fields= {                                                                                                                │
+│         "thinking": {                                                                                                                           │
+│             "type": "enabled",                                                                                                                  │
+│             "budget_tokens": 2048                                                                                                               │
+│         }                                                                                                                                       │
+│     }                                                                                                                                           │
+│ )                                                                                                                                               │
+│ # Let's prep the images for input to our models.                                                                                                │
+│                                                                                                                                                 │
+│ system_prompt = "you are a helpful document understanding agent. You parse documetns into structured data"                                      │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ events = []                                                                                                                                     │
+│ ## Let's createa a quick event callback so we can grab token usage.                                                                             │
+│ def grab_event_callback(**kwargs):                                                                                                              │
+│     # Print the values in kwargs so that we can see everything                                                                                  │
+│     events.append(kwargs)                                                                                                                       │
+│                                                                                                                                                 │
+│ # Create an agent with initial messages                                                                                                         │
+│ agent = Agent(                                                                                                                                  │
+│     model = bedrock_model,                                                                                                                      │
+│     system_prompt=system_prompt,                                                                                                                │
+│     callback_handler=grab_event_callback                                                                                                        │
+│     )                                                                                                                                           │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ cc = agent.structured_output(ContactCard, "Convert the following data to a contact card <input> John, last name Smith, who resides at 123       │
+│ anytown usa, Texas, 78756, and is of age 38</input>")                                                                                           │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ print(events) #Nothing populated here                                                                                                           │
+│ print(cc.model_dump_json(indent = 2))                                                                                                           │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ In the above example, the value of events, which should be populated with intermediate messages from the agent execution, is `[]`               │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ I expect the `events` object to be populated with all events from the execution. I want this so I can account for token usage when calling      │
+│ Agent.structued_output.                                                                                                                         │
+│ I found that I could see events when adding a print statement inthis for loop:                                                                  │
+│ https://github.com/strands-agents/sdk-python/blob/9213bc580824ff6b9f7dab48568c3376bc6a442d/src/strands/agent/agent.py#L516-L518                 │
+│                                                                                                                                                 │
+│ None of the events have the `callback` key.                                                                                                     │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ The `events` list is empty. This changed after upgrading from 1.5.x to 1.7.x                                                                    │
+│                                                                                                                                                 │
+│ ### Additional Context                                                                                                                          │
+│                                                                                                                                                 │
+│ _No response_                                                                                                                                   │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ I believe that we should make the following enhancements to the structured_output functinality.                                                 │
+│                                                                                                                                                 │
+│ - Return the result as an AgentResult with an additional value that includes the object                                                         │
+│ - Do this so the user can access the token usage.                                                                                               │
+│ - Provide a backwards compatible API for users that want to continue to use the `structured_output` format as currently implemented             │
+│ - Do enable the user callback to be enacted                                                                                                     │
+│ - Enhance the testing to include checking for the circular reference.                                                                           │
+│                                                                                                                                                 │
+│ ### Related Issues                                                                                                                              │
+│                                                                                                                                                 │
+│ https://github.com/strands-agents/sdk-python/issues/810, https://github.com/strands-agents/sdk-python/issues/695,                               │
+│ https://github.com/strands-agents/sdk-python/pull/670                                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=891, output_tokens=13, cost=0.000141
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1069, output_tokens=492, cost=0.000456
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      import sys                                                    │
+│      from pydantic import BaseModel, Field                         │
+│      from strands.models import BedrockModel                       │
+│      from strands import Agent                                     │
+│                                                                    │
+│      class ContactCard(BaseModel):                                 │
+│          name: str = Field(description="The name of the person")   │
+│          age: int = Field(description="The age of the person")     │
+│          address: str = Field(description="The address of the      │
+│  person")                                                          │
+│                                                                    │
+│      # Create BedrockModel with custom timeout configuration       │
+│      bedrock_model = BedrockModel(                                 │
+│          model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",    │
+│          region_name='us-west-2',                                  │
+│          additional_request_fields={                               │
+│              "thinking": {                                         │
+│                  "type": "enabled",                                │
+│                  "budget_tokens": 2048                             │
+│              }                                                     │
+│          }                                                         │
+│      )                                                             │
+│                                                                    │
+│      system_prompt = "you are a helpful document understanding     │
+│  agent. You parse documetns into structured data"                  │
+│                                                                    │
+│      events = []                                                   │
+│                                                                    │
+│      def grab_event_callback(**kwargs):                            │
+│          events.append(kwargs)                                     │
+│                                                                    │
+│      agent = Agent(                                                │
+│          model=bedrock_model,                                      │
+│          system_prompt=system_prompt,                              │
+│          callback_handler=grab_event_callback                      │
+│      )                                                             │
+│                                                                    │
+│      try:                                                          │
+│          cc = agent.structured_output(                             │
+│              ContactCard,                                          │
+│              "Convert the following data to a contact card <input  │
+│  John, last name Smith, who resides at 123 anytown usa, Texas,     │
+│  78756, and is of age 38</input>"                                  │
+│          )                                                         │
+│          # If callback is working correctly, events should not be  │
+│  empty                                                             │
+│          if not events:                                            │
+│              raise AssertionError("CallbackHandler was not invoke  │
+│  events list is empty")                                            │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          sys.exit(1)                                               │
+│                                                                    │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 06:27:19] Task issue_831_20260814T161354Z failed with exception: .
+
+[2026-09-01 06:27:19] No patch generated. You can try running ACR again.
+
+[2026-09-01 06:27:19] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 06:27:08.254 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_831_20260814T161354Z =============
+2026-09-01 06:27:08.349 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 06:27:10.771 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=891, output_tokens=13, cost=0.000141
+2026-09-01 06:27:19.415 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1069, output_tokens=492, cost=0.000456
+2026-09-01 06:27:19.525 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x77326ed20d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x773264ad0fe0>]}
+    └ <function run_task_groups at 0x773264b3e3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x773264ad0fe0>]
+    └ <function run_tasks_serial at 0x773264b3e480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x773264ad0fe0>
+    └ <function run_task_in_subprocess at 0x773264b3e660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x773264ad0fe0>
+    │        │      └ <function run_raw_task at 0x773264b3e700>
+    │        └ <function ProcessPoolExecutor.submit at 0x77326e954ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77326517fe30>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x77326e954860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77326517fe30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x77326e9549a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77326517fe30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x77326e954a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x77326517fe30>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x77326eb242c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x77326eb88fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+    │    └ <function Popen._launch at 0x773264aec360>
+    └ <multiprocessing.popen_fork.Popen object at 0x773264b36720>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x77326eb24cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x77326eb24220>
+    └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x773264b372f0>, <multiprocessing.queues.SimpleQueue object at 0x773264b374...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+    │    └ <function _process_worker at 0x77326e94fc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2759001 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x773264ebf680>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x773264ad1fa0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x773264ebf680>
+        │         └ <function run_raw_task at 0x773264b3e700>
+        └ <concurrent.futures.process._CallItem object at 0x773264ebf680>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_831_20260814T161354Z/acr_output/issue_831_20260814T161354Z_2026-09-01_06-27-08'
+             │            │    └ <function RawLocalTask.to_task at 0x773264b3e020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x773264ad1fa0>
+             └ <function do_inference at 0x773264b3e8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x773264c04860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x773265493880>
+       │                 │         │            └ PlainTask(commit_hash='500d01aad514fa5f192fe38eff924ed8989446eb', local_path='/root/auto-code-rover/.acr_cache/acr_ws_831', p...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x773264ad2bd0>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_831_20260814T161354Z/acr_output/issue_831_20260814T161354Z_2026-09-01_0...
+       └ <function _run_one_task at 0x773264c05b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x773265490220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x773264b36ba0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x773265493ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x773264b36ba0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x773265492480>
+                   │    └ PlainTask(commit_hash='500d01aad514fa5f192fe38eff924ed8989446eb', local_path='/root/auto-code-rover/.acr_cache/acr_ws_831', p...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x773264b36ba0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 06:27:19.529 | INFO     | app.log:log_and_always_print:229 - Task issue_831_20260814T161354Z failed with exception: .
+2026-09-01 06:27:19.530 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

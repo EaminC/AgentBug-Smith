@@ -1,0 +1,76 @@
+diff --git a/src/crewai/agents/agent_builder/base_agent_executor_mixin.py b/src/crewai/agents/agent_builder/base_agent_executor_mixin.py
+index 344a526de..52e59dcbd 100644
+--- a/src/crewai/agents/agent_builder/base_agent_executor_mixin.py
++++ b/src/crewai/agents/agent_builder/base_agent_executor_mixin.py
+@@ -58,11 +58,28 @@ class CrewAgentExecutorMixin:
+             and self.crew._external_memory
+         ):
+             try:
++                # Truncate messages content to reduce metadata size and prevent save failures
++                max_content_len = 500
++                truncated_messages = []
++                for msg in self.messages:
++                    if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
++                        truncated_msg = dict(msg)
++                        content = truncated_msg["content"]
++                        if len(content) > max_content_len:
++                            truncated_msg["content"] = content[:max_content_len] + "..."
++                        truncated_messages.append(truncated_msg)
++                    else:
++                        truncated_messages.append(msg)
++
++                truncated_description = self.task.description
++                if isinstance(truncated_description, str) and len(truncated_description) > 500:
++                    truncated_description = truncated_description[:500] + "..."
++
+                 self.crew._external_memory.save(
+                     value=output.text,
+                     metadata={
+-                        "description": self.task.description,
+-                        "messages": self.messages,
++                        "description": truncated_description,
++                        "messages": truncated_messages,
+                     },
+                 )
+             except Exception as e:
+diff --git a/src/crewai/memory/storage/mem0_storage.py b/src/crewai/memory/storage/mem0_storage.py
+index 275d025ca..a93be3e26 100644
+--- a/src/crewai/memory/storage/mem0_storage.py
++++ b/src/crewai/memory/storage/mem0_storage.py
+@@ -97,9 +97,36 @@ class Mem0Storage(Storage):
+             "external": "external"
+         }
+ 
++        def truncate_str(s: str, max_len: int = 500) -> str:
++            if len(s) > max_len:
++                return s[:max_len] + "..."
++            return s
++
++        # Defensive copy and truncate potentially large metadata fields
++        safe_metadata = dict(metadata)
++        # If 'messages' exist and is list of dicts with 'content', truncate their content
++        if "messages" in safe_metadata and isinstance(safe_metadata["messages"], list):
++            truncated_messages = []
++            for msg in safe_metadata["messages"]:
++                if isinstance(msg, dict) and "content" in msg and isinstance(msg["content"], str):
++                    truncated_msg = dict(msg)
++                    truncated_msg["content"] = truncate_str(truncated_msg["content"], 500)
++                    truncated_messages.append(truncated_msg)
++                else:
++                    truncated_messages.append(msg)
++            safe_metadata["messages"] = truncated_messages
++
++        # Truncate 'description' in metadata if exists
++        if "description" in safe_metadata and isinstance(safe_metadata["description"], str):
++            safe_metadata["description"] = truncate_str(safe_metadata["description"], 500)
++
++        # Truncate other string fields in metadata if needed (optional)
++        # Limit total serialized length of metadata to ~2000 chars by truncation of any large string fields
++        # Here we just do messages and description as likely culprits
++
+         # Shared base params
+         params: dict[str, Any] = {
+-            "metadata": {"type": base_metadata[self.memory_type], **metadata},
++            "metadata": {"type": base_metadata[self.memory_type], **safe_metadata},
+             "infer": self.infer
+         }

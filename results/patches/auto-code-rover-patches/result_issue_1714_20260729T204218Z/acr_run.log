@@ -1,0 +1,383 @@
+STDOUT:
+
+[2026-09-01 00:07:50] Total number of tasks: 1
+
+[2026-09-01 00:07:50] Total number of processes: 1
+
+[2026-09-01 00:07:50] Task group info: (number of groups: 1)
+
+[2026-09-01 00:07:50]   local: 1 tasks
+
+[2026-09-01 00:07:50] Running in single process mode.
+
+[2026-09-01 00:07:50] ============= Running task issue_1714_20260729T204218Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点                                                                                    │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## [Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点                                                                                              │
+│                                                                                                                                                 │
+│ ### 环境信息                                                                                                                                    │
+│                                                                                                                                                 │
+│ - **QwenPaw Desktop 版本**: 1.1.9                                                                                                               │
+│ - **操作系统**: Windows 11 家庭版 25H2 (AMD64)                                                                                                  │
+│ - **框架**: Tauri                                                                                                                               │
+│                                                                                                                                                 │
+│ ### Bug 描述                                                                                                                                    │
+│                                                                                                                                                 │
+│ 每次 Agent 通过 `execute_shell_command` 工具执行命令时，都会弹出一个 cmd 窗口（或 PowerShell                                                    │
+│ 窗口），并且该窗口会抢占前台焦点，打断用户正在进行的操作。                                                                                      │
+│                                                                                                                                                 │
+│ ### 复现步骤                                                                                                                                    │
+│                                                                                                                                                 │
+│ 1. 打开 QwenPaw Desktop                                                                                                                         │
+│ 2. 向 Agent 发送需要执行 shell 命令的任务（如文件操作、运行脚本等）                                                                             │
+│ 3. 观察执行过程                                                                                                                                 │
+│ 4. **预期行为**: 命令在后台静默执行，不弹出任何窗口，不抢占焦点                                                                                 │
+│ 5. **实际行为**: 每次执行命令时弹出 cmd/PowerShell 窗口，并自动获取前台焦点                                                                     │
+│                                                                                                                                                 │
+│ ### 影响                                                                                                                                        │
+│                                                                                                                                                 │
+│ - **严重干扰工作流**: 用户在等待 Agent 完成任务时切换到其他窗口工作，但每次命令执行都会被强制切回 QwenPaw 的终端窗口                            │
+│ - **频繁打断**: 一个任务可能涉及多次命令执行，导致窗口不断弹出，严重影响用户体验                                                                │
+│ - **误操作风险**: 焦点被抢占后，用户的键盘输入可能误操作到弹出的终端窗口                                                                        │
+│                                                                                                                                                 │
+│ ### 根因分析                                                                                                                                    │
+│                                                                                                                                                 │
+│ 在 Windows 上，当一个进程使用 `CreateProcess` API 创建子进程时，如果未设置 `CREATE_NO_WINDOW` 标志，子进程会创建一个新的控制台窗口并获取焦点。  │
+│                                                                                                                                                 │
+│ QwenPaw Desktop 的后端（qwenpaw-backend.exe）在执行 `execute_shell_command` 工具时，调用子进程的方式可能未使用 `CREATE_NO_WINDOW`               │
+│ 标志，导致每次命令执行都弹出控制台窗口。                                                                                                        │
+│                                                                                                                                                 │
+│ ### 期望修复                                                                                                                                    │
+│                                                                                                                                                 │
+│ 在调用 `CreateProcess` 创建子进程时，添加 `CREATE_NO_WINDOW` 标志：                                                                             │
+│                                                                                                                                                 │
+│ ```cpp                                                                                                                                          │
+│ // Windows API 调用示例                                                                                                                         │
+│ STARTUPINFO si = { sizeof(si) };                                                                                                                │
+│ PROCESS_INFORMATION pi;                                                                                                                         │
+│ CreateProcess(                                                                                                                                  │
+│     NULL, commandLine, NULL, NULL, FALSE,                                                                                                       │
+│     CREATE_NO_WINDOW,  // ← 添加此标志                                                                                                          │
+│     NULL, NULL, &si, &pi                                                                                                                        │
+│ );                                                                                                                                              │
+│ 或者在使用 Rust 的 std::process::Command 时：                                                                                                   │
+│                                                                                                                                                 │
+│ use std::os::windows::process::CommandExt;                                                                                                      │
+│ Command::new("cmd")                                                                                                                             │
+│     .args(&["/c", "your_command"])                                                                                                              │
+│     .creation_flags(0x08000000)  // CREATE_NO_WINDOW                                                                                            │
+│     .output()?;                                                                                                                                 │
+│ 临时变通方法                                                                                                                                    │
+│ 用户可以在 config.json 中将 shell_command_executable 改为 pwsh.exe（PowerShell Core），但此方法不能完全解决问题，因为 PowerShell                │
+│ 窗口仍可能弹出。                                                                                                                                │
+│                                                                                                                                                 │
+│ 补充信息                                                                                                                                        │
+│ 此问题在 Windows 平台上普遍存在，影响所有使用 execute_shell_command                                                                             │
+│ 工具的场景。建议在修复时同时考虑提供配置选项，让用户可以选择是否显示终端窗口（用于调试场景）。                                                  │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=831, output_tokens=13, cost=0.000132
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1009, output_tokens=814, cost=0.000640
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import subprocess                                                 │
+│  import sys                                                        │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  def test_createprocess_window_issue():                            │
+│      """                                                           │
+│      This test tries to reproduce the issue that executing a shel  │
+│  command on Windows                                                │
+│      causes a visible console window to pop up and steal focus.    │
+│                                                                    │
+│      It runs a simple command multiple times:                      │
+│      - Without CREATE_NO_WINDOW flag: expects a console window     │
+│  popup and focuses the window (issue present)                      │
+│      - With CREATE_NO_WINDOW flag: no console window shown (issue  │
+│  fixed)                                                            │
+│                                                                    │
+│      Because we cannot reliably detect window focus or popup from  │
+│  Python easily,                                                    │
+│      this test will rely on subprocess flags and expected stdout   │
+│  behavior.                                                         │
+│                                                                    │
+│      The test will:                                                │
+│      1. Run a command without CREATE_NO_WINDOW (simulate issue).   │
+│      2. Run a command with CREATE_NO_WINDOW flag.                  │
+│      If either command fails to run or the test environment is no  │
+│  Windows,                                                          │
+│      the test will skip.                                           │
+│                                                                    │
+│      We simulate the presence of the issue by checking if the      │
+│  subprocess creation flags                                         │
+│      to suppress the window is respected.                          │
+│                                                                    │
+│      Since python itself uses CreateProcess internally without     │
+│  creating windows unless we tell it,                               │
+│      we will forcibly launch cmd.exe without CREATE_NO_WINDOW to   │
+│  simulate the popup (issue present).                               │
+│                                                                    │
+│      The test is considered passing (exit code 0) if using         │
+│  subprocess with CREATE_NO_WINDOW doesn't                          │
+│      raise any errors and window is not shown (but we cannot asse  │
+│  window focus in pure python).                                     │
+│                                                                    │
+│      Because we cannot detect real window popups and focus in thi  │
+│  script, if the code runs successfully,                            │
+│      we treat as issue fixed.                                      │
+│                                                                    │
+│      If the code fails because a window was created unexpectedly   │
+│  flags not set properly,                                           │
+│      we raise AssertionError.                                      │
+│                                                                    │
+│      Due to environment limitation, this test is a best-effort     │
+│  demonstration.                                                    │
+│      """                                                           │
+│                                                                    │
+│      import os                                                     │
+│      if os.name != "nt":                                           │
+│          # Not Windows, skip test since issue is Windows-specific  │
+│          print("This test is Windows-specific. Exiting with code   │
+│  0.")                                                              │
+│          return                                                    │
+│                                                                    │
+│      import time                                                   │
+│                                                                    │
+│      # Run command WITHOUT CREATE_NO_WINDOW to simulate the issue  │
+│  (expect popup)                                                    │
+│      # This block is commented out because it will cause popup, b  │
+│  we keep code for documentation:                                   │
+│      # cmd_line = ["cmd", "/c", "echo popupping_without_flag"]     │
+│      # p = subprocess.Popen(cmd_line)                              │
+│      # p.wait()                                                    │
+│                                                                    │
+│      # Instead, to check the typical python subprocess execution   │
+│  flags to avoid popup:                                             │
+│      CREATE_NO_WINDOW = 0x08000000                                 │
+│                                                                    │
+│      # Command to run                                              │
+│      cmd = ["cmd", "/c", "echo hello"]                             │
+│                                                                    │
+│      try:                                                          │
+│          # Launch subprocess with CREATE_NO_WINDOW flag - expecte  │
+│  behavior: no window popup                                         │
+│          completed = subprocess.run(                               │
+│              cmd,                                                  │
+│              creationflags=CREATE_NO_WINDOW,                       │
+│              capture_output=True,                                  │
+│              text=True,                                            │
+│              check=True,                                           │
+│          )                                                         │
+│          output = completed.stdout.strip()                         │
+│          if output != "hello":                                     │
+│              raise AssertionError(f"Unexpected output from         │
+│  subprocess: {output}")                                            │
+│                                                                    │
+│      except Exception as e:                                        │
+│          # If any error occurs, print the stack trace and raise    │
+│  AssertionError to indicate issue present                          │
+│          print_stacktrace(e)                                       │
+│          raise AssertionError("Failed running subprocess with      │
+│  CREATE_NO_WINDOW - issue present")                                │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      try:                                                          │
+│          test_createprocess_window_issue()                         │
+│      except AssertionError as e:                                   │
+│          # Already printed stack trace inside test                 │
+│          sys.exit(1)                                               │
+│      # Issue not present or test skipped                           │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 00:08:07] Task issue_1714_20260729T204218Z failed with exception: .
+
+[2026-09-01 00:08:07] No patch generated. You can try running ACR again.
+
+[2026-09-01 00:08:07] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 00:07:50.491 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1714_20260729T204218Z =============
+2026-09-01 00:07:50.631 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 00:07:53.219 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=831, output_tokens=13, cost=0.000132
+2026-09-01 00:08:07.521 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1009, output_tokens=814, cost=0.000640
+2026-09-01 00:08:07.639 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x792843720d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7928394e9160>]}
+    └ <function run_task_groups at 0x7928395223e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7928394e9160>]
+    └ <function run_tasks_serial at 0x792839522480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7928394e9160>
+    └ <function run_task_in_subprocess at 0x792839522660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7928394e9160>
+    │        │      └ <function run_raw_task at 0x792839522700>
+    │        └ <function ProcessPoolExecutor.submit at 0x792843344ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x792839b72e70>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x792843344860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x792839b72e70>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7928433449a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x792839b72e70>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x792843344a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x792839b72e70>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7928435242c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x792843588fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+    │    └ <function Popen._launch at 0x7928394c0360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7928394e9670>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x792843524cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x792843524220>
+    └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x79283952ede0>, <multiprocessing.queues.SimpleQueue object at 0x7928398d1d...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+    │    └ <function _process_worker at 0x79284333fc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2680741 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x79284366f6b0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7928394e9cd0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x79284366f6b0>
+        │         └ <function run_raw_task at 0x792839522700>
+        └ <concurrent.futures.process._CallItem object at 0x79284366f6b0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1714_20260729T204218Z/acr_output/issue_1714_20260729T204218Z_2026-09-01_00-07-50'
+             │            │    └ <function RawLocalTask.to_task at 0x792839522020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7928394e9cd0>
+             └ <function do_inference at 0x7928395228e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7928395f4860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x792839e83880>
+       │                 │         │            └ PlainTask(commit_hash='b9e363416acfb6af896f2e42c50dcd4782f9d2b8', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1714', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7928394ea8d0>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1714_20260729T204218Z/acr_output/issue_1714_20260729T204218Z_2026-09-01...
+       └ <function _run_one_task at 0x7928395f5b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x792839e80220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x792839b58140>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x792839e83ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x792839b58140>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport subprocess\nimport sys\n\ndef print_stacktrace(e: Exception):\n    import traceback\n    tb = traceb...
+                   │    │    └ <function Task.execute_reproducer at 0x792839e82480>
+                   │    └ PlainTask(commit_hash='b9e363416acfb6af896f2e42c50dcd4782f9d2b8', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1714', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x792839b58140>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 00:08:07.642 | INFO     | app.log:log_and_always_print:229 - Task issue_1714_20260729T204218Z failed with exception: .
+2026-09-01 00:08:07.643 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

@@ -1,0 +1,2214 @@
+STDOUT:
+
+[2026-09-01 06:27:28] Total number of tasks: 1
+
+[2026-09-01 06:27:28] Total number of processes: 1
+
+[2026-09-01 06:27:28] Task group info: (number of groups: 1)
+
+[2026-09-01 06:27:28]   local: 1 tasks
+
+[2026-09-01 06:27:28] Running in single process mode.
+
+[2026-09-01 06:27:28] ============= Running task issue_83_20260618T195818Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Content is always None when MCP server returns an 'error' to the client                                                     │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## The bug                                                                                                                                      │
+│                                                                                                                                                 │
+│ In (https://github.com/dapr/dapr-agents/blob/main/dapr_agents/tool/mcp/client.py#L358-L366) the error handling from the                         │
+│ `_process_tool_result()` always raises `ToolError` even though `content` _could_ hold a result output from the MCP server that we would like to │
+│ re-iterate on:                                                                                                                                  │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│         # Handle error result                                                                                                                   │
+│         if hasattr(result, 'isError') and result.isError:                                                                                       │
+│             error_message = "Unknown error"                                                                                                     │
+│             if hasattr(result, 'content') and result.content:                                                                                   │
+│                 for content in result.content:                                                                                                  │
+│                     if hasattr(content, 'text'):                                                                                                │
+│                         error_message = content.text                                                                                            │
+│                         break                                                                                                                   │
+│             raise ToolError(f"MCP tool error: {error_message}")                                                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This means that the return of `content` in                                                                                                      │
+│ (https://github.com/dapr/dapr-agents/blob/main/dapr_agents/agent/patterns/toolcall/base.py#L106-L115) always yields `None` when                 │
+│ `response.get_content()` is called and the mcp client threw a `ToolError`.                                                                      │
+│                                                                                                                                                 │
+│ The solution is to not raise the `ToolError` if `hasattr(result, 'content') && hasattr(content, 'text')` evaluates true as we need this         │
+│ `result.content.text`, even if it is an error from the MCP server, to feed it back to the model for next iteration:                             │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│         # Extract text content from result                                                                                                      │
+│         if hasattr(result, 'content') and result.content:                                                                                       │
+│             text_contents = []                                                                                                                  │
+│             for content in result.content:                                                                                                      │
+│                 if hasattr(content, 'text'):                                                                                                    │
+│                     text_contents.append(content.text)                                                                                          │
+│                                                                                                                                                 │
+│             # Return single string if only one content item                                                                                     │
+│             logger.info(f"Tool result content: {text_contents}")                                                                                │
+│             if len(text_contents) == 1:                                                                                                         │
+│                 return text_contents[0]                                                                                                         │
+│             elif text_contents:                                                                                                                 │
+│                 return text_contents                                                                                                            │
+│                                                                                                                                                 │
+│         if hasattr(result, 'isError') and result.isError:                                                                                       │
+│             # Only triggered if the above didn't return with text_contents                                                                      │
+│             raise ToolError(f"MCP tool error: {result}")                                                                                        │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ If we don't return the errors that may be thrown from the MCP server into `result.content.text`, the model will not get to learn from the       │
+│ output of the MCP server and thus get stuck in a failure loop.                                                                                  │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=591, output_tokens=13, cost=0.000096
+
+===================== CONTEXT RETRIEVAL ROUND 0 ======================
+
+╭─ AutoCodeRover (context retrieval initial prompt) ─────────────────╮
+│ Based on the files, classes, methods, and code statements from the │
+│ issue related to the bug, you can use the following search APIs to │
+│ get more context of the project.                                   │
+│                                                                    │
+│  • search_class(class_name: str): Search for a class in the        │
+│    codebase.                                                       │
+│  • search_class_in_file(self, class_name, file_name: str): Search  │
+│    for a class in a given file.                                    │
+│  • search_method_in_file(method_name: str, file_path: str): Search │
+│    for a method in a given file..                                  │
+│  • search_method_in_class(method_name: str, class_name: str):      │
+│    Search for a method in a given class.                           │
+│  • search_method(method_name: str): Search for a method in the     │
+│    entire codebase.                                                │
+│  • search_code(code_str: str): Search for a code snippet in the    │
+│    entire codebase.                                                │
+│  • search_code_in_file(code_str: str, file_path: str): Search for  │
+│    a code snippet in a given file file.                            │
+│  • get_code_around_line(file_path: str, line_number: int,          │
+│    window_size: int): Get the code around a given line number in a │
+│    file. window_size is the number of lines before and after the   │
+│    line number.                                                    │
+│                                                                    │
+│ You must give correct number of arguments when invoking API calls. │
+│                                                                    │
+│ Note that you can use multiple search APIs in one round.           │
+│                                                                    │
+│ Now analyze the issue and select necessary APIs to get more        │
+│ context of the project. Each API call must have concrete arguments │
+│ as inputs.                                                         │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=873, output_tokens=237, cost=0.000273
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│ I will do the following searches to get more context for resolving │
+│ the issue:                                                         │
+│                                                                    │
+│  1 Get the method _process_tool_result in the file                 │
+│    dapr_agents/tool/mcp/client.py since the bug is related to its  │
+│    error handling.                                                 │
+│  2 Get the code around lines 106-115 in the file                   │
+│    dapr_agents/agent/patterns/toolcall/base.py as the issue        │
+│    references the toolcall response code from that line range.     │
+│  3 Look for the definition of the ToolError exception to           │
+│    understand it better. This is necessary as the bug is about the │
+│    exception being raised incorrectly.                             │
+│  4 Search for the get_content() method used on the response to     │
+│    understand why it always yields None when the error is raised.  │
+│                                                                    │
+│ I will start with these searches.                                  │
+│                                                                    │
+│ APIs for first round:                                              │
+│                                                                    │
+│  • search_method_in_file(method_name="_process_tool_result",       │
+│    file_path="dapr_agents/tool/mcp/client.py")                     │
+│  • get_code_around_line(file_path="dapr_agents/agent/patterns/tool │
+│    call/base.py", line_number=110, window_size=10)                 │
+│  • search_class(class_name="ToolError")                            │
+│  • search_method(method_name="get_content")                        │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=592, output_tokens=84, cost=0.000139
+Refactored invocation argument parsing gives different result on 'get_code_around_line("dapr_agents/agent/patterns/toolcall/base.py", 110, 10)': 
+old result is ['dapr_agents/agent/patterns/toolcall/base.py', '110', '10'], new result  is ['dapr_agents/agent/patterns/toolcall/base.py', 110, 10]
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_method_in_file("_process_tool_result",                   │
+│    "dapr_agents/tool/mcp/client.py")                               │
+│  • get_code_around_line("dapr_agents/agent/patterns/toolcall/base. │
+│    py", 110, 10)                                                   │
+│  • search_class("ToolError")                                       │
+│  • search_method("get_content")                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Refactored invocation argument parsing gives different result on 'get_code_around_line("dapr_agents/agent/patterns/toolcall/base.py", 110, 10)': 
+old result is ['dapr_agents/agent/patterns/toolcall/base.py', '110', '10'], new result  is ['dapr_agents/agent/patterns/toolcall/base.py', 110, 10]
+╭─ AutoCodeRover (context retrieval round 0) ────────────────────────╮
+│ Result of search_method_in_file("_process_tool_result",            │
+│ "dapr_agents/tool/mcp/client.py"):                                 │
+│                                                                    │
+│ Found 2 methods with name _process_tool_result in file             │
+│ dapr_agents/tool/mcp/client.py:                                    │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│   [func]_process_tool_result[/func]                                │
+│  [code]                                                            │
+│  345     def _process_tool_result(self, result: Any) -> Any:       │
+│  346         """                                                   │
+│  347         Process the result from an MCP tool call.             │
+│  348                                                               │
+│  349         Args:                                                 │
+│  350             result: The result from calling an MCP tool       │
+│  351                                                               │
+│  352         Returns:                                              │
+│  353             Processed result in a format expected by AgentTo  │
+│  354                                                               │
+│  355         Raises:                                               │
+│  356             ToolError: If the result indicates an error       │
+│  357         """                                                   │
+│  358         # Handle error result                                 │
+│  359         if hasattr(result, 'isError') and result.isError:     │
+│  360             error_message = "Unknown error"                   │
+│  361             if hasattr(result, 'content') and result.content  │
+│  362                 for content in result.content:                │
+│  363                     if hasattr(content, 'text'):              │
+│  364                         error_message = content.text          │
+│  365                         break                                 │
+│  366             raise ToolError(f"MCP tool error:                 │
+│  {error_message}")                                                 │
+│  367                                                               │
+│  368         # Extract text content from result                    │
+│  369         if hasattr(result, 'content') and result.content:     │
+│  370             text_contents = []                                │
+│  371             for content in result.content:                    │
+│  372                 if hasattr(content, 'text'):                  │
+│  373                     text_contents.append(content.text)        │
+│  374                                                               │
+│  375             # Return single string if only one content item   │
+│  376             if len(text_contents) == 1:                       │
+│  377                 return text_contents[0]                       │
+│  378             elif text_contents:                               │
+│  379                 return text_contents                          │
+│  380                                                               │
+│  381         # Fallback for unexpected formats                     │
+│  382         return str(result)                                    │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 2:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│  [class]MCPClient[/class] [func]_process_tool_result[/func]        │
+│  [code]                                                            │
+│  345     def _process_tool_result(self, result: Any) -> Any:       │
+│  346         """                                                   │
+│  347         Process the result from an MCP tool call.             │
+│  348                                                               │
+│  349         Args:                                                 │
+│  350             result: The result from calling an MCP tool       │
+│  351                                                               │
+│  352         Returns:                                              │
+│  353             Processed result in a format expected by AgentTo  │
+│  354                                                               │
+│  355         Raises:                                               │
+│  356             ToolError: If the result indicates an error       │
+│  357         """                                                   │
+│  358         # Handle error result                                 │
+│  359         if hasattr(result, 'isError') and result.isError:     │
+│  360             error_message = "Unknown error"                   │
+│  361             if hasattr(result, 'content') and result.content  │
+│  362                 for content in result.content:                │
+│  363                     if hasattr(content, 'text'):              │
+│  364                         error_message = content.text          │
+│  365                         break                                 │
+│  366             raise ToolError(f"MCP tool error:                 │
+│  {error_message}")                                                 │
+│  367                                                               │
+│  368         # Extract text content from result                    │
+│  369         if hasattr(result, 'content') and result.content:     │
+│  370             text_contents = []                                │
+│  371             for content in result.content:                    │
+│  372                 if hasattr(content, 'text'):                  │
+│  373                     text_contents.append(content.text)        │
+│  374                                                               │
+│  375             # Return single string if only one content item   │
+│  376             if len(text_contents) == 1:                       │
+│  377                 return text_contents[0]                       │
+│  378             elif text_contents:                               │
+│  379                 return text_contents                          │
+│  380                                                               │
+│  381         # Fallback for unexpected formats                     │
+│  382         return str(result)                                    │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of                                                          │
+│ get_code_around_line("dapr_agents/agent/patterns/toolcall/base.py" │
+│ , 110, 10):                                                        │
+│                                                                    │
+│ Found 1 code snippets around line 110:                             │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/agent/patterns/toolcall/base.py[/file]          │
+│                                                                    │
+│  [code]                                                            │
+│  100             try:                                              │
+│  101                 response: ChatCompletion = self.llm.generate  │
+│  102                     messages=messages,                        │
+│  103                     tools=self.tools,                         │
+│  104                     tool_choice=self.tool_choice,             │
+│  105                 )                                             │
+│  106                 response_message = response.get_message()     │
+│  107                                                               │
+│  self.text_formatter.print_message(response_message)               │
+│  108                                                               │
+│  109                 if response.get_reason() == "tool_calls":     │
+│  110                     self.tool_history.append(response_messag  │
+│  111                     await                                     │
+│  self.process_response(response.get_tool_calls())                  │
+│  112                 else:                                         │
+│  113                                                               │
+│  self.memory.add_message(AssistantMessage(response.get_content())  │
+│  114                     self.tool_history.clear()                 │
+│  115                     return response.get_content()             │
+│  116             except Exception as e:                            │
+│  117                 logger.error(f"Error during chat generation:  │
+│  {e}")                                                             │
+│  118                 raise AgentError(f"Failed during chat         │
+│  generation: {e}") from e                                          │
+│  119                                                               │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_class("ToolError"):                               │
+│                                                                    │
+│ Found 1 classes with name ToolError in the codebase:               │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/types/exceptions.py[/file]                      │
+│  [class]ToolError[/class]                                          │
+│  [code]                                                            │
+│  class ToolError(Exception):                                       │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_method("get_content"):                            │
+│                                                                    │
+│ Found 2 methods with name get_content in the codebase:             │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/types/message.py[/file]                         │
+│   [func]get_content[/func]                                         │
+│  [code]                                                            │
+│  184     def get_content(self) -> Optional[str]:                   │
+│  185         """                                                   │
+│  186         Retrieve the content from the first choice's message  │
+│  187         """                                                   │
+│  188         message = self.get_message()                          │
+│  189         return message.get("content") if message else None    │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 2:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/types/message.py[/file]                         │
+│  [class]ChatCompletion[/class] [func]get_content[/func]            │
+│  [code]                                                            │
+│  184     def get_content(self) -> Optional[str]:                   │
+│  185         """                                                   │
+│  186         Retrieve the content from the first choice's message  │
+│  187         """                                                   │
+│  188         message = self.get_message()                          │
+│  189         return message.get("content") if message else None    │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 1 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2430, output_tokens=577, cost=0.000711
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│ Analysis of collected context:                                     │
+│                                                                    │
+│  1 _process_tool_result method in dapr_agents/tool/mcp/client.py:  │
+│     • This method processes the result from an MCP tool call.      │
+│     • Currently, if the result indicates an error (result.isError  │
+│       is True), it builds an error message from content.text if    │
+│       available, then raises ToolError with that message.          │
+│     • Otherwise, it extracts text content from result.content,     │
+│       returning a single string if only one content, or a list if  │
+│       multiple.                                                    │
+│     • If neither applies, it returns str(result).                  │
+│     • Relationship to bug: This matches the issue description      │
+│       exactly. The method raises ToolError whenever isError is     │
+│       True, even if there is useful content.text present, which    │
+│       prevents propagation of potentially helpful error content    │
+│       back to the model.                                           │
+│     • Intended behavior: As the issue states, the method should    │
+│       extract and return the text content arrays first when any    │
+│       content.text is present even if isError is True. Only if no  │
+│       content.text is found should it raise ToolError.             │
+│  2 Toolcall response segment from                                  │
+│    dapr_agents/agent/patterns/toolcall/base.py (lines 100-119):    │
+│     • This part handles the response from the LLM/tool call.       │
+│     • It calls response.get_content(), which currently always      │
+│       yields None if ToolError is raised before toolcall returns   │
+│       content.                                                     │
+│     • It returns the content retrieved by response.get_content()   │
+│       after some conditional processing.                           │
+│     • Relationship to bug: The bug as described says that content  │
+│       is None when MCP server returns error because ToolError is   │
+│       raised and content is never returned.                        │
+│     • Intended behavior: If the MCP tool returns error text in     │
+│       content.text, it should not raise but return that content    │
+│       for further use.                                             │
+│  3 ToolError class in dapr_agents/types/exceptions.py:             │
+│     • This is a simple subclass of Exception used for MCP tool     │
+│       errors.                                                      │
+│     • No special behavior but used as an error signal.             │
+│  4 get_content method in dapr_agents/types/message.py:             │
+│     • Retrieves the content from the first choice’s message.       │
+│     • Returns None if message is None.                             │
+│     • Relationship to bug: This method is called after the MCP     │
+│       tool call. If the tool raises an error and no content is     │
+│       set, get_content returns None.                               │
+│                                                                    │
+│ Summary of intended fix:                                           │
+│                                                                    │
+│  • Modify _process_tool_result to first check if there’s any       │
+│    content.text even if isError is True.                           │
+│  • If content.text exists, return that content(text) instead of    │
+│    raising ToolError.                                              │
+│  • Only raise ToolError if isError is True but no content.text is  │
+│    available.                                                      │
+│                                                                    │
+│ Next, it might help to see the class definition in                 │
+│ dapr_agents/tool/mcp/client.py that holds _process_tool_result,    │
+│ presumably MCPClient, to understand where this method is called    │
+│ from and how the result is used.                                   │
+│                                                                    │
+│ I will search the MCPClient class and its method which calls       │
+│ _process_tool_result to see usage pattern.                         │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=3222, output_tokens=287, cost=0.000655
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 Do we need more context:                                        │
+│                                                                    │
+│  • search_class(class_name="MCPClient",                            │
+│    file_name="dapr_agents/tool/mcp/client.py")                     │
+│  • search_method_in_class(method_name="some method calling         │
+│    _process_tool_result", class_name="MCPClient") (Note: Since we  │
+│    don't know the exact method name that calls                     │
+│    _process_tool_result yet, we might need to search all methods   │
+│    in MCPClient or search where _process_tool_result is called in  │
+│    the file.)                                                      │
+│                                                                    │
+│  2 Bug locations: Location 1:                                      │
+│                                                                    │
+│  • File: dapr_agents/tool/mcp/client.py                            │
+│  • Class: MCPClient                                                │
+│  • Method: _process_tool_result                                    │
+│  • Intended behavior: Modify error handling to first try returning │
+│    content.text from result.content even if isError is True, to    │
+│    allow error messages from the MCP server to propagate back as   │
+│    usable content. Only raise ToolError if isError is True and no  │
+│    content.text is found.                                          │
+│                                                                    │
+│ Location 2:                                                        │
+│                                                                    │
+│  • File: dapr_agents/agent/patterns/toolcall/base.py               │
+│  • Method around line 115 (unnamed in snippet)                     │
+│  • Intended behavior: Ensure that the response.get_content() can   │
+│    receive and handle non-None content even when the MCP tool      │
+│    returned an error with content text rather than raising an      │
+│    exception that prevents content propagation. This is indirectly │
+│    fixed by correcting _process_tool_result in MCPClient, but      │
+│    awareness of usage here is important.                           │
+│                                                                    │
+│ There are no other buggy locations identified so far.              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=642, output_tokens=269, cost=0.000258
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ API calls:                                                         │
+│                                                                    │
+│  • search_class("MCPClient")                                       │
+│  • search_method_in_class("_process_tool_result", "MCPClient")     │
+│  • search_code_in_file("_process_tool_result",                     │
+│    "dapr_agents/tool/mcp/client.py")                               │
+│                                                                    │
+│ Bug locations                                                      │
+│                                                                    │
+│  • file: dapr_agents/tool/mcp/client.py, class: MCPClient, method: │
+│    _process_tool_result, intended_behavior: Modify error handling  │
+│    to first try returning content.text from result.content even if │
+│    isError is True, to allow error messages from the MCP server to │
+│    propagate back as usable content. Only raise ToolError if       │
+│    isError is True and no content.text is found.                   │
+│  • file: dapr_agents/agent/patterns/toolcall/base.py, class: ``,   │
+│    method: around line 115 (unnamed in snippet),                   │
+│    intended_behavior: Ensure that the response.get_content() can   │
+│    receive and handle non-None content even when the MCP tool      │
+│    returned an error with content text rather than raising an      │
+│    exception that prevents content propagation. This is indirectly │
+│    fixed by correcting _process_tool_result in MCPClient, but      │
+│    awareness of usage here is important.                           │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval round 1) ────────────────────────╮
+│ Result of search_class("MCPClient"):                               │
+│                                                                    │
+│ Found 1 classes with name MCPClient in the codebase:               │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│  [class]MCPClient[/class]                                          │
+│  [code]                                                            │
+│  class MCPClient(BaseModel):                                       │
+│      def model_post_init(self, __context: Any) -> None:            │
+│      def _process_tool_result(self, result: Any) -> Any:           │
+│      def get_all_tools(self) -> List[AgentTool]:                   │
+│      def get_server_tools(self, server_name: str) ->               │
+│  List[AgentTool]:                                                  │
+│      def get_server_prompts(self, server_name: str) ->             │
+│  List[Prompt]:                                                     │
+│      def get_all_prompts(self) -> Dict[str, List[Prompt]]:         │
+│      def get_prompt_names(self, server_name: str) -> List[str]:    │
+│      def get_all_prompt_names(self) -> Dict[str, List[str]]:       │
+│      def get_prompt_metadata(self, server_name: str, prompt_name:  │
+│  str) -> Optional[Prompt]:                                         │
+│      def get_prompt_arguments(self, server_name: str, prompt_name  │
+│  str) -> Optional[List[Dict[str, Any]]]:                           │
+│      def describe_prompt(self, server_name: str, prompt_name: str  │
+│  -> Optional[str]:                                                 │
+│      def get_connected_servers(self) -> List[str]:                 │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_method_in_class("_process_tool_result",           │
+│ "MCPClient"):                                                      │
+│                                                                    │
+│ Found 1 methods with name _process_tool_result in class MCPClient: │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│  [class]MCPClient[/class] [func]_process_tool_result[/func]        │
+│  [code]                                                            │
+│  345     def _process_tool_result(self, result: Any) -> Any:       │
+│  346         """                                                   │
+│  347         Process the result from an MCP tool call.             │
+│  348                                                               │
+│  349         Args:                                                 │
+│  350             result: The result from calling an MCP tool       │
+│  351                                                               │
+│  352         Returns:                                              │
+│  353             Processed result in a format expected by AgentTo  │
+│  354                                                               │
+│  355         Raises:                                               │
+│  356             ToolError: If the result indicates an error       │
+│  357         """                                                   │
+│  358         # Handle error result                                 │
+│  359         if hasattr(result, 'isError') and result.isError:     │
+│  360             error_message = "Unknown error"                   │
+│  361             if hasattr(result, 'content') and result.content  │
+│  362                 for content in result.content:                │
+│  363                     if hasattr(content, 'text'):              │
+│  364                         error_message = content.text          │
+│  365                         break                                 │
+│  366             raise ToolError(f"MCP tool error:                 │
+│  {error_message}")                                                 │
+│  367                                                               │
+│  368         # Extract text content from result                    │
+│  369         if hasattr(result, 'content') and result.content:     │
+│  370             text_contents = []                                │
+│  371             for content in result.content:                    │
+│  372                 if hasattr(content, 'text'):                  │
+│  373                     text_contents.append(content.text)        │
+│  374                                                               │
+│  375             # Return single string if only one content item   │
+│  376             if len(text_contents) == 1:                       │
+│  377                 return text_contents[0]                       │
+│  378             elif text_contents:                               │
+│  379                 return text_contents                          │
+│  380                                                               │
+│  381         # Fallback for unexpected formats                     │
+│  382         return str(result)                                    │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│ Result of search_code_in_file("_process_tool_result",              │
+│ "dapr_agents/tool/mcp/client.py"):                                 │
+│                                                                    │
+│ Found 2 snippets with code _process_tool_result in file            │
+│ dapr_agents/tool/mcp/client.py:                                    │
+│                                                                    │
+│  • Search result 1:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│  [class]MCPClient[/class] [func]build_executor[/func]              │
+│  [code]                                                            │
+│  313                     async with                                │
+│  client.create_session(server_name) as session:                    │
+│  314                         result = await                        │
+│  session.call_tool(tool_name, kwargs)                              │
+│  315                         logger.debug(f"[MCP] Received result  │
+│  from tool '{tool_name}'")                                         │
+│  316                         return                                │
+│  client._process_tool_result(result)                               │
+│  317                 except Exception as e:                        │
+│  318                     logger.exception(f"Execution failed for   │
+│  '{tool_name}'")                                                   │
+│  319                     raise ToolError(f"Error executing tool    │
+│  '{tool_name}': {str(e)}") from e                                  │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+│                                                                    │
+│  • Search result 2:                                                │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│                                                                    │
+│  [code]                                                            │
+│  342             args_model=args_model,                            │
+│  343         )                                                     │
+│  344                                                               │
+│  345     def _process_tool_result(self, result: Any) -> Any:       │
+│  346         """                                                   │
+│  347         Process the result from an MCP tool call.             │
+│  348                                                               │
+│                                                                    │
+│  [/code]                                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+===================== CONTEXT RETRIEVAL ROUND 2 ======================
+
+╭─ AutoCodeRover (context retrieval analyze prompt) ─────────────────╮
+│ Let's analyze collected context first. If an API call could not    │
+│ find any code, you should think about what other API calls you can │
+│ make to get more context. If an API call returns some result, you  │
+│ should analyze the result and think about these questions:         │
+│                                                                    │
+│  1 What does this part of the code do?                             │
+│  2 What is the relationship between this part of the code and the  │
+│    bug?                                                            │
+│  3 Given the issue description, what would be the intended         │
+│    behavior of this part of the code?                              │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=4520, output_tokens=409, cost=0.000923
+╭─ Context Retrieval Agent (Model response (context analysis)) ──────╮
+│ Analysis of collected context from latest search:                  │
+│                                                                    │
+│  1 MCPClient class:                                                │
+│     • MCPClient inherits from BaseModel and contains various       │
+│       methods including _process_tool_result.                      │
+│     • This class seems to represent the client interfacing with    │
+│       the MCP server/tools.                                        │
+│  2 _process_tool_result method in MCPClient:                       │
+│     • This method processes the raw result from the MCP tool call. │
+│     • It first checks if result.isError is True, then extracts an  │
+│       error_message from content.text (if available) and raises    │
+│       ToolError with that message.                                 │
+│     • Otherwise, it extracts text content from result.content and  │
+│       returns the text or text list.                               │
+│     • If neither case applies, it converts the result to string    │
+│       and returns it.                                              │
+│     • This is the precise method noted as buggy in the issue       │
+│       description.                                                 │
+│     • The intended behavior based on the issue is: when            │
+│       result.isError is True but content.text exists, instead of   │
+│       raising ToolError, return content.text to allow model to     │
+│       learn and iterate.                                           │
+│     • Only raise ToolError if no useful content is found.          │
+│  3 The snippet around line 313-319 in the same file shows usage of │
+│    _process_tool_result:                                           │
+│     • An asynchronous function calls a tool via                    │
+│       session.call_tool(tool_name, kwargs) and awaits result.      │
+│     • The awaited result is passed to _process_tool_result.        │
+│     • If any exception is raised during this, it is caught and     │
+│       logged, then ToolError is raised again.                      │
+│     • This shows _process_tool_result acts as a filter/processor   │
+│       on raw tool call results.                                    │
+│     • Therefore, the bug in _process_tool_result directly affects  │
+│       the results returned from this client method.                │
+│                                                                    │
+│ Intended fix summary:                                              │
+│                                                                    │
+│  • Modify _process_tool_result so that when result.isError is True │
+│    and content.text exists, return this textual content instead of │
+│    raising ToolError.                                              │
+│  • Raise ToolError only if isError is True and no textual content  │
+│    found.                                                          │
+│  • This preserves existing functionality except that error textual │
+│    responses from MCP server are propagated.                       │
+│                                                                    │
+│ No additional context is needed. We have enough to write the       │
+│ patch.                                                             │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (context retrieval analyze and select prompt) ──────╮
+│ Based on your analysis, answer below questions:                    │
+│                                                                    │
+│  1 do we need more context: construct search API calls to get more │
+│    context of the project. If you don't need more context, LEAVE   │
+│    THIS EMTPY.                                                     │
+│  2 where are bug locations: buggy files, classes, and methods.     │
+│    Only include the necessary locations that need to be fixed. For │
+│    each bug location, you should also describe the intended        │
+│    behavior of the code at that location, in order to resolve the  │
+│    issue. The intended behavior should preserve the existing       │
+│    functionality of the code. If you think two methods in the same │
+│    class are buggy, you should provide two bug locations (E.g.     │
+│    Location 1: File: a.py, Class: A, Method: a. Location 2: File:  │
+│    a.py, Class: A, Method: b.). If you want to add a method to a   │
+│    class, you should only provide the file and class as bug        │
+│    location, and describe the new method in intended behavior. If  │
+│    you still need more context, LEAVE THIS EMPTY.                  │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=5144, output_tokens=160, cost=0.000868
+╭─ Context Retrieval Agent (Model response (API selection)) ─────────╮
+│                                                                    │
+│  1 Do we need more context:                                        │
+│  2 Bug locations:                                                  │
+│                                                                    │
+│ Location 1:                                                        │
+│                                                                    │
+│  • File: dapr_agents/tool/mcp/client.py                            │
+│  • Class: MCPClient                                                │
+│  • Method: _process_tool_result                                    │
+│  • Intended behavior: Modify the error handling logic so that if   │
+│    result.isError is True but result.content contains one or more  │
+│    contents with a 'text' attribute, then return that text (either │
+│    a single string if one content or list of strings if multiple)  │
+│    instead of raising a ToolError. Only raise ToolError if isError │
+│    is True and no content.text is found. This allows MCP server    │
+│    error messages to be returned for further processing instead of │
+│    being lost to exceptions. Preserve existing behavior for        │
+│    non-error results and for error results with no textual content │
+│    by raising ToolError.                                           │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=515, output_tokens=168, cost=0.000178
+╭─ AutoCodeRover (Agent-selected API calls) ─────────────────────────╮
+│ Bug locations                                                      │
+│                                                                    │
+│  • file: dapr_agents/tool/mcp/client.py, class: MCPClient, method: │
+│    _process_tool_result, intended_behavior: Modify the error       │
+│    handling logic so that if result.isError is True but            │
+│    result.content contains one or more contents with a 'text'      │
+│    attribute, then return that text (either a single string if one │
+│    content or list of strings if multiple) instead of raising a    │
+│    ToolError. Only raise ToolError if isError is True and no       │
+│    content.text is found. This allows MCP server error messages to │
+│    be returned for further processing instead of being lost to     │
+│    exceptions. Preserve existing behavior for non-error results    │
+│    and for error results with no textual content by raising        │
+│    ToolError.                                                      │
+╰────────────────────────────────────────────────────────────────────╯
+
+========================== PATCH GENERATION ==========================
+
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Write a patch for the issue, based on the relevant code context.   │
+│ First explain the reasoning, and then write the actual patch. When │
+│ writing the patch, remember the following:                         │
+│                                                                    │
+│  • You do not have to modify every location provided - just make   │
+│    the necessary changes.                                          │
+│  • Pay attention to the addtional context as well - sometimes it   │
+│    might be better to fix there.                                   │
+│  • You should import necessary libraries if needed.                │
+│                                                                    │
+│ Return the patch in the format below. Within [file][/file],        │
+│ replace ... with actual file path. Within [original][/original],   │
+│ replace ... with the original code snippet from the program.       │
+│ Within [patched][/patched], replace ... with the fixed version of  │
+│ the original code. When adding orignal code and updated code, pay  │
+│ attention to indentation, as the code is in Python. You can write  │
+│ multiple modifications if needed.                                  │
+│                                                                    │
+│ Example format:                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 1                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 2                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]...[/file]                                                  │
+│  [original]...[/original]                                          │
+│  [patched]...[/patched]                                            │
+│                                                                    │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 3                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│ ...                                                                │
+│                                                                    │
+│                                                                    │
+│  NOTE:                                                             │
+│  - In your patch, DO NOT include the line numbers at the beginnin  │
+│  of each line!                                                     │
+│  - Inside [original] and [/original], you should provide the       │
+│  original code snippet from the program.                           │
+│  This original code snippet MUST match exactly to a continuous     │
+│  block of code in the original program,                            │
+│  since the system will use this to locate the code to be modified  │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=6267, output_tokens=677, cost=0.001346
+╭─ Patch Generation ─────────────────────────────────────────────────╮
+│ The problem lies in the error handling block of the                │
+│ _process_tool_result method in the MCPClient class. Currently, if  │
+│ the result.isError is True, the method raises a ToolError          │
+│ immediately, ignoring whether the result.content contains textual  │
+│ error details that might be valuable to return for further         │
+│ iteration or learning.                                             │
+│                                                                    │
+│ The fix should:                                                    │
+│                                                                    │
+│  • Check if result.isError is True.                                │
+│  • If True, check if result.content has one or more items with a   │
+│    text attribute.                                                 │
+│  • If textual content is present, return that text (single string  │
+│    if one, list if multiple), instead of raising an error.         │
+│  • Only if no textual content is present, raise the ToolError.     │
+│  • Preserve the existing functionality for non-error results by    │
+│    extracting texts and returning them as before.                  │
+│                                                                    │
+│ This preserves the spirit of returning error details to the caller │
+│ while still raising exceptions for true error cases without useful │
+│ content.                                                           │
+│                                                                    │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃                         modification 1                         ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
+│                                                                    │
+│                                                                    │
+│  [file]dapr_agents/tool/mcp/client.py[/file]                       │
+│  [original]        # Handle error result                           │
+│          if hasattr(result, 'isError') and result.isError:         │
+│              error_message = "Unknown error"                       │
+│              if hasattr(result, 'content') and result.content:     │
+│                  for content in result.content:                    │
+│                      if hasattr(content, 'text'):                  │
+│                          error_message = content.text              │
+│                          break                                     │
+│              raise ToolError(f"MCP tool error: {error_message}")   │
+│                                                                    │
+│          # Extract text content from result                        │
+│          if hasattr(result, 'content') and result.content:         │
+│              text_contents = []                                    │
+│              for content in result.content:                        │
+│                  if hasattr(content, 'text'):                      │
+│                      text_contents.append(content.text)            │
+│                                                                    │
+│              # Return single string if only one content item       │
+│              if len(text_contents) == 1:                           │
+│                  return text_contents[0]                           │
+│              elif text_contents:                                   │
+│                  return text_contents                              │
+│                                                                    │
+│          # Fallback for unexpected formats                         │
+│          return str(result)[/original]                             │
+│  [patched]        # Handle error result, but if textual content i  │
+│  available, return it to enable iteration                          │
+│          if hasattr(result, 'isError') and result.isError:         │
+│              # Extract text content if present                     │
+│              if hasattr(result, 'content') and result.content:     │
+│                  text_contents = []                                │
+│                  for content in result.content:                    │
+│                      if hasattr(content, 'text'):                  │
+│                          text_contents.append(content.text)        │
+│                  if len(text_contents) == 1:                       │
+│                      return text_contents[0]                       │
+│                  elif text_contents:                               │
+│                      return text_contents                          │
+│              # No textual content found, raise error               │
+│              error_message = "Unknown error"                       │
+│              if hasattr(result, 'content') and result.content:     │
+│                  for content in result.content:                    │
+│                      if hasattr(content, 'text'):                  │
+│                          error_message = content.text              │
+│                          break                                     │
+│              raise ToolError(f"MCP tool error: {error_message}")   │
+│                                                                    │
+│          # Extract text content from non-error result              │
+│          if hasattr(result, 'content') and result.content:         │
+│              text_contents = []                                    │
+│              for content in result.content:                        │
+│                  if hasattr(content, 'text'):                      │
+│                      text_contents.append(content.text)            │
+│                                                                    │
+│              # Return single string if only one content item       │
+│              if len(text_contents) == 1:                           │
+│                  return text_contents[0]                           │
+│              elif text_contents:                                   │
+│                  return text_contents                              │
+│                                                                    │
+│          # Fallback for unexpected formats                         │
+│          return str(result)[/patched]                              │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Patch is applicable                                                │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ AutoCodeRover (Extracted patch) ──────────────────────────────────╮
+│                                                                    │
+│  diff --git a/dapr_agents/tool/mcp/client.py                       │
+│  b/dapr_agents/tool/mcp/client.py                                  │
+│  index 3cdbcd3..e541bfc 100644                                     │
+│  --- a/dapr_agents/tool/mcp/client.py                              │
+│  +++ b/dapr_agents/tool/mcp/client.py                              │
+│  @@ -355,8 +355,19 @@ class MCPClient(BaseModel):                  │
+│           Raises:                                                  │
+│               ToolError: If the result indicates an error          │
+│           """                                                      │
+│  -        # Handle error result                                    │
+│  +        # Handle error result, but if textual content is         │
+│  available, return it to enable iteration                          │
+│           if hasattr(result, 'isError') and result.isError:        │
+│  +            # Extract text content if present                    │
+│  +            if hasattr(result, 'content') and result.content:    │
+│  +                text_contents = []                               │
+│  +                for content in result.content:                   │
+│  +                    if hasattr(content, 'text'):                 │
+│  +                        text_contents.append(content.text)       │
+│  +                if len(text_contents) == 1:                      │
+│  +                    return text_contents[0]                      │
+│  +                elif text_contents:                              │
+│  +                    return text_contents                         │
+│  +            # No textual content found, raise error              │
+│               error_message = "Unknown error"                      │
+│               if hasattr(result, 'content') and result.content:    │
+│                   for content in result.content:                   │
+│  @@ -365,7 +376,7 @@ class MCPClient(BaseModel):                   │
+│                           break                                    │
+│               raise ToolError(f"MCP tool error: {error_message}")  │
+│                                                                    │
+│  -        # Extract text content from result                       │
+│  +        # Extract text content from non-error result             │
+│           if hasattr(result, 'content') and result.content:        │
+│               text_contents = []                                   │
+│               for content in result.content:                       │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 06:28:20] Task issue_83_20260618T195818Z completed successfully.
+
+[2026-09-01 06:28:20] Please find the generated patch at: 
+/root/auto-code-rover/patches/result_issue_83_20260618T195818Z/acr_output/issue_83_20260618T195818Z_2026-09-01_06-27-28/output_0/extracted_patch_0.
+diff
+
+[2026-09-01 06:28:20] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 06:27:28.263 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_83_20260618T195818Z =============
+2026-09-01 06:27:28.346 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 06:27:30.702 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=591, output_tokens=13, cost=0.000096
+2026-09-01 06:27:30.704 | INFO     | app.inference:_run_one_task:290 - Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-09-01 06:27:30.709 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 06:27:34.695 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=873, output_tokens=237, cost=0.000273
+2026-09-01 06:27:34.698 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 06:27:37.107 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=592, output_tokens=84, cost=0.000139
+2026-09-01 06:27:37.108 | INFO     | app.log:log_and_print:213 - Refactored invocation argument parsing gives different result on 'get_code_around_line("dapr_agents/agent/patterns/toolcall/base.py", 110, 10)': old result is ['dapr_agents/agent/patterns/toolcall/base.py', '110', '10'], new result  is ['dapr_agents/agent/patterns/toolcall/base.py', 110, 10]
+2026-09-01 06:27:37.109 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 06:27:37.109 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": [
+        "search_method_in_file(\"_process_tool_result\", \"dapr_agents/tool/mcp/client.py\")",
+        "get_code_around_line(\"dapr_agents/agent/patterns/toolcall/base.py\", 110, 10)",
+        "search_class(\"ToolError\")",
+        "search_method(\"get_content\")"
+    ],
+    "bug_locations": []
+}
+2026-09-01 06:27:37.112 | INFO     | app.log:log_and_print:213 - Refactored invocation argument parsing gives different result on 'get_code_around_line("dapr_agents/agent/patterns/toolcall/base.py", 110, 10)': old result is ['dapr_agents/agent/patterns/toolcall/base.py', '110', '10'], new result  is ['dapr_agents/agent/patterns/toolcall/base.py', 110, 10]
+2026-09-01 06:27:37.129 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-09-01 06:27:37.130 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-09-01 06:27:45.410 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2430, output_tokens=577, cost=0.000711
+2026-09-01 06:27:45.417 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 06:27:51.022 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=3222, output_tokens=287, cost=0.000655
+2026-09-01 06:27:51.027 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 06:27:54.867 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=642, output_tokens=269, cost=0.000258
+2026-09-01 06:27:54.868 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 06:27:54.868 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+  "API_calls": [
+    "search_class(\"MCPClient\")",
+    "search_method_in_class(\"_process_tool_result\", \"MCPClient\")",
+    "search_code_in_file(\"_process_tool_result\", \"dapr_agents/tool/mcp/client.py\")"
+  ],
+  "bug_locations": [
+    {
+      "file": "dapr_agents/tool/mcp/client.py",
+      "class": "MCPClient",
+      "method": "_process_tool_result",
+      "intended_behavior": "Modify error handling to first try returning content.text from result.content even if isError is True, to allow error messages from the MCP server to propagate back as usable content. Only raise ToolError if isError is True and no content.text is found."
+    },
+    {
+      "file": "dapr_agents/agent/patterns/toolcall/base.py",
+      "class": "",
+      "method": "around line 115 (unnamed in snippet)",
+      "intended_behavior": "Ensure that the response.get_content() can receive and handle non-None content even when the MCP tool returned an error with content text rather than raising an exception that prevents content propagation. This is indirectly fixed by correcting _process_tool_result in MCPClient, but awareness of usage here is important."
+    }
+  ]
+}
+2026-09-01 06:27:54.884 | DEBUG    | app.search.search_manage:search_iterative:187 - Obtained search results from API invocation. Going into next retrieval round.
+2026-09-01 06:27:54.885 | DEBUG    | app.agents.agent_search:generator:146 - <Agent search> Analyzing search results.
+2026-09-01 06:28:01.465 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=4520, output_tokens=409, cost=0.000923
+2026-09-01 06:28:01.474 | DEBUG    | app.agents.agent_search:generator:125 - <Agent search> Selecting APIs to call.
+2026-09-01 06:28:04.703 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=5144, output_tokens=160, cost=0.000868
+2026-09-01 06:28:04.706 | DEBUG    | app.agents.agent_proxy:run_with_retries:48 - Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-09-01 06:28:07.875 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=515, output_tokens=168, cost=0.000178
+2026-09-01 06:28:07.876 | DEBUG    | app.agents.agent_proxy:run_with_retries:68 - Extracted a valid json.
+2026-09-01 06:28:07.876 | DEBUG    | app.search.search_manage:search_iterative:76 - Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "dapr_agents/tool/mcp/client.py",
+            "class": "MCPClient",
+            "method": "_process_tool_result",
+            "intended_behavior": "Modify the error handling logic so that if result.isError is True but result.content contains one or more contents with a 'text' attribute, then return that text (either a single string if one content or list of strings if multiple) instead of raising a ToolError. Only raise ToolError if isError is True and no content.text is found. This allows MCP server error messages to be returned for further processing instead of being lost to exceptions. Preserve existing behavior for non-error results and for error results with no textual content by raising ToolError."
+        }
+    ]
+}
+2026-09-01 06:28:07.881 | DEBUG    | app.search.search_manage:search_iterative:143 - Bug location extracted successfully: [<file>dapr_agents/tool/mcp/client.py</file>
+<class>MCPClient</class>
+<method>_process_tool_result</method>
+<code>
+345     def _process_tool_result(self, result: Any) -> Any:
+346         """
+347         Process the result from an MCP tool call.
+348         
+349         Args:
+350             result: The result from calling an MCP tool
+351             
+352         Returns:
+353             Processed result in a format expected by AgentTool
+354             
+355         Raises:
+356             ToolError: If the result indicates an error
+357         """
+358         # Handle error result
+359         if hasattr(result, 'isError') and result.isError:
+360             error_message = "Unknown error"
+361             if hasattr(result, 'content') and result.content:
+362                 for content in result.content:
+363                     if hasattr(content, 'text'):
+364                         error_message = content.text
+365                         break
+366             raise ToolError(f"MCP tool error: {error_message}")
+367         
+368         # Extract text content from result
+369         if hasattr(result, 'content') and result.content:
+370             text_contents = []
+371             for content in result.content:
+372                 if hasattr(content, 'text'):
+373                     text_contents.append(content.text)
+374             
+375             # Return single string if only one content item
+376             if len(text_contents) == 1:
+377                 return text_contents[0]
+378             elif text_contents:
+379                 return text_contents
+380                 
+381         # Fallback for unexpected formats
+382         return str(result)
+
+</code><intended_behavior>Modify the error handling logic so that if result.isError is True but result.content contains one or more contents with a 'text' attribute, then return that text (either a single string if one content or list of strings if multiple) instead of raising a ToolError. Only raise ToolError if isError is True and no content.text is found. This allows MCP server error messages to be returned for further processing instead of being lost to exceptions. Preserve existing behavior for non-error results and for error results with no textual content by raising ToolError.</intended_behavior>, <file>dapr_agents/tool/mcp/client.py</file>
+<class>MCPClient</class>
+<method>None</method>
+<code>
+18 class MCPClient(BaseModel):
+19     """
+20     Client for connecting to MCP servers and integrating their tools with the Dapr agent framework.
+21 
+22     This client manages connections to one or more MCP servers, retrieves their tools,
+23     and converts them to native AgentTool objects that can be used in the agent framework.
+24 
+25     Attributes:
+26         allowed_tools: Optional set of tool names to include (when None, all tools are included)
+27         server_timeout: Timeout in seconds for server connections
+28         sse_read_timeout: Read timeout for SSE connections in seconds
+29     """
+30     allowed_tools: Optional[Set[str]] = Field(default=None, description="Optional set of tool names to include (when None, all tools are included)")
+31     server_timeout: float = Field(default=5.0, description="Timeout in seconds for server connections")
+32     sse_read_timeout: float = Field(default=300.0, description="Read timeout for SSE connections in seconds")
+33 
+34     # Private attributes not exposed in model schema
+35     _exit_stack: AsyncExitStack = PrivateAttr(default_factory=AsyncExitStack)
+36     _sessions: Dict[str, ClientSession] = PrivateAttr(default_factory=dict)
+37     _server_tools: Dict[str, List[AgentTool]] = PrivateAttr(default_factory=dict)
+38     _server_prompts: Dict[str, Dict[str, Prompt]] = PrivateAttr(default_factory=dict)
+39     _task_locals: Dict[str, Any] = PrivateAttr(default_factory=dict)
+40     _server_configs: Dict[str, Dict[str, Any]] = PrivateAttr(default_factory=dict)
+41 
+42     def model_post_init(self, __context: Any) -> None:
+43         """Initialize the client after the model is created."""
+44         logger.debug("Initializing MCP client")
+45         super().model_post_init(__context)
+46     
+47     @asynccontextmanager
+48     async def create_session(self, server_name: str) -> AsyncGenerator[ClientSession, None]:
+49         """
+50         Create an ephemeral session for the given server and yield it.
+51         Used during tool execution to avoid reuse issues.
+52 
+53         Args:
+54             server_name: The server to create a session for.
+55 
+56         Yields:
+57             A short-lived, initialized MCP session.
+58         """
+59         logger.debug(f"[MCP] Creating ephemeral session for server '{server_name}'")
+60         session = await self._create_ephemeral_session(server_name)
+61         try:
+62             yield session
+63         finally:
+64             # Session cleanup is managed by AsyncExitStack (via transport module)
+65             pass
+66     
+67     async def connect_stdio(
+68         self,
+69         server_name: str,
+70         command: str,
+71         args: List[str],
+72         env: Optional[Dict[str, str]] = None
+73     ) -> None:
+74         """
+75         Connect to an MCP server using stdio transport and store the connection
+76         metadata for future dynamic reconnection if needed.
+77 
+78         Args:
+79             server_name (str): Unique identifier for this server connection.
+80             command (str): Executable to run.
+81             args (List[str]): Command-line arguments.
+82             env (Optional[Dict[str, str]]): Environment variables for the process.
+83 
+84         Raises:
+85             RuntimeError: If a server with the same name is already connected.
+86             Exception: If connection setup or initialization fails.
+87         """
+88         logger.info(f"Connecting to MCP server '{server_name}' via stdio: {command} {args}")
+89 
+90         if server_name in self._sessions:
+91             raise RuntimeError(f"Server '{server_name}' is already connected")
+92 
+93         try:
+94             self._task_locals[server_name] = asyncio.current_task()
+95 
+96             from dapr_agents.tool.mcp.transport import connect_stdio as transport_connect_stdio
+97             session = await transport_connect_stdio(
+98                 command=command,
+99                 args=args,
+100                 env=env,
+101                 stack=self._exit_stack
+102             )
+103 
+104             await session.initialize()
+105             self._sessions[server_name] = session
+106 
+107             # Store how to reconnect this server later
+108             self._server_configs[server_name] = {
+109                 "type": "stdio",
+110                 "params": {"command": command, "args": args, "env": env},
+111             }
+112 
+113             logger.debug(f"Initialized session for server '{server_name}', loading tools and prompts")
+114             await self._load_tools_from_session(server_name, session)
+115             await self._load_prompts_from_session(server_name, session)
+116             logger.info(f"Successfully connected to MCP server '{server_name}'")
+117 
+118         except Exception as e:
+119             logger.error(f"Failed to connect to MCP server '{server_name}': {str(e)}")
+120             self._sessions.pop(server_name, None)
+121             self._task_locals.pop(server_name, None)
+122             self._server_configs.pop(server_name, None)
+123             raise
+124 
+125     async def connect_sse(
+126         self,
+127         server_name: str,
+128         url: str,
+129         headers: Optional[Dict[str, str]] = None
+130     ) -> None:
+131         """
+132         Connect to an MCP server using Server-Sent Events (SSE) transport and store
+133         the connection metadata for future dynamic reconnection if needed.
+134 
+135         Args:
+136             server_name (str): Unique identifier for this server connection.
+137             url (str): The SSE endpoint URL.
+138             headers (Optional[Dict[str, str]]): HTTP headers to include with the request.
+139 
+140         Raises:
+141             RuntimeError: If a server with the same name is already connected.
+142             Exception: If connection setup or initialization fails.
+143         """
+144         logger.info(f"Connecting to MCP server '{server_name}' via SSE: {url}")
+145 
+146         if server_name in self._sessions:
+147             raise RuntimeError(f"Server '{server_name}' is already connected")
+148 
+149         try:
+150             self._task_locals[server_name] = asyncio.current_task()
+151 
+152             from dapr_agents.tool.mcp.transport import connect_sse as transport_connect_sse
+153             session = await transport_connect_sse(
+154                 url=url,
+155                 headers=headers,
+156                 timeout=self.server_timeout,
+157                 read_timeout=self.sse_read_timeout,
+158                 stack=self._exit_stack
+159             )
+160 
+161             await session.initialize()
+162             self._sessions[server_name] = session
+163 
+164             # Store how to reconnect this server later
+165             self._server_configs[server_name] = {
+166                 "type": "sse",
+167                 "params": {
+168                     "url": url,
+169                     "headers": headers,
+170                     "timeout": self.server_timeout,
+171                     "read_timeout": self.sse_read_timeout,
+172                 },
+173             }
+174 
+175             logger.debug(f"Initialized session for server '{server_name}', loading tools and prompts")
+176             await self._load_tools_from_session(server_name, session)
+177             await self._load_prompts_from_session(server_name, session)
+178             logger.info(f"Successfully connected to MCP server '{server_name}'")
+179 
+180         except Exception as e:
+181             logger.error(f"Failed to connect to MCP server '{server_name}': {str(e)}")
+182             self._sessions.pop(server_name, None)
+183             self._task_locals.pop(server_name, None)
+184             self._server_configs.pop(server_name, None)
+185             raise
+186     
+187     async def _load_tools_from_session(self, server_name: str, session: ClientSession) -> None:
+188         """
+189         Load tools from a given MCP session and convert them to AgentTools.
+190         
+191         Args:
+192             server_name: Unique identifier for this server
+193             session: The MCP client session
+194         """
+195         logger.debug(f"Loading tools from server '{server_name}'")
+196         
+197         try:
+198             # Get tools from the server
+199             tools_response = await session.list_tools()
+200             
+201             # Convert MCP tools to agent tools
+202             converted_tools = []
+203             for mcp_tool in tools_response.tools:
+204                 # Skip tools not in allowed_tools if filtering is enabled
+205                 if self.allowed_tools and mcp_tool.name not in self.allowed_tools:
+206                     logger.debug(f"Skipping tool '{mcp_tool.name}' (not in allowed_tools)")
+207                     continue
+208                 
+209                 try:
+210                     agent_tool = await self.wrap_mcp_tool(server_name, mcp_tool)
+211                     converted_tools.append(agent_tool)
+212                 except Exception as e:
+213                     logger.warning(f"Failed to convert tool '{mcp_tool.name}': {str(e)}")
+214             
+215             self._server_tools[server_name] = converted_tools
+216             logger.info(f"Loaded {len(converted_tools)} tools from server '{server_name}'")
+217         except Exception as e:
+218             logger.warning(f"Failed to load tools from server '{server_name}': {str(e)}")
+219             self._server_tools[server_name] = []
+220     
+221     async def _load_prompts_from_session(self, server_name: str, session: ClientSession) -> None:
+222         """
+223         Load prompts from a given MCP session.
+224         
+225         Args:
+226             server_name: Unique identifier for this server
+227             session: The MCP client session
+228         """
+229         logger.debug(f"Loading prompts from server '{server_name}'")
+230         try:
+231             response = await session.list_prompts()
+232             prompt_dict = {prompt.name: prompt for prompt in response.prompts}
+233             self._server_prompts[server_name] = prompt_dict
+234 
+235             loaded = [
+236                 f"{p.name} ({len(p.arguments or [])} args)" 
+237                 for p in response.prompts
+238             ]
+239             logger.info(
+240                 f"Loaded {len(loaded)} prompts from server '{server_name}': " +
+241                 ", ".join(loaded)
+242             )
+243         except Exception as e:
+244             logger.warning(f"Failed to load prompts from server '{server_name}': {str(e)}")
+245             self._server_prompts[server_name] = []
+246     
+247     async def _create_ephemeral_session(self, server_name: str) -> ClientSession:
+248         """
+249         Create a fresh session for a single tool call.
+250 
+251         Args:
+252             server_name: The MCP server to connect to.
+253 
+254         Returns:
+255             A fully initialized ephemeral ClientSession.
+256         """
+257         config = self._server_configs.get(server_name)
+258         if not config:
+259             raise ToolError(f"No stored config found for server '{server_name}'")
+260 
+261         try:
+262             if config["type"] == "stdio":
+263                 from dapr_agents.tool.mcp.transport import connect_stdio
+264                 session = await connect_stdio(**config["params"], stack=self._exit_stack)
+265             elif config["type"] == "sse":
+266                 from dapr_agents.tool.mcp.transport import connect_sse
+267                 session = await connect_sse(**config["params"], stack=self._exit_stack)
+268             else:
+269                 raise ToolError(f"Unknown transport type: {config['type']}")
+270             
+271             await session.initialize()
+272             return session
+273         except Exception as e:
+274             logger.error(f"Failed to create ephemeral session: {e}")
+275             raise ToolError(f"Could not create session for '{server_name}': {e}") from e
+276 
+277     async def wrap_mcp_tool(self, server_name: str, mcp_tool: MCPTool) -> AgentTool:
+278         """
+279         Wrap an MCPTool as an AgentTool with dynamic session creation at runtime,
+280         based on stored server configuration.
+281 
+282         Args:
+283             server_name: The MCP server that registered the tool.
+284             mcp_tool: The MCPTool object describing the tool.
+285 
+286         Returns:
+287             An AgentTool instance that can be executed by the agent.
+288 
+289         Raises:
+290             ToolError: If the tool cannot be executed or configuration is missing.
+291         """
+292         tool_name = f"{server_name}_{mcp_tool.name}"
+293         tool_docs = f"{mcp_tool.description or ''} (from MCP server: {server_name})"
+294 
+295         logger.debug(f"Wrapping MCP tool: {tool_name}")
+296 
+297         def build_executor(client: MCPClient, server_name: str, tool_name: str):
+298             async def executor(**kwargs: Any) -> Any:
+299                 """
+300                 Execute the tool using a dynamically created session context.
+301 
+302                 Args:
+303                     kwargs: Input arguments to the tool.
+304 
+305                 Returns:
+306                     Result from the tool execution.
+307 
+308                 Raises:
+309                     ToolError: If execution fails or response is malformed.
+310                 """
+311                 logger.info(f"[MCP] Executing tool '{tool_name}' with args: {kwargs}")
+312                 try:
+313                     async with client.create_session(server_name) as session:
+314                         result = await session.call_tool(tool_name, kwargs)
+315                         logger.debug(f"[MCP] Received result from tool '{tool_name}'")
+316                         return client._process_tool_result(result)
+317                 except Exception as e:
+318                     logger.exception(f"Execution failed for '{tool_name}'")
+319                     raise ToolError(f"Error executing tool '{tool_name}': {str(e)}") from e
+320 
+321             return executor
+322 
+323         # Build executor using dynamic context-managed session resolution
+324         tool_func = build_executor(self, server_name, mcp_tool.name)
+325 
+326         # Optionally generate args model from input schema
+327         args_model = None
+328         if getattr(mcp_tool, "inputSchema", None):
+329             try:
+330                 from dapr_agents.tool.mcp.schema import create_pydantic_model_from_schema
+331                 args_model = create_pydantic_model_from_schema(
+332                     mcp_tool.inputSchema, f"{tool_name}Args"
+333                 )
+334                 logger.debug(f"Generated argument model for tool '{tool_name}'")
+335             except Exception as e:
+336                 logger.warning(f"Failed to create schema for tool '{tool_name}': {str(e)}")
+337 
+338         return AgentTool(
+339             name=tool_name,
+340             description=tool_docs,
+341             func=tool_func,
+342             args_model=args_model,
+343         )
+344     
+345     def _process_tool_result(self, result: Any) -> Any:
+346         """
+347         Process the result from an MCP tool call.
+348         
+349         Args:
+350             result: The result from calling an MCP tool
+351             
+352         Returns:
+353             Processed result in a format expected by AgentTool
+354             
+355         Raises:
+356             ToolError: If the result indicates an error
+357         """
+358         # Handle error result
+359         if hasattr(result, 'isError') and result.isError:
+360             error_message = "Unknown error"
+361             if hasattr(result, 'content') and result.content:
+362                 for content in result.content:
+363                     if hasattr(content, 'text'):
+364                         error_message = content.text
+365                         break
+366             raise ToolError(f"MCP tool error: {error_message}")
+367         
+368         # Extract text content from result
+369         if hasattr(result, 'content') and result.content:
+370             text_contents = []
+371             for content in result.content:
+372                 if hasattr(content, 'text'):
+373                     text_contents.append(content.text)
+374             
+375             # Return single string if only one content item
+376             if len(text_contents) == 1:
+377                 return text_contents[0]
+378             elif text_contents:
+379                 return text_contents
+380                 
+381         # Fallback for unexpected formats
+382         return str(result)
+383     
+384     def get_all_tools(self) -> List[AgentTool]:
+385         """
+386         Get all tools from all connected MCP servers.
+387         
+388         Returns:
+389             A list of all available AgentTools from MCP servers
+390         """
+391         all_tools = []
+392         for server_tools in self._server_tools.values():
+393             all_tools.extend(server_tools)
+394         return all_tools
+395     
+396     def get_server_tools(self, server_name: str) -> List[AgentTool]:
+397         """
+398         Get tools from a specific MCP server.
+399         
+400         Args:
+401             server_name: The name of the server to get tools from
+402             
+403         Returns:
+404             A list of AgentTools from the specified server
+405         """
+406         return self._server_tools.get(server_name, [])
+407     
+408     def get_server_prompts(self, server_name: str) -> List[Prompt]:
+409         """
+410         Get all prompt definitions from a specific MCP server.
+411 
+412         Args:
+413             server_name: The name of the server to retrieve prompts from
+414 
+415         Returns:
+416             A list of Prompt objects available on the specified server.
+417             Returns an empty list if no prompts are available.
+418         """
+419         return list(self._server_prompts.get(server_name, {}).values())
+420 
+421 
+422     def get_all_prompts(self) -> Dict[str, List[Prompt]]:
+423         """
+424         Get all prompt definitions from all connected MCP servers.
+425 
+426         Returns:
+427             A dictionary mapping each server name to a list of Prompt objects.
+428             Returns an empty dictionary if no servers are connected.
+429         """
+430         return {server: list(prompts.values()) for server, prompts in self._server_prompts.items()}
+431     
+432     def get_prompt_names(self, server_name: str) -> List[str]:
+433         """
+434         Get the names of all prompts from a specific MCP server.
+435 
+436         Args:
+437             server_name: The name of the server
+438 
+439         Returns:
+440             A list of prompt names registered on the server.
+441         """
+442         return list(self._server_prompts.get(server_name, {}).keys())
+443 
+444 
+445     def get_all_prompt_names(self) -> Dict[str, List[str]]:
+446         """
+447         Get prompt names from all connected servers.
+448 
+449         Returns:
+450             A dictionary mapping server names to lists of prompt names.
+451         """
+452         return {server: list(prompts.keys()) for server, prompts in self._server_prompts.items()}
+453 
+454     def get_prompt_metadata(self, server_name: str, prompt_name: str) -> Optional[Prompt]:
+455         """
+456         Retrieve the full metadata for a given prompt from a connected MCP server.
+457 
+458         Args:
+459             server_name: The server that registered the prompt
+460             prompt_name: The name of the prompt to retrieve
+461 
+462         Returns:
+463             The full Prompt object if available, otherwise None.
+464         """
+465         return self._server_prompts.get(server_name, {}).get(prompt_name)
+466 
+467 
+468     def get_prompt_arguments(self, server_name: str, prompt_name: str) -> Optional[List[Dict[str, Any]]]:
+469         """
+470         Get the list of arguments defined for a prompt, if available.
+471 
+472         Useful for generating forms or validating prompt input.
+473 
+474         Args:
+475             server_name: The server where the prompt is registered
+476             prompt_name: The name of the prompt to inspect
+477 
+478         Returns:
+479             A list of argument definitions, or None if the prompt is not found.
+480         """
+481         prompt = self.get_prompt_metadata(server_name, prompt_name)
+482         return prompt.arguments if prompt else None
+483 
+484 
+485     def describe_prompt(self, server_name: str, prompt_name: str) -> Optional[str]:
+486         """
+487         Retrieve a human-readable description of a specific prompt.
+488 
+489         Args:
+490             server_name: The name of the server where the prompt is registered
+491             prompt_name: The name of the prompt to describe
+492 
+493         Returns:
+494             The description string if available, otherwise None.
+495         """
+496         prompt = self.get_prompt_metadata(server_name, prompt_name)
+497         return prompt.description if prompt else None
+498 
+499     def get_connected_servers(self) -> List[str]:
+500         """
+501         Get a list of all connected server names.
+502         
+503         Returns:
+504             List of server names that are currently connected
+505         """
+506         return list(self._sessions.keys())
+507     
+508     async def close(self) -> None:
+509         """
+510         Close all connections to MCP servers and clean up resources.
+511         
+512         This method should be called when the client is no longer needed to
+513         ensure proper cleanup of all resources and connections.
+514         """
+515         logger.info("Closing MCP client and all server connections")
+516         
+517         # Verify we're in the same task as the one that created the connections
+518         current_task = asyncio.current_task()
+519         for server_name, server_task in self._task_locals.items():
+520             if server_task != current_task:
+521                 logger.warning(
+522                     f"Attempting to close server '{server_name}' in a different task "
+523                     f"than it was created in. This may cause errors."
+524                 )
+525         
+526         # Close all connections
+527         try:
+528             await self._exit_stack.aclose()
+529             self._sessions.clear()
+530             self._server_tools.clear()
+531             self._task_locals.clear()
+532             logger.info("MCP client successfully closed")
+533         except Exception as e:
+534             logger.error(f"Error closing MCP client: {str(e)}")
+535             raise
+536     
+537     async def __aenter__(self) -> "MCPClient":
+538         """Context manager entry point."""
+539         return self
+540     
+541     async def __aexit__(
+542         self,
+543         exc_type: Optional[Type[BaseException]],
+544         exc_val: Optional[BaseException],
+545         exc_tb: Optional[TracebackType]
+546     ) -> None:
+547         """Context manager exit - close all connections."""
+548         await self.close()
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-09-01 06:28:07.881 | INFO     | app.inference:_run_one_task:307 - Search completed. Bug locations: [<file>dapr_agents/tool/mcp/client.py</file>
+<class>MCPClient</class>
+<method>_process_tool_result</method>
+<code>
+345     def _process_tool_result(self, result: Any) -> Any:
+346         """
+347         Process the result from an MCP tool call.
+348         
+349         Args:
+350             result: The result from calling an MCP tool
+351             
+352         Returns:
+353             Processed result in a format expected by AgentTool
+354             
+355         Raises:
+356             ToolError: If the result indicates an error
+357         """
+358         # Handle error result
+359         if hasattr(result, 'isError') and result.isError:
+360             error_message = "Unknown error"
+361             if hasattr(result, 'content') and result.content:
+362                 for content in result.content:
+363                     if hasattr(content, 'text'):
+364                         error_message = content.text
+365                         break
+366             raise ToolError(f"MCP tool error: {error_message}")
+367         
+368         # Extract text content from result
+369         if hasattr(result, 'content') and result.content:
+370             text_contents = []
+371             for content in result.content:
+372                 if hasattr(content, 'text'):
+373                     text_contents.append(content.text)
+374             
+375             # Return single string if only one content item
+376             if len(text_contents) == 1:
+377                 return text_contents[0]
+378             elif text_contents:
+379                 return text_contents
+380                 
+381         # Fallback for unexpected formats
+382         return str(result)
+
+</code><intended_behavior>Modify the error handling logic so that if result.isError is True but result.content contains one or more contents with a 'text' attribute, then return that text (either a single string if one content or list of strings if multiple) instead of raising a ToolError. Only raise ToolError if isError is True and no content.text is found. This allows MCP server error messages to be returned for further processing instead of being lost to exceptions. Preserve existing behavior for non-error results and for error results with no textual content by raising ToolError.</intended_behavior>, <file>dapr_agents/tool/mcp/client.py</file>
+<class>MCPClient</class>
+<method>None</method>
+<code>
+18 class MCPClient(BaseModel):
+19     """
+20     Client for connecting to MCP servers and integrating their tools with the Dapr agent framework.
+21 
+22     This client manages connections to one or more MCP servers, retrieves their tools,
+23     and converts them to native AgentTool objects that can be used in the agent framework.
+24 
+25     Attributes:
+26         allowed_tools: Optional set of tool names to include (when None, all tools are included)
+27         server_timeout: Timeout in seconds for server connections
+28         sse_read_timeout: Read timeout for SSE connections in seconds
+29     """
+30     allowed_tools: Optional[Set[str]] = Field(default=None, description="Optional set of tool names to include (when None, all tools are included)")
+31     server_timeout: float = Field(default=5.0, description="Timeout in seconds for server connections")
+32     sse_read_timeout: float = Field(default=300.0, description="Read timeout for SSE connections in seconds")
+33 
+34     # Private attributes not exposed in model schema
+35     _exit_stack: AsyncExitStack = PrivateAttr(default_factory=AsyncExitStack)
+36     _sessions: Dict[str, ClientSession] = PrivateAttr(default_factory=dict)
+37     _server_tools: Dict[str, List[AgentTool]] = PrivateAttr(default_factory=dict)
+38     _server_prompts: Dict[str, Dict[str, Prompt]] = PrivateAttr(default_factory=dict)
+39     _task_locals: Dict[str, Any] = PrivateAttr(default_factory=dict)
+40     _server_configs: Dict[str, Dict[str, Any]] = PrivateAttr(default_factory=dict)
+41 
+42     def model_post_init(self, __context: Any) -> None:
+43         """Initialize the client after the model is created."""
+44         logger.debug("Initializing MCP client")
+45         super().model_post_init(__context)
+46     
+47     @asynccontextmanager
+48     async def create_session(self, server_name: str) -> AsyncGenerator[ClientSession, None]:
+49         """
+50         Create an ephemeral session for the given server and yield it.
+51         Used during tool execution to avoid reuse issues.
+52 
+53         Args:
+54             server_name: The server to create a session for.
+55 
+56         Yields:
+57             A short-lived, initialized MCP session.
+58         """
+59         logger.debug(f"[MCP] Creating ephemeral session for server '{server_name}'")
+60         session = await self._create_ephemeral_session(server_name)
+61         try:
+62             yield session
+63         finally:
+64             # Session cleanup is managed by AsyncExitStack (via transport module)
+65             pass
+66     
+67     async def connect_stdio(
+68         self,
+69         server_name: str,
+70         command: str,
+71         args: List[str],
+72         env: Optional[Dict[str, str]] = None
+73     ) -> None:
+74         """
+75         Connect to an MCP server using stdio transport and store the connection
+76         metadata for future dynamic reconnection if needed.
+77 
+78         Args:
+79             server_name (str): Unique identifier for this server connection.
+80             command (str): Executable to run.
+81             args (List[str]): Command-line arguments.
+82             env (Optional[Dict[str, str]]): Environment variables for the process.
+83 
+84         Raises:
+85             RuntimeError: If a server with the same name is already connected.
+86             Exception: If connection setup or initialization fails.
+87         """
+88         logger.info(f"Connecting to MCP server '{server_name}' via stdio: {command} {args}")
+89 
+90         if server_name in self._sessions:
+91             raise RuntimeError(f"Server '{server_name}' is already connected")
+92 
+93         try:
+94             self._task_locals[server_name] = asyncio.current_task()
+95 
+96             from dapr_agents.tool.mcp.transport import connect_stdio as transport_connect_stdio
+97             session = await transport_connect_stdio(
+98                 command=command,
+99                 args=args,
+100                 env=env,
+101                 stack=self._exit_stack
+102             )
+103 
+104             await session.initialize()
+105             self._sessions[server_name] = session
+106 
+107             # Store how to reconnect this server later
+108             self._server_configs[server_name] = {
+109                 "type": "stdio",
+110                 "params": {"command": command, "args": args, "env": env},
+111             }
+112 
+113             logger.debug(f"Initialized session for server '{server_name}', loading tools and prompts")
+114             await self._load_tools_from_session(server_name, session)
+115             await self._load_prompts_from_session(server_name, session)
+116             logger.info(f"Successfully connected to MCP server '{server_name}'")
+117 
+118         except Exception as e:
+119             logger.error(f"Failed to connect to MCP server '{server_name}': {str(e)}")
+120             self._sessions.pop(server_name, None)
+121             self._task_locals.pop(server_name, None)
+122             self._server_configs.pop(server_name, None)
+123             raise
+124 
+125     async def connect_sse(
+126         self,
+127         server_name: str,
+128         url: str,
+129         headers: Optional[Dict[str, str]] = None
+130     ) -> None:
+131         """
+132         Connect to an MCP server using Server-Sent Events (SSE) transport and store
+133         the connection metadata for future dynamic reconnection if needed.
+134 
+135         Args:
+136             server_name (str): Unique identifier for this server connection.
+137             url (str): The SSE endpoint URL.
+138             headers (Optional[Dict[str, str]]): HTTP headers to include with the request.
+139 
+140         Raises:
+141             RuntimeError: If a server with the same name is already connected.
+142             Exception: If connection setup or initialization fails.
+143         """
+144         logger.info(f"Connecting to MCP server '{server_name}' via SSE: {url}")
+145 
+146         if server_name in self._sessions:
+147             raise RuntimeError(f"Server '{server_name}' is already connected")
+148 
+149         try:
+150             self._task_locals[server_name] = asyncio.current_task()
+151 
+152             from dapr_agents.tool.mcp.transport import connect_sse as transport_connect_sse
+153             session = await transport_connect_sse(
+154                 url=url,
+155                 headers=headers,
+156                 timeout=self.server_timeout,
+157                 read_timeout=self.sse_read_timeout,
+158                 stack=self._exit_stack
+159             )
+160 
+161             await session.initialize()
+162             self._sessions[server_name] = session
+163 
+164             # Store how to reconnect this server later
+165             self._server_configs[server_name] = {
+166                 "type": "sse",
+167                 "params": {
+168                     "url": url,
+169                     "headers": headers,
+170                     "timeout": self.server_timeout,
+171                     "read_timeout": self.sse_read_timeout,
+172                 },
+173             }
+174 
+175             logger.debug(f"Initialized session for server '{server_name}', loading tools and prompts")
+176             await self._load_tools_from_session(server_name, session)
+177             await self._load_prompts_from_session(server_name, session)
+178             logger.info(f"Successfully connected to MCP server '{server_name}'")
+179 
+180         except Exception as e:
+181             logger.error(f"Failed to connect to MCP server '{server_name}': {str(e)}")
+182             self._sessions.pop(server_name, None)
+183             self._task_locals.pop(server_name, None)
+184             self._server_configs.pop(server_name, None)
+185             raise
+186     
+187     async def _load_tools_from_session(self, server_name: str, session: ClientSession) -> None:
+188         """
+189         Load tools from a given MCP session and convert them to AgentTools.
+190         
+191         Args:
+192             server_name: Unique identifier for this server
+193             session: The MCP client session
+194         """
+195         logger.debug(f"Loading tools from server '{server_name}'")
+196         
+197         try:
+198             # Get tools from the server
+199             tools_response = await session.list_tools()
+200             
+201             # Convert MCP tools to agent tools
+202             converted_tools = []
+203             for mcp_tool in tools_response.tools:
+204                 # Skip tools not in allowed_tools if filtering is enabled
+205                 if self.allowed_tools and mcp_tool.name not in self.allowed_tools:
+206                     logger.debug(f"Skipping tool '{mcp_tool.name}' (not in allowed_tools)")
+207                     continue
+208                 
+209                 try:
+210                     agent_tool = await self.wrap_mcp_tool(server_name, mcp_tool)
+211                     converted_tools.append(agent_tool)
+212                 except Exception as e:
+213                     logger.warning(f"Failed to convert tool '{mcp_tool.name}': {str(e)}")
+214             
+215             self._server_tools[server_name] = converted_tools
+216             logger.info(f"Loaded {len(converted_tools)} tools from server '{server_name}'")
+217         except Exception as e:
+218             logger.warning(f"Failed to load tools from server '{server_name}': {str(e)}")
+219             self._server_tools[server_name] = []
+220     
+221     async def _load_prompts_from_session(self, server_name: str, session: ClientSession) -> None:
+222         """
+223         Load prompts from a given MCP session.
+224         
+225         Args:
+226             server_name: Unique identifier for this server
+227             session: The MCP client session
+228         """
+229         logger.debug(f"Loading prompts from server '{server_name}'")
+230         try:
+231             response = await session.list_prompts()
+232             prompt_dict = {prompt.name: prompt for prompt in response.prompts}
+233             self._server_prompts[server_name] = prompt_dict
+234 
+235             loaded = [
+236                 f"{p.name} ({len(p.arguments or [])} args)" 
+237                 for p in response.prompts
+238             ]
+239             logger.info(
+240                 f"Loaded {len(loaded)} prompts from server '{server_name}': " +
+241                 ", ".join(loaded)
+242             )
+243         except Exception as e:
+244             logger.warning(f"Failed to load prompts from server '{server_name}': {str(e)}")
+245             self._server_prompts[server_name] = []
+246     
+247     async def _create_ephemeral_session(self, server_name: str) -> ClientSession:
+248         """
+249         Create a fresh session for a single tool call.
+250 
+251         Args:
+252             server_name: The MCP server to connect to.
+253 
+254         Returns:
+255             A fully initialized ephemeral ClientSession.
+256         """
+257         config = self._server_configs.get(server_name)
+258         if not config:
+259             raise ToolError(f"No stored config found for server '{server_name}'")
+260 
+261         try:
+262             if config["type"] == "stdio":
+263                 from dapr_agents.tool.mcp.transport import connect_stdio
+264                 session = await connect_stdio(**config["params"], stack=self._exit_stack)
+265             elif config["type"] == "sse":
+266                 from dapr_agents.tool.mcp.transport import connect_sse
+267                 session = await connect_sse(**config["params"], stack=self._exit_stack)
+268             else:
+269                 raise ToolError(f"Unknown transport type: {config['type']}")
+270             
+271             await session.initialize()
+272             return session
+273         except Exception as e:
+274             logger.error(f"Failed to create ephemeral session: {e}")
+275             raise ToolError(f"Could not create session for '{server_name}': {e}") from e
+276 
+277     async def wrap_mcp_tool(self, server_name: str, mcp_tool: MCPTool) -> AgentTool:
+278         """
+279         Wrap an MCPTool as an AgentTool with dynamic session creation at runtime,
+280         based on stored server configuration.
+281 
+282         Args:
+283             server_name: The MCP server that registered the tool.
+284             mcp_tool: The MCPTool object describing the tool.
+285 
+286         Returns:
+287             An AgentTool instance that can be executed by the agent.
+288 
+289         Raises:
+290             ToolError: If the tool cannot be executed or configuration is missing.
+291         """
+292         tool_name = f"{server_name}_{mcp_tool.name}"
+293         tool_docs = f"{mcp_tool.description or ''} (from MCP server: {server_name})"
+294 
+295         logger.debug(f"Wrapping MCP tool: {tool_name}")
+296 
+297         def build_executor(client: MCPClient, server_name: str, tool_name: str):
+298             async def executor(**kwargs: Any) -> Any:
+299                 """
+300                 Execute the tool using a dynamically created session context.
+301 
+302                 Args:
+303                     kwargs: Input arguments to the tool.
+304 
+305                 Returns:
+306                     Result from the tool execution.
+307 
+308                 Raises:
+309                     ToolError: If execution fails or response is malformed.
+310                 """
+311                 logger.info(f"[MCP] Executing tool '{tool_name}' with args: {kwargs}")
+312                 try:
+313                     async with client.create_session(server_name) as session:
+314                         result = await session.call_tool(tool_name, kwargs)
+315                         logger.debug(f"[MCP] Received result from tool '{tool_name}'")
+316                         return client._process_tool_result(result)
+317                 except Exception as e:
+318                     logger.exception(f"Execution failed for '{tool_name}'")
+319                     raise ToolError(f"Error executing tool '{tool_name}': {str(e)}") from e
+320 
+321             return executor
+322 
+323         # Build executor using dynamic context-managed session resolution
+324         tool_func = build_executor(self, server_name, mcp_tool.name)
+325 
+326         # Optionally generate args model from input schema
+327         args_model = None
+328         if getattr(mcp_tool, "inputSchema", None):
+329             try:
+330                 from dapr_agents.tool.mcp.schema import create_pydantic_model_from_schema
+331                 args_model = create_pydantic_model_from_schema(
+332                     mcp_tool.inputSchema, f"{tool_name}Args"
+333                 )
+334                 logger.debug(f"Generated argument model for tool '{tool_name}'")
+335             except Exception as e:
+336                 logger.warning(f"Failed to create schema for tool '{tool_name}': {str(e)}")
+337 
+338         return AgentTool(
+339             name=tool_name,
+340             description=tool_docs,
+341             func=tool_func,
+342             args_model=args_model,
+343         )
+344     
+345     def _process_tool_result(self, result: Any) -> Any:
+346         """
+347         Process the result from an MCP tool call.
+348         
+349         Args:
+350             result: The result from calling an MCP tool
+351             
+352         Returns:
+353             Processed result in a format expected by AgentTool
+354             
+355         Raises:
+356             ToolError: If the result indicates an error
+357         """
+358         # Handle error result
+359         if hasattr(result, 'isError') and result.isError:
+360             error_message = "Unknown error"
+361             if hasattr(result, 'content') and result.content:
+362                 for content in result.content:
+363                     if hasattr(content, 'text'):
+364                         error_message = content.text
+365                         break
+366             raise ToolError(f"MCP tool error: {error_message}")
+367         
+368         # Extract text content from result
+369         if hasattr(result, 'content') and result.content:
+370             text_contents = []
+371             for content in result.content:
+372                 if hasattr(content, 'text'):
+373                     text_contents.append(content.text)
+374             
+375             # Return single string if only one content item
+376             if len(text_contents) == 1:
+377                 return text_contents[0]
+378             elif text_contents:
+379                 return text_contents
+380                 
+381         # Fallback for unexpected formats
+382         return str(result)
+383     
+384     def get_all_tools(self) -> List[AgentTool]:
+385         """
+386         Get all tools from all connected MCP servers.
+387         
+388         Returns:
+389             A list of all available AgentTools from MCP servers
+390         """
+391         all_tools = []
+392         for server_tools in self._server_tools.values():
+393             all_tools.extend(server_tools)
+394         return all_tools
+395     
+396     def get_server_tools(self, server_name: str) -> List[AgentTool]:
+397         """
+398         Get tools from a specific MCP server.
+399         
+400         Args:
+401             server_name: The name of the server to get tools from
+402             
+403         Returns:
+404             A list of AgentTools from the specified server
+405         """
+406         return self._server_tools.get(server_name, [])
+407     
+408     def get_server_prompts(self, server_name: str) -> List[Prompt]:
+409         """
+410         Get all prompt definitions from a specific MCP server.
+411 
+412         Args:
+413             server_name: The name of the server to retrieve prompts from
+414 
+415         Returns:
+416             A list of Prompt objects available on the specified server.
+417             Returns an empty list if no prompts are available.
+418         """
+419         return list(self._server_prompts.get(server_name, {}).values())
+420 
+421 
+422     def get_all_prompts(self) -> Dict[str, List[Prompt]]:
+423         """
+424         Get all prompt definitions from all connected MCP servers.
+425 
+426         Returns:
+427             A dictionary mapping each server name to a list of Prompt objects.
+428             Returns an empty dictionary if no servers are connected.
+429         """
+430         return {server: list(prompts.values()) for server, prompts in self._server_prompts.items()}
+431     
+432     def get_prompt_names(self, server_name: str) -> List[str]:
+433         """
+434         Get the names of all prompts from a specific MCP server.
+435 
+436         Args:
+437             server_name: The name of the server
+438 
+439         Returns:
+440             A list of prompt names registered on the server.
+441         """
+442         return list(self._server_prompts.get(server_name, {}).keys())
+443 
+444 
+445     def get_all_prompt_names(self) -> Dict[str, List[str]]:
+446         """
+447         Get prompt names from all connected servers.
+448 
+449         Returns:
+450             A dictionary mapping server names to lists of prompt names.
+451         """
+452         return {server: list(prompts.keys()) for server, prompts in self._server_prompts.items()}
+453 
+454     def get_prompt_metadata(self, server_name: str, prompt_name: str) -> Optional[Prompt]:
+455         """
+456         Retrieve the full metadata for a given prompt from a connected MCP server.
+457 
+458         Args:
+459             server_name: The server that registered the prompt
+460             prompt_name: The name of the prompt to retrieve
+461 
+462         Returns:
+463             The full Prompt object if available, otherwise None.
+464         """
+465         return self._server_prompts.get(server_name, {}).get(prompt_name)
+466 
+467 
+468     def get_prompt_arguments(self, server_name: str, prompt_name: str) -> Optional[List[Dict[str, Any]]]:
+469         """
+470         Get the list of arguments defined for a prompt, if available.
+471 
+472         Useful for generating forms or validating prompt input.
+473 
+474         Args:
+475             server_name: The server where the prompt is registered
+476             prompt_name: The name of the prompt to inspect
+477 
+478         Returns:
+479             A list of argument definitions, or None if the prompt is not found.
+480         """
+481         prompt = self.get_prompt_metadata(server_name, prompt_name)
+482         return prompt.arguments if prompt else None
+483 
+484 
+485     def describe_prompt(self, server_name: str, prompt_name: str) -> Optional[str]:
+486         """
+487         Retrieve a human-readable description of a specific prompt.
+488 
+489         Args:
+490             server_name: The name of the server where the prompt is registered
+491             prompt_name: The name of the prompt to describe
+492 
+493         Returns:
+494             The description string if available, otherwise None.
+495         """
+496         prompt = self.get_prompt_metadata(server_name, prompt_name)
+497         return prompt.description if prompt else None
+498 
+499     def get_connected_servers(self) -> List[str]:
+500         """
+501         Get a list of all connected server names.
+502         
+503         Returns:
+504             List of server names that are currently connected
+505         """
+506         return list(self._sessions.keys())
+507     
+508     async def close(self) -> None:
+509         """
+510         Close all connections to MCP servers and clean up resources.
+511         
+512         This method should be called when the client is no longer needed to
+513         ensure proper cleanup of all resources and connections.
+514         """
+515         logger.info("Closing MCP client and all server connections")
+516         
+517         # Verify we're in the same task as the one that created the connections
+518         current_task = asyncio.current_task()
+519         for server_name, server_task in self._task_locals.items():
+520             if server_task != current_task:
+521                 logger.warning(
+522                     f"Attempting to close server '{server_name}' in a different task "
+523                     f"than it was created in. This may cause errors."
+524                 )
+525         
+526         # Close all connections
+527         try:
+528             await self._exit_stack.aclose()
+529             self._sessions.clear()
+530             self._server_tools.clear()
+531             self._task_locals.clear()
+532             logger.info("MCP client successfully closed")
+533         except Exception as e:
+534             logger.error(f"Error closing MCP client: {str(e)}")
+535             raise
+536     
+537     async def __aenter__(self) -> "MCPClient":
+538         """Context manager entry point."""
+539         return self
+540     
+541     async def __aexit__(
+542         self,
+543         exc_type: Optional[Type[BaseException]],
+544         exc_val: Optional[BaseException],
+545         exc_tb: Optional[TracebackType]
+546     ) -> None:
+547         """Context manager exit - close all connections."""
+548         await self.close()
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-09-01 06:28:07.882 | DEBUG    | app.inference:_run_one_task:315 - Gathered enough information. Invoking write_patch.
+2026-09-01 06:28:07.882 | INFO     | app.inference:write_patch_iterative:69 - Start generating patches without reviewer
+2026-09-01 06:28:07.882 | DEBUG    | app.agents.agent_write_patch:_write_patch:173 - <agent write patch> is_first_try: True
+2026-09-01 06:28:18.390 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=6267, output_tokens=677, cost=0.001346
+2026-09-01 06:28:20.891 | INFO     | app.inference:write_patch_iterative:76 - Generated applicable patch: 0
+2026-09-01 06:28:20.891 | INFO     | app.inference:write_patch_iterative:80 - Begin evaluating patch: 0
+2026-09-01 06:28:20.892 | INFO     | app.inference:write_patch_iterative:88 - Patch 0 passed evaluation. Ending patch generation
+2026-09-01 06:28:20.892 | INFO     | app.inference:_run_one_task:337 - Invoked write_patch. Since there is no reproducer, the workflow will be terminated.
+2026-09-01 06:28:20.892 | INFO     | app.inference:run_one_task:129 - Overall retry 0 succeeded; ending workflow
+2026-09-01 06:28:20.892 | INFO     | app.inference:run_one_task:134 - Starting patch selection
+2026-09-01 06:28:20.897 | INFO     | app.inference:run_one_task:139 - Selected patch output_0/extracted_patch_0.diff. Reason: no-agent,single-pass-regression
+2026-09-01 06:28:20.968 | INFO     | app.log:log_and_always_print:229 - Task issue_83_20260618T195818Z completed successfully.
+2026-09-01 06:28:20.969 | INFO     | app.log:log_and_always_print:229 - Please find the generated patch at: /root/auto-code-rover/patches/result_issue_83_20260618T195818Z/acr_output/issue_83_20260618T195818Z_2026-09-01_06-27-28/output_0/extracted_patch_0.diff

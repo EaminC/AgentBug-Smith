@@ -1,0 +1,77 @@
+diff --git a/src/agentscope/tool/_builtin/_backend.py b/src/agentscope/tool/_builtin/_backend.py
+index a777312f..84f9adeb 100644
+--- a/src/agentscope/tool/_builtin/_backend.py
++++ b/src/agentscope/tool/_builtin/_backend.py
+@@ -545,11 +545,14 @@ class LocalBackend(BackendBase):
+         timeout: float | None = None,
+     ) -> ExecResult:
+         """Run a program via ``asyncio.create_subprocess_exec``.
+-
++        
+         The program is spawned directly from *command* without an
+         intervening shell, so no argument quoting is required and the
+         same code path works on POSIX and Windows.
+-
++        
++        For Windows, if the command is intended to be a PowerShell script or
++        command, it will execute using PowerShell executable.
++        
+         Args:
+             command (`list[str]`):
+                 Executable path/name followed by its arguments.
+@@ -559,7 +562,7 @@ class LocalBackend(BackendBase):
+             timeout (`float | None`, optional):
+                 Maximum number of seconds to wait before the process is
+                 killed and an ``exit_code`` of ``-1`` is returned.
+-
++        
+         Returns:
+             `ExecResult`:
+                 The captured exit code, stdout, and stderr. If the
+@@ -567,10 +570,45 @@ class LocalBackend(BackendBase):
+                 ``127`` (matching a shell's "command not found"), with
+                 the OS error message on stderr.
+         """
++        import sys
++
++        # Detect if we are running on Windows and use PowerShell accordingly
++        if sys.platform.startswith("win") and command:
++            # Check if command is a PowerShell tool invocation (heuristic):
++            # For safety, you might want to define a convention or a wrapper
++            # but here we assume that if the executable is 'powershell' or desired,
++            # or we want to run all via powershell, or alternatively if first command is not exe.
++            # For simplicity, if the first command is 'pwsh' or 'powershell' or endswith .ps1
++            # Usually the Bash tool runs with "bash" which we do not invoke here directly.
++            # Instead, if command is not a direct executable but a script to run, wrap it.
++
++            ps_commands = {"powershell", "pwsh"}
++            first_cmd = command[0].lower()
++            if (
++                first_cmd in ps_commands
++                or first_cmd.endswith(".ps1")
++                or "powershell" in first_cmd
++            ):
++                # For direct PowerShell commands, run as is without wrapping
++                pass
++            else:
++                # Wrap arbitrary command list to a PowerShell command invocation
++                # Join arguments carefully to a PowerShell command string
++                import shlex
++
++                ps_command_str = " ".join(shlex.quote(arg) for arg in command)
++                command = [
++                    "powershell",
++                    "-NoProfile",
++                    "-NonInteractive",
++                    "-Command",
++                    ps_command_str,
++                ]
++
+         kwargs = _subprocess_creation_kwargs()
+         if cwd is not None:
+             kwargs["cwd"] = cwd
+-
++        
+         try:
+             process = await asyncio.create_subprocess_exec(
+                 *command,

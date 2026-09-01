@@ -1,0 +1,58 @@
+diff --git a/lib/crewai/src/crewai/flow/flow.py b/lib/crewai/src/crewai/flow/flow.py
+index 5bb4980a4..7de9c4d04 100644
+--- a/lib/crewai/src/crewai/flow/flow.py
++++ b/lib/crewai/src/crewai/flow/flow.py
+@@ -600,8 +600,52 @@ class Flow(Generic[T], metaclass=FlowMeta):
+             f"Initial state must be dict or BaseModel, got {type(self.initial_state)}"
+         )
+ 
++    import _thread
++
+     def _copy_state(self) -> T:
+-        return copy.deepcopy(self._state)
++        def safe_deepcopy(obj, memo=None):
++            # Skip deepcopy for unpicklable thread locks
++            if memo is None:
++                memo = {}
++
++            if isinstance(obj, _thread.RLock):
++                # Return the original lock, do not copy
++                return obj
++
++            # Handle Pydantic BaseModel by copying dict
++            from pydantic import BaseModel
++            if isinstance(obj, BaseModel):
++                # Dump dict without private attributes then recreate
++                try:
++                    state_dict = obj.model_dump() if hasattr(obj, "model_dump") else obj.dict()
++                    model_class = type(obj)
++                    # Recursively deepcopy the dict
++                    copied_dict = safe_deepcopy(state_dict, memo)
++                    return model_class(**copied_dict)
++                except Exception:
++                    # fallback to regular deepcopy
++                    pass
++
++            # Handle dicts by deepcopying recursively without locks
++            if isinstance(obj, dict):
++                return {safe_deepcopy(k, memo): safe_deepcopy(v, memo) for k, v in obj.items()}
++
++            # Handle list/tuple/sets similarly
++            if isinstance(obj, list):
++                return [safe_deepcopy(i, memo) for i in obj]
++            if isinstance(obj, tuple):
++                return tuple(safe_deepcopy(i, memo) for i in obj)
++            if isinstance(obj, set):
++                return {safe_deepcopy(i, memo) for i in obj}
++
++            # Fallback to normal deepcopy
++            try:
++                return copy.deepcopy(obj, memo)
++            except Exception:
++                # If deepcopy fails, return the original obj (like for locks etc)
++                return obj
++
++        return safe_deepcopy(self._state)
+ 
+     @property
+     def state(self) -> T:

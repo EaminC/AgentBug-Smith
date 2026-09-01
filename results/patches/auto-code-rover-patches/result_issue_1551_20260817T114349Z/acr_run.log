@@ -1,0 +1,403 @@
+STDOUT:
+
+[2026-08-31 22:56:15] Total number of tasks: 1
+
+[2026-08-31 22:56:15] Total number of processes: 1
+
+[2026-08-31 22:56:15] Task group info: (number of groups: 1)
+
+[2026-08-31 22:56:15]   local: 1 tasks
+
+[2026-08-31 22:56:15] Running in single process mode.
+
+[2026-08-31 22:56:15] ============= Running task issue_1551_20260817T114349Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] Tool calls during model thinking are not displayed to users                                                                  │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checks                                                                                                                                      │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched [./issues](./issues?q=) and there are no duplicates of my issue                                                              │
+│                                                                                                                                                 │
+│ ### Strands Version                                                                                                                             │
+│                                                                                                                                                 │
+│ 1.23.0                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Python Version                                                                                                                              │
+│                                                                                                                                                 │
+│ 3.12.3                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ Ubuntu                                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Installation Method                                                                                                                         │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Description                                                                                                                                 │
+│                                                                                                                                                 │
+│ When using models with extended thinking/reasoning capabilities (I'm using `qwen.qwen3-next-80b-a3b`), some tool calls are executed during the  │
+│ model's internal reasoning phase before being announced in the streaming response. These "silent" tool calls are tracked in the agent's message │
+│ history but are never displayed to users via the                                                                                                │
+│ PrintingCallbackHandler, creating confusion about which tools were actually executed.                                                           │
+│                                                                                                                                                 │
+│ ### Expected Behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ All tool executions should be visible to users through the callback handler, either:                                                            │
+│ 1. By emitting ToolUseStreamEvent with current_tool_use for all tool calls, OR                                                                  │
+│ 2. By providing a configuration option to show/hide reasoning-phase tool calls, OR                                                              │
+│ 3. By emitting a different event type for reasoning-phase tools that can be optionally displayed                                                │
+│                                                                                                                                                 │
+│ ### Actual Behavior                                                                                                                             │
+│                                                                                                                                                 │
+│ Tools executed during the model's reasoning phase:                                                                                              │
+│ - ✅ Are executed successfully                                                                                                                  │
+│ - ✅ Appear in agent.messages                                                                                                                   │
+│ - ❌ Never trigger callbacks with current_tool_use                                                                                              │
+│ - ❌ Are never printed as `Tool #X: tool_name`                                                                                                  │
+│ - ❌ Are invisible to users watching the console output                                                                                         │
+│                                                                                                                                                 │
+│ ### Reproduction                                                                                                                                │
+│                                                                                                                                                 │
+│ **Setup:**                                                                                                                                      │
+│ ```python                                                                                                                                       │
+│ from strands import Agent                                                                                                                       │
+│ from strands.models import BedrockModel                                                                                                         │
+│                                                                                                                                                 │
+│ @tool                                                                                                                                           │
+│ def get_user_info() -> dict:                                                                                                                    │
+│     """Get user information."""                                                                                                                 │
+│     return {"name": "Alice", "card": "LIB-456789"}                                                                                              │
+│                                                                                                                                                 │
+│ @tool                                                                                                                                           │
+│ def get_book_status(book_id: str) -> dict:                                                                                                      │
+│     """Get book status."""                                                                                                                      │
+│     return {"book_id": book_id, "status": "ACTIVE"}                                                                                             │
+│                                                                                                                                                 │
+│ agent = Agent(                                                                                                                                  │
+│     model=BedrockModel(model_id="qwen.qwen3-next-80b-a3b"),                                                                                     │
+│     tools=,                                                                                                                                     │
+│     system_prompt="You are a helpful assistant."                                                                                                │
+│ )                                                                                                                                               │
+│                                                                                                                                                 │
+│ result = agent("Please check the status of book BOOK-123")                                                                                      │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Observed Output:**                                                                                                                            │
+│ ```                                                                                                                                             │
+│ Tool #1: get_book_status                                                                                                                        │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Actual Tool Execution (from logs):                                                                                                              │
+│ ```                                                                                                                                             │
+│ 2026-01-22 15:55:45 - TOOL EXECUTION START: get_user_info                                                                                       │
+│ 2026-01-22 15:55:46 - Callback with tool: get_book_status                                                                                       │
+│ Tool #1: get_book_status                                                                                                                        │
+│ 2026-01-22 15:55:46 - TOOL EXECUTION START: get_book_status                                                                                     │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Timeline:                                                                                                                                       │
+│ 1. get_user_info executes (no callback, not printed)                                                                                            │
+│ 2. Model streams "I'm using get_book_status" (callback fires, printed as `Tool #1`)                                                             │
+│ 3. get_book_status executes                                                                                                                     │
+│                                                                                                                                                 │
+│ ### Root Cause                                                                                                                                  │
+│                                                                                                                                                 │
+│ From investigation in strands/tools/executors/_executor.py and strands/handlers/callback_handler.py:                                            │
+│                                                                                                                                                 │
+│ 1. The callback handler only prints tools when it receives current_tool_use in the event                                                        │
+│ 2. current_tool_use is populated from ContentBlockStartEvent during model streaming (in strands/event_loop/streaming.py)                        │
+│ 3. Tools executed during reasoning phase don't generate ContentBlockStartEvent because the model hasn't announced them in its streaming         │
+│ response yet                                                                                                                                    │
+│ 4. All tools return ToolResultEvent directly, but only tools announced in the model's streaming response get wrapped with current_tool_use      │
+│ context                                                                                                                                         │
+│                                                                                                                                                 │
+│ ### Suggested Solutions                                                                                                                         │
+│                                                                                                                                                 │
+│ **Option 1: Always emit tool use events**                                                                                                       │
+│ Before executing any tool, emit a ToolUseStreamEvent or similar event that triggers the callback with current_tool_use, regardless of whether   │
+│ the model announced it in streaming.                                                                                                            │
+│                                                                                                                                                 │
+│ **Option 2: Configuration flag**                                                                                                                │
+│ Add a flag to PrintingCallbackHandler or Agent:                                                                                                 │
+│ ```python                                                                                                                                       │
+│ agent = Agent(                                                                                                                                  │
+│     ...,                                                                                                                                        │
+│     callback_handler=PrintingCallbackHandler(                                                                                                   │
+│         verbose_tool_use=True,                                                                                                                  │
+│         show_reasoning_tools=True  # NEW FLAG                                                                                                   │
+│     )                                                                                                                                           │
+│ )                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Option 3: Different event type**                                                                                                              │
+│ Emit a different event type (e.g., ReasoningToolUseEvent) for tools executed during reasoning, allowing developers to handle them differently.  │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=995, output_tokens=13, cost=0.000157
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1173, output_tokens=580, cost=0.000524
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│                                                                    │
+│  from strands import Agent, tool                                   │
+│  from strands.models import BedrockModel                           │
+│  import sys                                                        │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  @tool                                                             │
+│  def get_user_info() -> dict:                                      │
+│      """Get user information."""                                   │
+│      return {"name": "Alice", "card": "LIB-456789"}                │
+│                                                                    │
+│  @tool                                                             │
+│  def get_book_status(book_id: str) -> dict:                        │
+│      """Get book status."""                                        │
+│      return {"book_id": book_id, "status": "ACTIVE"}               │
+│                                                                    │
+│  def main():                                                       │
+│      agent = Agent(                                                │
+│          model=BedrockModel(model_id="qwen.qwen3-next-80b-a3b"),   │
+│          tools=[get_user_info, get_book_status],                   │
+│          system_prompt="You are a helpful assistant."              │
+│      )                                                             │
+│                                                                    │
+│      # Intercept printed output of tools for observation           │
+│      import io                                                     │
+│      import contextlib                                             │
+│                                                                    │
+│      output = io.StringIO()                                        │
+│      with contextlib.redirect_stdout(output):                      │
+│          result = agent("Please check the status of book BOOK-123  │
+│      printed = output.getvalue()                                   │
+│                                                                    │
+│      # According to the bug description,                           │
+│      # get_user_info tool is executed during reasoning but never   │
+│  printed.                                                          │
+│      # Only get_book_status is printed as Tool #1                  │
+│                                                                    │
+│      try:                                                          │
+│          # Check that both tools executed are printed              │
+│          # The reproduced output will only show "Tool #1:          │
+│  get_book_status" currently.                                       │
+│          # We assert that the first tool get_user_info was also    │
+│  printed to stdout.                                                │
+│          # We'll look for a printed line with "Tool #X:            │
+│  get_user_info"                                                    │
+│          user_info_printed = any(                                  │
+│              line.strip().endswith("get_user_info") for line in    │
+│  printed.splitlines()                                              │
+│              if line.strip().startswith("Tool #")                  │
+│          )                                                         │
+│          if not user_info_printed:                                 │
+│              raise AssertionError(                                 │
+│                  "Tool call to get_user_info executed during       │
+│  reasoning phase but NOT displayed to user.\n"                     │
+│                  "This reproduces the bug described: tools execut  │
+│  silently during reasoning are missing from callback prints."      │
+│              )                                                     │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          raise                                                     │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      try:                                                          │
+│          main()                                                    │
+│      except AssertionError:                                        │
+│          sys.exit(1)                                               │
+│      # Exit 0 means issue fixed, all tools printed                 │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-08-31 22:56:26] Task issue_1551_20260817T114349Z failed with exception: .
+
+[2026-08-31 22:56:26] No patch generated. You can try running ACR again.
+
+[2026-08-31 22:56:26] Finished all tasks sequentially.
+
+
+STDERR:
+2026-08-31 22:56:15.232 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1551_20260817T114349Z =============
+2026-08-31 22:56:15.399 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-08-31 22:56:18.770 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=995, output_tokens=13, cost=0.000157
+2026-08-31 22:56:26.212 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1173, output_tokens=580, cost=0.000524
+2026-08-31 22:56:26.406 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7eb531820d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7eb5274e9010>]}
+    └ <function run_task_groups at 0x7eb5275823e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7eb5274e9010>]
+    └ <function run_tasks_serial at 0x7eb527582480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7eb5274e9010>
+    └ <function run_task_in_subprocess at 0x7eb527582660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7eb5274e9010>
+    │        │      └ <function run_raw_task at 0x7eb527582700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7eb531428ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7eb5278d0aa0>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7eb531428860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7eb5278d0aa0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7eb5314289a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7eb5278d0aa0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7eb531428a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7eb5278d0aa0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7eb5316182c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7eb53167cfe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+    │    └ <function Popen._launch at 0x7eb5274e0360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7eb5278181d0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7eb531618cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7eb531618220>
+    └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7eb52752ec90>, <multiprocessing.queues.SimpleQueue object at 0x7eb5274e97...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+    │    └ <function _process_worker at 0x7eb531423c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2657290 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7eb5315e6cc0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7eb5274ea060>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7eb5315e6cc0>
+        │         └ <function run_raw_task at 0x7eb527582700>
+        └ <concurrent.futures.process._CallItem object at 0x7eb5315e6cc0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1551_20260817T114349Z/acr_output/issue_1551_20260817T114349Z_2026-08-31_22-56-15'
+             │            │    └ <function RawLocalTask.to_task at 0x7eb527582020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7eb5274ea060>
+             └ <function do_inference at 0x7eb5275828e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7eb5275f4860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7eb527e83880>
+       │                 │         │            └ PlainTask(commit_hash='62cc949e3a94cdf93b033a61ce1299cd39e4f5fe', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1551', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7eb5278a8b60>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1551_20260817T114349Z/acr_output/issue_1551_20260817T114349Z_2026-08-31...
+       └ <function _run_one_task at 0x7eb5275f5b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7eb527e80220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7eb527eaa180>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7eb527e83ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7eb527eaa180>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\n\nfrom strands import Agent, tool\nfrom strands.models import BedrockModel\nimport sys\n\ndef print_stacktr...
+                   │    │    └ <function Task.execute_reproducer at 0x7eb527e82480>
+                   │    └ PlainTask(commit_hash='62cc949e3a94cdf93b033a61ce1299cd39e4f5fe', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1551', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7eb527eaa180>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-08-31 22:56:26.410 | INFO     | app.log:log_and_always_print:229 - Task issue_1551_20260817T114349Z failed with exception: .
+2026-08-31 22:56:26.413 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.
