@@ -1,7 +1,67 @@
+import sys
+import types
+from pathlib import Path
+from unittest.mock import MagicMock
+from importlib.abc import MetaPathFinder, Loader
+from importlib.machinery import ModuleSpec
+
+# ---------------------------------------------------------------------------
+# 1. Dynamic Mock Package for MCP
+# ---------------------------------------------------------------------------
+class MockMCPModule(types.ModuleType):
+    """Module mock that pretends to be a package and returns mocks for any attribute."""
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.__path__ = []
+
+    def __getattr__(self, name: str):
+        val = MagicMock()
+        setattr(self, name, val)
+        return val
+
+
+class MockMCPFinder(MetaPathFinder, Loader):
+    """Intercepts all imports under 'mcp' or 'mcp.*'."""
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "mcp" or fullname.startswith("mcp."):
+            return ModuleSpec(fullname, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        mod = MockMCPModule(spec.name)
+        mod.__loader__ = self
+        mod.__spec__ = spec
+        return mod
+
+    def exec_module(self, module):
+        pass
+
+
+# Purge any existing partial mcp modules from sys.modules and install finder
+for k in list(sys.modules.keys()):
+    if k == "mcp" or k.startswith("mcp."):
+        sys.modules.pop(k, None)
+
+sys.meta_path.insert(0, MockMCPFinder())
+
+# ---------------------------------------------------------------------------
+# 2. Path Setup & Module Import
+# ---------------------------------------------------------------------------
+src_path = str(Path(__file__).resolve().parent.parent / "src")
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
 import pytest
-from src.agentscope.agent import _react_agent as react_agent_module
+
+try:
+    from agentscope.agent import _react_agent as react_agent_module
+except ImportError:
+    from src.agentscope.agent import _react_agent as react_agent_module
 
 
+# ---------------------------------------------------------------------------
+# 3. Test Fixtures & Assertions
+# ---------------------------------------------------------------------------
 class DummyTool:
     def __init__(self, name):
         self.name = name
@@ -45,26 +105,21 @@ def test_reset_equipped_tools_registration_and_plan_group_creation(
     enable_meta_tool, plan_notebook, expect_reset_registered, expect_plan_group_created
 ):
     """
-    This test verifies that:
-    - The reset_equipped_tools function is registered only if enable_meta_tool is True.
+    Verifies that:
+    - reset_equipped_tools is registered only if enable_meta_tool is True.
     - The "plan_related" tool group is created only if enable_meta_tool is True and plan_notebook is provided.
     - When enable_meta_tool is False but plan_notebook is provided, reset_equipped_tools is NOT registered,
       and no "plan_related" group is created.
     """
 
-    # We create a minimal subclass of ReActAgent that accepts the parameters we want
-    # and uses DummyToolkit to track registrations.
     class TestReactAgent(react_agent_module.ReActAgent):
         def __init__(self):
-            # The real ReActAgent __init__ requires name, sys_prompt, model, formatter.
-            # Provide dummy values for those.
-            # We pass our DummyToolkit instance to track registrations.
             dummy_toolkit = DummyToolkit()
             super().__init__(
                 name="test_agent",
                 sys_prompt="test prompt",
-                model="test_model",
-                formatter="test_formatter",
+                model=MagicMock(),
+                formatter=MagicMock(),
                 toolkit=dummy_toolkit,
                 knowledge=None,
                 enable_meta_tool=enable_meta_tool,
@@ -72,39 +127,37 @@ def test_reset_equipped_tools_registration_and_plan_group_creation(
                 enable_rewrite_query=False,
                 parallel_tool_calls=False,
             )
-            # Replace toolkit with dummy toolkit to track calls
             self.toolkit = dummy_toolkit
 
     agent = TestReactAgent()
 
-    # Check if reset_equipped_tools is registered
+    # Verify reset_equipped_tools registration
     reset_registered = any(
-        func == agent.toolkit.reset_equipped_tools for func, _ in agent.toolkit.registered_functions
+        func == agent.toolkit.reset_equipped_tools
+        for func, _ in agent.toolkit.registered_functions
     )
     assert reset_registered == expect_reset_registered, (
         f"reset_equipped_tools registration expected={expect_reset_registered} but got {reset_registered}"
     )
 
-    # Check if "plan_related" tool group is created
+    # Verify "plan_related" tool group creation
     plan_group_created = "plan_related" in agent.toolkit.created_tool_groups
     assert plan_group_created == expect_plan_group_created, (
         f"'plan_related' tool group creation expected={expect_plan_group_created} but got {plan_group_created}"
     )
 
-    # Additional check: if plan_notebook is provided and enable_meta_tool is False,
-    # the plan tools should be registered without group_name.
+    # If plan_notebook is provided and enable_meta_tool is False, tools must register without a group_name
     if plan_notebook and not enable_meta_tool:
-        registered_tools = [func for func, group in agent.toolkit.registered_functions if func != agent.toolkit.reset_equipped_tools]
         expected_tools = plan_notebook.list_tools()
-        # Check all expected tools are registered without group_name
         for tool in expected_tools:
-            found = any((func == tool and group is None) for func, group in agent.toolkit.registered_functions)
-            assert found, f"Expected tool {tool.name} to be registered without group_name when enable_meta_tool=False"
+            found = any(
+                (func == tool and group is None)
+                for func, group in agent.toolkit.registered_functions
+            )
+            assert found, (
+                f"Expected tool {tool.name} to be registered without group_name when enable_meta_tool=False"
+            )
 
 
-# Run the test if this file is executed directly
 if __name__ == "__main__":
-    import sys
-    import pytest
-
     sys.exit(pytest.main([__file__]))
