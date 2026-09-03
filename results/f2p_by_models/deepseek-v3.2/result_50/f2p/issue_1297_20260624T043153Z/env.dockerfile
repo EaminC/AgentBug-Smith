@@ -15,28 +15,32 @@ ENV TAVILY_API_KEY="tvly-dev-key"
 ENV GITHUB_TOKEN="ghp_key"
 # --- end inject ---
 
-WORKDIR /app
-
-# Install system dependencies required for Python packages
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ \
+    gcc g++ git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy entire repository (as required)
-COPY . .
+# Fix safe directory for git operations
+RUN git config --global --add safe.directory '*' || true
 
-# Upgrade pip and wheel
-RUN python -m pip install --upgrade pip wheel
+# Set working directory to /app
+WORKDIR /app
 
-# Install project dependencies and test dependencies.
-# Use pip install .[dev] to get all dev dependencies (including pytest).
-# This installs the package in non-editable mode (default).
-RUN pip install .[dev] && \
-    # Ensure mandatory test packages are installed (some may already be included via dev)
-    pip install pytest pytest-mock pytest-asyncio pytest-cov anyio "setuptools<=81.0.0" litellm pytest-xdist pytest-timeout mem0ai
+# Copy entire repository
+COPY . /app
 
-# Set PYTHONPATH to /app so that tests can import the package from the source directory
-ENV PYTHONPATH=/app
+# Upgrade pip, setuptools, and wheel
+RUN python -m pip install --no-cache-dir --upgrade pip "setuptools<=81.0.0" wheel
+
+# Install mcp pinned to <2.0.0 first to prevent mcp 2.x breaking change,
+# then install agentscope in editable mode and the test runners
+RUN pip install --no-cache-dir "mcp<2.0.0" && \
+    pip install --no-cache-dir -e ".[dev]" && \
+    pip install --no-cache-dir "mcp<2.0.0" "setuptools<=81.0.0" \
+        pytest pytest-mock pytest-asyncio pytest-cov anyio litellm pytest-xdist pytest-timeout
+
+# Ensure /app/src has top priority in PYTHONPATH
+ENV PYTHONPATH="/app/src:/app"
 
 # Preflight import check
 RUN python -c "import agentscope, pytest; print('preflight ok')"
