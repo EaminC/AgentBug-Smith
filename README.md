@@ -3,13 +3,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/1123qqa/ICLR2027"><img alt="Code" src="https://img.shields.io/badge/Code-1123qqa%2FICLR2027-black?logo=github"></a>
-  <a href="https://huggingface.co/buckets/IMICLRAUTHOR/live-harness-bench"><img alt="Benchmark" src="https://img.shields.io/badge/Benchmark-Live--Harness%20Bench-yellow?logo=huggingface"></a>
+  <a href="https://github.com/EaminC/AgentBug-Smith"><img alt="Code" src="https://img.shields.io/badge/Code-EaminC%2FAgentBug-Smith-black?logo=github"></a>
+  <a href="https://huggingface.co/buckets/EaminChan/live-harness-bench"><img alt="Benchmark" src="https://img.shields.io/badge/Benchmark-Live--Harness%20Bench-yellow?logo=huggingface"></a>
 </p>
 
 Code and experiment records for AgentBug-Smith and Live-Harness Bench.
 
-The 200 executable instances are a file benchmark: [Live-Harness Bench](https://huggingface.co/buckets/IMICLRAUTHOR/live-harness-bench). This repository is the harness that builds those instances and the logs behind the paper's tables.
+The 200 executable instances are a file benchmark: [Live-Harness Bench](https://huggingface.co/buckets/EaminChan/live-harness-bench). This repository is the harness that builds those instances and the logs behind the paper's tables.
 
 ## News
 
@@ -68,8 +68,8 @@ Asked to fix the benchmark, mini-SWE-agent, OpenHands, and AutoCodeRover correct
 Python 3.10 or newer, Docker, a GitHub token, and an OpenAI-compatible endpoint. The paper used Forge.
 
 ```bash
-git clone https://github.com/1123qqa/ICLR2027.git
-cd ICLR2027
+git clone https://github.com/EaminC/AgentBug-Smith.git
+cd AgentBug-Smith
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -150,7 +150,7 @@ SWE-Factory and SWE-bench-Live stay upstream. `baselines/swe-factory/` and `base
 
 | Record | Where |
 | --- | --- |
-| Live-Harness Bench, 200 instances | [bucket `benchmark/`](https://huggingface.co/buckets/IMICLRAUTHOR/live-harness-bench) |
+| Live-Harness Bench, 200 instances | [bucket `benchmark/`](https://huggingface.co/buckets/EaminChan/live-harness-bench) |
 | Reproduction logs (RQ1, and the RQ3 counts taken from the same runs) | `rq/rq1/f2p_by_models/` |
 | Identification labels and stability (RQ2) | `rq/rq2/` |
 | Skill split, skill file, rollouts (RQ4) | `rq/rq4/` |
@@ -177,7 +177,7 @@ SWE-Factory and SWE-bench-Live stay upstream. `baselines/swe-factory/` and `base
 @misc{agentbugsmith2026,
   title={AgentBug-Smith: Automatically Reproducing Harness Bugs in Agentic Systems},
   year={2026},
-  url={https://github.com/1123qqa/ICLR2027}
+  url={https://github.com/EaminC/AgentBug-Smith}
 }
 ```
 

@@ -93,7 +93,7 @@ trip on for this issue. The judge itself works.
   ```
 - PDF (`docs/progress.pdf`, 11 pages) and markdown
   (`docs/progress.md`) are up to date and pushed to
-  `github.com/1123qqa/ICLR2027`.
+  `github.com/EaminC/AgentBug-Smith`.
 
 ### What's next (the actual ask)
 **Component 6** — `utils/verify/solve.py`. For each of the 6 per-skill

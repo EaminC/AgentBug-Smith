@@ -17,7 +17,7 @@ gateway (`https://api.tu-zi.com`).
 ## Quick start (one-shot, fresh box)
 
 ```bash
-git clone https://github.com/1123qqa/ICLR2027.git && cd ICLR2027
+git clone https://github.com/EaminC/AgentBug-Smith.git && cd AgentBug-Smith
 bash scripts/setup-all.sh     # runs all 3 component setup scripts
 ```
 

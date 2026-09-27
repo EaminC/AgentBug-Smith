@@ -66,7 +66,7 @@ def download(repo: str, remote_subdir: str, out: Path) -> Path:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--repo", default="1123qqa/ICLR2027")
+    p.add_argument("--repo", default="EaminC/AgentBug-Smith")
     p.add_argument("--remote-subdir", default="results/all_combined_f2p")
     p.add_argument("--out", type=Path, default=Path("data/raw"),
                    help="Directory under which <remote-subdir> will be created.")

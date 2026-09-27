@@ -38,7 +38,7 @@ def main() -> None:
     # 1. Download
     if not args.skip_download:
         subdir = "results/all_combined_f2p"
-        final = download_mod.download("1123qqa/ICLR2027", subdir,
+        final = download_mod.download("EaminC/AgentBug-Smith", subdir,
                                       args.raw_dir)
     else:
         # Try to locate the existing download.

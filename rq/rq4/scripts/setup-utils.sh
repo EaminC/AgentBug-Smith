@@ -117,10 +117,10 @@ rm -rf "$SMOKE_RAW" "$SMOKE_INDEX"
 
 # Pick 3 dirs by listing the remote once.
 TMP_LIST="$(mktemp -t agentbug-list.XXXXXX)"
-git ls-remote --heads https://github.com/1123qqa/ICLR2027.git HEAD >/dev/null 2>&1 || true
+git ls-remote --heads https://github.com/EaminC/AgentBug-Smith.git HEAD >/dev/null 2>&1 || true
 # Listing contents needs the API; fall back to cloning metadata only.
 git clone --depth 1 --filter=blob:none --sparse \
-    https://github.com/1123qqa/ICLR2027.git "$SMOKE_RAW/.probe" 2>/dev/null
+    https://github.com/EaminC/AgentBug-Smith.git "$SMOKE_RAW/.probe" 2>/dev/null
 cd "$SMOKE_RAW/.probe"
 git sparse-checkout set results/all_combined_f2p
 PICK3=$(ls results/all_combined_f2p | head -3)
@@ -132,7 +132,7 @@ rm -rf "$SMOKE_RAW"
 mkdir -p "$SMOKE_RAW"
 SMOKE_WORK="$SMOKE_RAW/.probe"
 git clone --depth 1 --filter=blob:none --sparse \
-    https://github.com/1123qqa/ICLR2027.git "$SMOKE_WORK" 2>&1 | tail -2
+    https://github.com/EaminC/AgentBug-Smith.git "$SMOKE_WORK" 2>&1 | tail -2
 cd "$SMOKE_WORK"
 {
     for d in $PICK3; do

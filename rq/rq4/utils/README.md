@@ -2,7 +2,7 @@
 
 Five sub-components, run in order:
 
-1. `download/` — pull `1123qqa/ICLR2027` `all_combined_f2p` dataset
+1. `download/` — pull `EaminC/AgentBug-Smith` `all_combined_f2p` dataset
    to `data/raw/`. Uses `git sparse-checkout` (no auth needed) — only
    the target subdirectory is fetched, not the whole repo.
 2. `classify/` — for each downloaded issue, ask the LLM (default

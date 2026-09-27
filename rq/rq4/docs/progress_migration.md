@@ -76,7 +76,7 @@ guide for getting back to a runnable state.
 ## 3. One-shot setup on the new server
 
 ```bash
-git clone https://github.com/1123qqa/ICLR2027.git
+git clone https://github.com/EaminC/AgentBug-Smith.git
 cd RQ4
 bash scripts/setup-all.sh
 ```
