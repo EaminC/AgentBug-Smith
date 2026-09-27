@@ -1,0 +1,304 @@
+diff --git a/libs/prebuilt/README.md b/libs/prebuilt/README.md
+index 6a7d1e1a6..4c9df626b 100644
+--- a/libs/prebuilt/README.md
++++ b/libs/prebuilt/README.md
+@@ -17,6 +17,7 @@ pip install langchain-anthropic
+ from langchain_anthropic import ChatAnthropic
+ from langgraph.prebuilt import create_react_agent
+ 
++
+ # Define the tools for the agent to use
+ def search(query: str):
+     """Call to surf the web."""
+@@ -25,6 +26,7 @@ def search(query: str):
+         return "It's 60 degrees and foggy."
+     return "It's 90 degrees and sunny."
+ 
++
+ tools = [search]
+ model = ChatAnthropic(model="claude-3-7-sonnet-latest")
+ 
+@@ -45,6 +47,7 @@ app.invoke(
+ from langgraph.prebuilt import ToolNode
+ from langchain_core.messages import AIMessage
+ 
++
+ def search(query: str):
+     """Call to surf the web."""
+     # This is a placeholder, but don't tell the LLM that...
+@@ -52,8 +55,11 @@ def search(query: str):
+         return "It's 60 degrees and foggy."
+     return "It's 90 degrees and sunny."
+ 
++
+ tool_node = ToolNode([search])
+-tool_calls = [{"name": "search", "args": {"query": "what is the weather in sf"}, "id": "1"}]
++tool_calls = [
++    {"name": "search", "args": {"query": "what is the weather in sf"}, "id": "1"}
++]
+ ai_message = AIMessage(content="", tool_calls=tool_calls)
+ # execute tool call
+ tool_node.invoke({"messages": [ai_message]})
+@@ -78,10 +84,17 @@ class SelectNumber(BaseModel):
+             raise ValueError("Only 37 is allowed")
+         return v
+ 
++
+ validation_node = ValidationNode([SelectNumber])
+-validation_node.invoke({
+-    "messages": [AIMessage("", tool_calls=[{"name": "SelectNumber", "args": {"a": 42}, "id": "1"}])]
+-})
++validation_node.invoke(
++    {
++        "messages": [
++            AIMessage(
++                "", tool_calls=[{"name": "SelectNumber", "args": {"a": 42}, "id": "1"}]
++            )
++        ]
++    }
++)
+ ```
+ 
+ ## Agent Inbox
+diff --git a/libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py b/libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py
+index 0f71a981f..ba488b23d 100644
+--- a/libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py
++++ b/libs/prebuilt/langgraph/prebuilt/chat_agent_executor.py
+@@ -33,9 +33,6 @@ from langchain_core.runnables import (
+     RunnableSequence,
+ )
+ from langchain_core.tools import BaseTool
+-from pydantic import BaseModel
+-from typing_extensions import Annotated, TypedDict
+-
+ from langgraph._internal._runnable import RunnableCallable, RunnableLike
+ from langgraph._internal._typing import MISSING
+ from langgraph.errors import ErrorCode, create_error_message
+@@ -43,13 +40,16 @@ from langgraph.graph import END, StateGraph
+ from langgraph.graph.message import add_messages
+ from langgraph.graph.state import CompiledStateGraph
+ from langgraph.managed import IsLastStep, RemainingSteps
+-from langgraph.prebuilt._internal import ToolCallWithContext
+-from langgraph.prebuilt.tool_node import ToolNode
+ from langgraph.runtime import Runtime
+ from langgraph.store.base import BaseStore
+ from langgraph.types import Checkpointer, Send
+ from langgraph.typing import ContextT
+ from langgraph.warnings import LangGraphDeprecatedSinceV10
++from pydantic import BaseModel
++from typing_extensions import Annotated, NotRequired, TypedDict
++
++from langgraph.prebuilt._internal import ToolCallWithContext
++from langgraph.prebuilt.tool_node import ToolNode
+ 
+ StructuredResponse = Union[dict, BaseModel]
+ StructuredResponseSchema = Union[dict, type[BaseModel]]
+@@ -65,9 +65,9 @@ class AgentState(TypedDict):
+ 
+     messages: Annotated[Sequence[BaseMessage], add_messages]
+ 
+-    is_last_step: IsLastStep
++    is_last_step: NotRequired[IsLastStep]
+ 
+-    remaining_steps: RemainingSteps
++    remaining_steps: NotRequired[RemainingSteps]
+ 
+ 
+ class AgentStatePydantic(BaseModel):
+@@ -77,6 +77,8 @@ class AgentStatePydantic(BaseModel):
+ 
+     remaining_steps: RemainingSteps = 25
+ 
++    is_last_step: Optional[bool] = None
++
+ 
+ class AgentStateWithStructuredResponse(AgentState):
+     """The state of the agent with a structured response."""
+@@ -391,7 +393,7 @@ def create_react_agent(
+             !!! Note
+                 Only available with `version="v2"`.
+         state_schema: An optional state schema that defines graph state.
+-            Must have `messages` and `remaining_steps` keys.
++            Must have `messages` key. May optionally have `remaining_steps` and `is_last_step` keys.
+             Defaults to `AgentState` that defines those two keys.
+         context_schema: An optional schema for runtime context.
+         checkpointer: An optional checkpoint saver object. This is used for persisting
+@@ -482,7 +484,7 @@ def create_react_agent(
+         )
+ 
+     if state_schema is not None:
+-        required_keys = {"messages", "remaining_steps"}
++        required_keys = {"messages"}
+         if response_format is not None:
+             required_keys.add("structured_response")
+ 
+diff --git a/libs/prebuilt/langgraph/prebuilt/tool_node.py b/libs/prebuilt/langgraph/prebuilt/tool_node.py
+index db45f8f46..44b8a6477 100644
+--- a/libs/prebuilt/langgraph/prebuilt/tool_node.py
++++ b/libs/prebuilt/langgraph/prebuilt/tool_node.py
+@@ -68,15 +68,15 @@ from langchain_core.tools.base import (
+     TOOL_MESSAGE_BLOCK_TYPES,
+     get_all_basemodel_annotations,
+ )
+-from pydantic import BaseModel
+-from typing_extensions import Annotated, get_args, get_origin
+-
+ from langgraph._internal._runnable import RunnableCallable
+ from langgraph.errors import GraphBubbleUp
+ from langgraph.graph.message import REMOVE_ALL_MESSAGES
+-from langgraph.prebuilt._internal import ToolCallWithContext
+ from langgraph.store.base import BaseStore
+ from langgraph.types import Command, Send
++from pydantic import BaseModel
++from typing_extensions import Annotated, get_args, get_origin
++
++from langgraph.prebuilt._internal import ToolCallWithContext
+ 
+ INVALID_TOOL_NAME_ERROR_TEMPLATE = (
+     "Error: {requested_tool} is not a valid tool, try one of [{available_tools}]."
+diff --git a/libs/prebuilt/langgraph/prebuilt/tool_validator.py b/libs/prebuilt/langgraph/prebuilt/tool_validator.py
+index d63e0c535..777358311 100644
+--- a/libs/prebuilt/langgraph/prebuilt/tool_validator.py
++++ b/libs/prebuilt/langgraph/prebuilt/tool_validator.py
+@@ -30,12 +30,11 @@ from langchain_core.runnables import (
+ from langchain_core.runnables.config import get_executor_for_config
+ from langchain_core.tools import BaseTool, create_schema_from_function
+ from langchain_core.utils.pydantic import is_basemodel_subclass
++from langgraph._internal._runnable import RunnableCallable
+ from pydantic import BaseModel, ValidationError
+ from pydantic.v1 import BaseModel as BaseModelV1
+ from pydantic.v1 import ValidationError as ValidationErrorV1
+ 
+-from langgraph._internal._runnable import RunnableCallable
+-
+ 
+ def _default_format_error(
+     error: BaseException,
+diff --git a/libs/prebuilt/tests/conftest.py b/libs/prebuilt/tests/conftest.py
+index bb44383a9..72ee4ad97 100644
+--- a/libs/prebuilt/tests/conftest.py
++++ b/libs/prebuilt/tests/conftest.py
+@@ -3,10 +3,10 @@ from collections.abc import AsyncIterator, Iterator
+ from uuid import UUID
+ 
+ import pytest
+-from pytest_mock import MockerFixture
+-
+ from langgraph.checkpoint.base import BaseCheckpointSaver
+ from langgraph.store.base import BaseStore
++from pytest_mock import MockerFixture
++
+ from tests.conftest_checkpointer import (
+     _checkpointer_memory,
+     _checkpointer_postgres,
+diff --git a/libs/prebuilt/tests/conftest_checkpointer.py b/libs/prebuilt/tests/conftest_checkpointer.py
+index b3c782001..3db256f45 100644
+--- a/libs/prebuilt/tests/conftest_checkpointer.py
++++ b/libs/prebuilt/tests/conftest_checkpointer.py
+@@ -3,13 +3,13 @@ from contextlib import asynccontextmanager, contextmanager
+ from uuid import uuid4
+ 
+ import pytest
+-from psycopg import AsyncConnection, Connection
+-from psycopg_pool import AsyncConnectionPool, ConnectionPool
+-
+ from langgraph.checkpoint.postgres import PostgresSaver
+ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+ from langgraph.checkpoint.sqlite import SqliteSaver
+ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
++from psycopg import AsyncConnection, Connection
++from psycopg_pool import AsyncConnectionPool, ConnectionPool
++
+ from tests.memory_assert import MemorySaverAssertImmutable
+ 
+ DEFAULT_POSTGRES_URI = "postgres://postgres:postgres@localhost:5442/"
+diff --git a/libs/prebuilt/tests/conftest_store.py b/libs/prebuilt/tests/conftest_store.py
+index 9d047a8f8..ac168cf44 100644
+--- a/libs/prebuilt/tests/conftest_store.py
++++ b/libs/prebuilt/tests/conftest_store.py
+@@ -3,10 +3,9 @@ from contextlib import asynccontextmanager, contextmanager
+ from uuid import uuid4
+ 
+ import pytest
+-from psycopg import AsyncConnection, Connection
+-
+ from langgraph.store.memory import InMemoryStore
+ from langgraph.store.postgres import AsyncPostgresStore, PostgresStore
++from psycopg import AsyncConnection, Connection
+ 
+ DEFAULT_POSTGRES_URI = "postgres://postgres:postgres@localhost:5442/"
+ 
+diff --git a/libs/prebuilt/tests/test_deprecation.py b/libs/prebuilt/tests/test_deprecation.py
+index 6ce9dfa16..2989afa67 100644
+--- a/libs/prebuilt/tests/test_deprecation.py
++++ b/libs/prebuilt/tests/test_deprecation.py
+@@ -1,8 +1,8 @@
+ import pytest
++from langgraph.warnings import LangGraphDeprecatedSinceV10
+ from typing_extensions import TypedDict
+ 
+ from langgraph.prebuilt import create_react_agent
+-from langgraph.warnings import LangGraphDeprecatedSinceV10
+ from tests.model import FakeToolCallingModel
+ 
+ 
+diff --git a/libs/prebuilt/tests/test_react_agent.py b/libs/prebuilt/tests/test_react_agent.py
+index f70e1a88b..47a5063e7 100644
+--- a/libs/prebuilt/tests/test_react_agent.py
++++ b/libs/prebuilt/tests/test_react_agent.py
+@@ -27,14 +27,18 @@ from langchain_core.messages import (
+ from langchain_core.runnables import RunnableLambda
+ from langchain_core.tools import InjectedToolCallId, ToolException
+ from langchain_core.tools import tool as dec_tool
+-from pydantic import BaseModel, Field
+-from pydantic.v1 import BaseModel as BaseModelV1
+-from typing_extensions import TypedDict
+-
+ from langgraph.checkpoint.base import BaseCheckpointSaver
+ from langgraph.config import get_stream_writer
+ from langgraph.graph import START, MessagesState, StateGraph, add_messages
+ from langgraph.graph.message import REMOVE_ALL_MESSAGES
++from langgraph.runtime import Runtime
++from langgraph.store.base import BaseStore
++from langgraph.store.memory import InMemoryStore
++from langgraph.types import Command, Interrupt, interrupt
++from pydantic import BaseModel, Field
++from pydantic.v1 import BaseModel as BaseModelV1
++from typing_extensions import TypedDict
++
+ from langgraph.prebuilt import (
+     ToolNode,
+     create_react_agent,
+@@ -54,10 +58,6 @@ from langgraph.prebuilt.tool_node import (
+     _get_state_args,
+     _infer_handled_types,
+ )
+-from langgraph.runtime import Runtime
+-from langgraph.store.base import BaseStore
+-from langgraph.store.memory import InMemoryStore
+-from langgraph.types import Command, Interrupt, interrupt
+ from tests.any_str import AnyStr
+ from tests.messages import _AnyIdHumanMessage, _AnyIdToolMessage
+ from tests.model import FakeToolCallingModel
+diff --git a/libs/prebuilt/tests/test_tool_node.py b/libs/prebuilt/tests/test_tool_node.py
+index 2b6dfbebe..753f4aae2 100644
+--- a/libs/prebuilt/tests/test_tool_node.py
++++ b/libs/prebuilt/tests/test_tool_node.py
+@@ -12,14 +12,14 @@ from langchain_core.messages import (
+ )
+ from langchain_core.tools import BaseTool, ToolException
+ from langchain_core.tools import tool as dec_tool
++from langgraph.errors import GraphBubbleUp, GraphInterrupt
++from langgraph.graph.message import REMOVE_ALL_MESSAGES
++from langgraph.types import Command, Send
+ from pydantic import BaseModel, ValidationError
+ from pydantic.v1 import ValidationError as ValidationErrorV1
+ 
+-from langgraph.errors import GraphBubbleUp, GraphInterrupt
+-from langgraph.graph.message import REMOVE_ALL_MESSAGES
+ from langgraph.prebuilt import ToolNode
+ from langgraph.prebuilt.tool_node import TOOL_CALL_ERROR_TEMPLATE
+-from langgraph.types import Command, Send
+ 
+ pytestmark = pytest.mark.anyio
+ 

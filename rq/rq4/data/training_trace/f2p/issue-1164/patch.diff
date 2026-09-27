@@ -1,0 +1,92 @@
+diff --git a/src/strands/session/s3_session_manager.py b/src/strands/session/s3_session_manager.py
+index e5713e5b7..729b46bf5 100644
+--- a/src/strands/session/s3_session_manager.py
++++ b/src/strands/session/s3_session_manager.py
+@@ -3,6 +3,7 @@
+ import json
+ import logging
+ from typing import TYPE_CHECKING, Any, cast
++from concurrent.futures import ThreadPoolExecutor, as_completed
+ 
+ import boto3
+ from botocore.config import Config as BotocoreConfig
+@@ -255,42 +256,48 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
+         session_message.created_at = previous_message.created_at
+         message_key = self._get_message_path(session_id, agent_id, message_id)
+         self._write_s3_object(message_key, session_message.to_dict())
+-
+     def list_messages(
+         self, session_id: str, agent_id: str, limit: int | None = None, offset: int = 0, **kwargs: Any
+     ) -> list[SessionMessage]:
+-        """List messages for an agent with pagination from S3."""
++        """List messages for an agent with pagination from S3, fetching in parallel."""
+         messages_prefix = f"{self._get_agent_path(session_id, agent_id)}messages/"
+         try:
+             paginator = self.client.get_paginator("list_objects_v2")
+             pages = paginator.paginate(Bucket=self.bucket, Prefix=messages_prefix)
+ 
+-            # Collect all message keys and extract their indices
+             message_index_keys: list[tuple[int, str]] = []
+             for page in pages:
+                 if "Contents" in page:
+                     for obj in page["Contents"]:
+                         key = obj["Key"]
+                         if key.endswith(".json") and MESSAGE_PREFIX in key:
+-                            # Extract the filename part from the full S3 key
+                             filename = key.split("/")[-1]
+-                            # Extract index from message_<index>.json format
+-                            index = int(filename[len(MESSAGE_PREFIX) : -5])  # Remove prefix and .json suffix
++                            index = int(filename[len(MESSAGE_PREFIX) : -5])
+                             message_index_keys.append((index, key))
+ 
+-            # Sort by index and extract just the keys
+-            message_keys = [k for _, k in sorted(message_index_keys)]
+-
+-            # Apply pagination to keys before loading content
++            message_index_keys.sort(key=lambda x: x[0])
+             if limit is not None:
+-                message_keys = message_keys[offset : offset + limit]
++                message_index_keys = message_index_keys[offset : offset + limit]
+             else:
+-                message_keys = message_keys[offset:]
++                message_index_keys = message_index_keys[offset:]
+ 
+-            # Load only the required message objects
+             messages: list[SessionMessage] = []
+-            for key in message_keys:
+-                message_data = self._read_s3_object(key)
++            # Read messages concurrently using ThreadPoolExecutor
++            with ThreadPoolExecutor(max_workers=None) as executor:
++                future_to_index = {executor.submit(self._read_s3_object, key): idx for idx, key in message_index_keys}
++                futures_results = []
++                for future in as_completed(future_to_index):
++                    idx = future_to_index[future]
++                    try:
++                        message_data = future.result()
++                        futures_results.append((idx, message_data))
++                    except Exception as e:
++                        logger.error(f"Error loading message key at index {idx}: {e}")
++                        futures_results.append((idx, None))
++
++            # Sort results to preserve order and convert to SessionMessage objects
++            futures_results.sort(key=lambda x: x[0])
++            for _, message_data in futures_results:
+                 if message_data:
+                     messages.append(SessionMessage.from_dict(message_data))
+ 
+@@ -298,15 +305,6 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
+ 
+         except ClientError as e:
+             raise SessionException(f"S3 error reading messages: {e}") from e
+-
+-    def _get_multi_agent_path(self, session_id: str, multi_agent_id: str) -> str:
+-        """Get multi-agent S3 prefix."""
+-        session_path = self._get_session_path(session_id)
+-        multi_agent_id = _identifier.validate(multi_agent_id, _identifier.Identifier.AGENT)
+-        return f"{session_path}multi_agents/{MULTI_AGENT_PREFIX}{multi_agent_id}/"
+-
+-    def create_multi_agent(self, session_id: str, multi_agent: "MultiAgentBase", **kwargs: Any) -> None:
+-        """Create a new multiagent state in S3."""
+         multi_agent_id = multi_agent.id
+         multi_agent_key = f"{self._get_multi_agent_path(session_id, multi_agent_id)}multi_agent.json"
+         session_data = multi_agent.serialize_state()

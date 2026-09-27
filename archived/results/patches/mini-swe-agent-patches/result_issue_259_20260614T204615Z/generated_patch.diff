@@ -1,0 +1,88 @@
+diff --git a/mle/utils/memory.py b/mle/utils/memory.py
+index eef2fcb..dbcb85a 100644
+--- a/mle/utils/memory.py
++++ b/mle/utils/memory.py
+@@ -29,9 +29,9 @@ class Memory:
+         self.collection_name = 'memory'
+         self.client = chromadb.PersistentClient(path=os.path.join(project_path, self.db_name))
+ 
+-        config = get_config(project_path)
++        config = get_config(project_path) or {} or {}
+         # use the OpenAI embedding function if the openai section is set in the configuration.
+-        if config['platform'] == 'OpenAI':
++        if config.get('platform') == 'OpenAI':
+             self.client.get_or_create_collection(
+                 self.collection_name,
+                 embedding_function=embedding_functions.OpenAIEmbeddingFunction(
+@@ -152,3 +152,41 @@ class Memory:
+         Notice: You may need to set the environment variable `ALLOW_RESET` to `TRUE` to enable this function.
+         """
+         self.client.reset()
++
++import lancedb
++
++class LanceDBMemory:
++    def __init__(self, project_path: str):
++        self.db_path = project_path
++        self.client = lancedb.connect(project_path)
++        self.collection_name = 'memory'
++        if self.collection_name not in self.client.list_tables():
++            self.client.create_table(self.collection_name)
++        self.table = self.client.open_table(self.collection_name)
++
++    def add(self, records):
++        """Add records to LanceDB."""
++        self.table.insert(records)
++
++    def query(self, query_vector, top_k=5):
++        """Query records from LanceDB with a vector."""
++        return self.table.search(query_vector, top_k=top_k)
++
++    def delete(self, record_id):
++        """Delete record by ID from LanceDB."""
++        # LanceDB: deletion support depends on implementation, placeholder
++        pass
++
++    def drop(self):
++        """Drop the whole table."""
++        self.client.drop_table(self.collection_name)
++
++    def count(self):
++        """Count the number of records."""
++        return self.table.num_rows
++
++    def reset(self):
++        """Reset the LanceDB memory."""
++        self.drop()
++        self.client.create_table(self.collection_name)
++        self.table = self.client.open_table(self.collection_name)
+diff --git a/mle/workflow/baseline.py b/mle/workflow/baseline.py
+index 342e82f..3109431 100644
+--- a/mle/workflow/baseline.py
++++ b/mle/workflow/baseline.py
+@@ -30,9 +30,22 @@ def baseline(work_dir: str, model=None):
+ 
+     console = Console()
+     cache = WorkflowCache(work_dir, 'baseline')
+-    model = load_model(work_dir, model)
+-
+-    if not cache.is_empty():
++    # scan code and generate embeddings for RAG
++    with cache(step=1.5, name="scan code and generate embeddings for RAG") as ca:
++        embeddings_done = ca.resume("embeddings_done")
++        if embeddings_done is None:
++            from mle.utils.memory import Memory
++            memory = Memory(work_dir)
++            code_texts = []
++            for root, _, files in os.walk(work_dir):
++                for file in files:
++                    if file.endswith('.py'):
++                        path = os.path.join(root, file)
++                        with open(path, 'r', encoding='utf-8') as f:
++                            code_texts.append(f.read())
++            queries = [{'query': text[:1000], 'response': text[:1000]} for text in code_texts]
++            memory.add_query(queries)
++            ca.store("embeddings_done", True)
+         step = ask_text(f"MLE has finished the following steps: \n{cache}\n"
+                         f"You can pick a step from 1 to {cache.current_step()} to resume\n"
+                         "(or ENTER to continue the workflow)")

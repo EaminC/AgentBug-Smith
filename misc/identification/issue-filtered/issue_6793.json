@@ -1,0 +1,27 @@
+{
+  "number": 6793,
+  "title": "JSON dumping of save state on teams fails because of datateimes",
+  "url": "https://github.com/microsoft/autogen/issues/6793",
+  "state": "closed",
+  "created_at": "2025-07-11T08:55:39Z",
+  "closed_at": "2025-07-15T02:05:54Z",
+  "body": "### What happened?\n\n**Describe the bug**\nWhen a team state with `save_state` a serialization exception is raised and the state is truncated at the first datetime.\n\n**To Reproduce**\nA Swarm team was created, with only one assistant agent:\n```py\n# Assume existing and working model_client and project_search\nproject_agent = AssistantAgent(\n    name=\"ProjectSearchAgent\",\n    model_client=model_client,\n    tools=[project_search],\n    system_message=\"You are a project search agent. Search for information and respond with JSON: {\\\"response\\\": \\\"your answer\\\", \\\"terminate\\\": \\\"TERMINATE\\\"}\",\n    output_content_type_format=\"json_object\"\n)\n\n# Team setup\ntermination = TextMentionTermination(\"TERMINATE\")\nteam = Swarm([project_agent], termination_condition=termination)\n\nasync def main():\n    result = await team.run(task=\"What is a Montague?\")\n    \n    team_state = await team.save_state()\n\n    with open(state_file, \"w\") as f:\n        json.dump(team_state, f) # This throws \"Object of type datetime is not JSON serializable\"\n```\n\n**Expected behavior**\nThe state should be dumped without errors, as per (documentation)[https://microsoft.github.io/autogen/stable//user-guide/agentchat-user-guide/tutorial/state.html#persisting-state-file-or-database].\n\n**Workaround**\nA good workaround is to `jsonpickle` the state. It should be documented, though\n\n### Which packages was the bug in?\n\nPython AgentChat (autogen-agentchat>=0.4.0)\n\n### AutoGen library version.\n\nPython 0.6.4\n\n### Other library version.\n\nautogen-ext = {extras = [\"anthropic\"], version = \"^0.6.2\"}\n\n### Model used\n\neu.anthropic.claude-sonnet-4-20250514-v1:\n\n### Model provider\n\nAWS Bedrock\n\n### Other model provider\n\n_No response_\n\n### Python version\n\n3.13\n\n### .NET version\n\nNone\n\n### Operating system\n\nMacOS",
+  "labels": [
+    "needs-triage"
+  ],
+  "linked_prs": [
+    {
+      "number": 6797,
+      "state": "closed",
+      "title": "Fix JSON serialization of team state by handling datetime objects in message dump",
+      "url": "https://github.com/microsoft/autogen/pull/6797",
+      "merged": true,
+      "base_branch": "main",
+      "body": "## Problem\n\nWhen saving team state to JSON, users encountered a serialization error due to datetime objects in messages:\n\n```python\n# This was failing with \"Object of type datetime is not JSON serializable\"\nteam_state = await team.save_state()\nwith open(state_file, \"w\") as f:\n    json.dump(team_state, f)  # TypeError: Object of type datetime is not JSON serializable\n```\n\nThe issue occurred because `BaseChatMessage` and `BaseAgentEvent` classes both have a `created_at` field of type `datetime`, which is not JSON serializable by default.\n\n## Solution\n\nChanged the `BaseMessage.dump()` method to use Pydantic's JSON-aware serialization mode:\n\n```python\n# Before\nreturn self.model_dump()\n\n# After  \nreturn self.model_dump(mode=\"json\")\n```\n\nThis leverages Pydantic's built-in capability to automatically convert datetime objects to ISO 8601 format strings during serialization.\n\n## Benefits\n\n- ✅ **Minimal change**: Only 1 line changed + documentation update\n- ✅ **Surgical fix**: Targets the exact source of the problem  \n- ✅ **Backward compatible**: All existing functionality works unchanged\n- ✅ **Standards compliant**: Uses ISO 8601 datetime format\n- ✅ **Round-trip safe**: Load/dump operations preserve data correctly\n\n## Testing\n\nVerified the fix with comprehensive tests covering:\n- Original user scenario now works without errors\n- All message types serialize/deserialize correctly\n- Team state saving/loading works end-to-end\n- Backward compatibility maintained for existing APIs\n- Round-trip load/dump operations preserve all data\n\nExample of working code after the fix:\n\n```python\n# Create team and run task\nteam = Swarm([project_agent], termination_condition=termination)\nresult = await team.run(task=\"What is a Montague?\")\n\n# Save state to JSON - now works without errors!\nteam_state = await team.save_state()\nwith open(state_file, \"w\") as f:\n    json.dump(team_state, f)  # ✅ Success!\n\n# Load state back\nwith open(state_file, \"r\") as f:\n    loaded_state = json.load(f)\n```\n\nFixes #6793.\n\n<!-- START COPILOT CODING AGENT TIPS -->\n---\n\n💬 Share your feedback on Copilot coding agent for the chance to win a $200 gift card! Click [here](https://survey.alchemer.com/s3/8343779/Copilot-Coding-agent) to start the survey."
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes. The issue involves memory-related symptoms, specifically a serialization error when saving the agent's state, which aligns with the \"Memory content errors\" sub-category in the agent issue taxonomy."
+  }
+}

@@ -1,0 +1,98 @@
+diff --git a/src/agentscope/model/_dashscope_model.py b/src/agentscope/model/_dashscope_model.py
+index ebbd45f0..5a237b3f 100644
+--- a/src/agentscope/model/_dashscope_model.py
++++ b/src/agentscope/model/_dashscope_model.py
+@@ -291,6 +291,12 @@ class DashScopeChatModel(ChatModelBase):
+         acc_tool_calls = collections.defaultdict(dict)
+         metadata = None
+ 
++        # Buffer for tool call arguments partial content, keyed by index
++        buffered_arguments = collections.defaultdict(str)
++        # Track tool call ids and names for each index separately for last chunk assignment
++        tool_call_ids = {}
++        tool_call_names = {}
++
+         async for chunk in giter(response):
+             if chunk.status_code != HTTPStatus.OK:
+                 raise RuntimeError(
+@@ -315,28 +321,19 @@ class DashScopeChatModel(ChatModelBase):
+             for tool_call in message.get("tool_calls", []):
+                 index = tool_call.get("index", 0)
+ 
+-                if "id" in tool_call and tool_call["id"] != acc_tool_calls[
+-                    index
+-                ].get("id"):
+-                    acc_tool_calls[index]["id"] = (
+-                        acc_tool_calls[index].get("id", "") + tool_call["id"]
+-                    )
+-
++                # Update tool call id and name for the last chunk
++                if "id" in tool_call:
++                    tool_call_ids[index] = tool_call["id"]
+                 if "function" in tool_call:
+                     func = tool_call["function"]
+                     if "name" in func:
+-                        acc_tool_calls[index]["name"] = (
+-                            acc_tool_calls[index].get("name", "")
+-                            + func["name"]
+-                        )
++                        tool_call_names[index] = func["name"]
+ 
+                     if "arguments" in func:
+-                        acc_tool_calls[index]["arguments"] = (
+-                            acc_tool_calls[index].get("arguments", "")
+-                            + func["arguments"]
+-                        )
++                        # Buffer the arguments incrementally per index
++                        buffered_arguments[index] += func["arguments"]
+ 
+-            # to content blocks
++            # when the chunk is the last in the stream, finalize tool call inputs
+             content_blocks: list[TextBlock | ToolUseBlock | ThinkingBlock] = []
+             if acc_thinking_content:
+                 content_blocks.append(
+@@ -354,25 +351,26 @@ class DashScopeChatModel(ChatModelBase):
+                     ),
+                 )
+ 
+-            for tool_call in acc_tool_calls.values():
+-                repaired_input = _json_loads_with_repair(
+-                    tool_call.get("arguments", "{}") or "{}",
+-                )
+-
+-                if not isinstance(repaired_input, dict):
+-                    repaired_input = {}
+-
+-                content_blocks.append(
+-                    ToolUseBlock(
+-                        type="tool_use",
+-                        id=tool_call.get("id", ""),
+-                        name=tool_call.get("name", ""),
+-                        input=repaired_input,
+-                    ),
+-                )
++            # Only parse/repair tool call arguments on last chunk to avoid hanging on partial JSON
++            is_last_chunk = getattr(chunk.output, "last", False)
++            if is_last_chunk:
++                for index, arguments_str in buffered_arguments.items():
++                    repaired_input = _json_loads_with_repair(arguments_str or "{}")
++
++                    if not isinstance(repaired_input, dict):
++                        repaired_input = {}
++
++                    content_blocks.append(
++                        ToolUseBlock(
++                            type="tool_use",
++                            id=tool_call_ids.get(index, ""),
++                            name=tool_call_names.get(index, ""),
++                            input=repaired_input,
++                        ),
++                    )
+ 
+-                if structured_model:
+-                    metadata = repaired_input
++                    if structured_model:
++                        metadata = repaired_input
+ 
+             usage = None
+             if chunk.usage:

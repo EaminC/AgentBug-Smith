@@ -1,0 +1,106 @@
+# Issue #831: [BUG] CallbackHandler not being invoked with `Agent.structured_output`
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.7.1
+
+### Python Version
+
+3.12.11
+
+### Operating System
+
+15.6.1
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+```python
+from pydantic import BaseModel, Field
+from strands.models import BedrockModel
+import json
+from strands import Agent
+
+class ContactCard(BaseModel):
+    name: str = Field(description="The name of the person")
+    age: int = Field(description="The age of the person")
+    address: str = Field(description="The address of the person")
+
+# Create BedrockModel with custom timeout configuration
+bedrock_model = BedrockModel(
+    model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+    region_name='us-west-2',
+    additional_request_fields= {
+        "thinking": {
+            "type": "enabled", 
+            "budget_tokens": 2048
+        }
+    }
+)
+# Let's prep the images for input to our models. 
+
+system_prompt = "you are a helpful document understanding agent. You parse documetns into structured data"
+
+
+events = []
+## Let's createa a quick event callback so we can grab token usage. 
+def grab_event_callback(**kwargs):
+    # Print the values in kwargs so that we can see everything
+    events.append(kwargs)
+
+# Create an agent with initial messages
+agent = Agent(
+    model = bedrock_model, 
+    system_prompt=system_prompt,
+    callback_handler=grab_event_callback
+    )
+
+
+cc = agent.structured_output(ContactCard, "Convert the following data to a contact card <input> John, last name Smith, who resides at 123 anytown usa, Texas, 78756, and is of age 38</input>")
+
+
+print(events) #Nothing populated here
+print(cc.model_dump_json(indent = 2))
+```
+
+In the above example, the value of events, which should be populated with intermediate messages from the agent execution, is `[]`
+
+
+
+### Expected Behavior
+
+I expect the `events` object to be populated with all events from the execution. I want this so I can account for token usage when calling Agent.structued_output. 
+I found that I could see events when adding a print statement inthis for loop: https://github.com/strands-agents/sdk-python/blob/9213bc580824ff6b9f7dab48568c3376bc6a442d/src/strands/agent/agent.py#L516-L518
+
+None of the events have the `callback` key. 
+
+### Actual Behavior
+
+The `events` list is empty. This changed after upgrading from 1.5.x to 1.7.x
+
+### Additional Context
+
+_No response_
+
+### Possible Solution
+
+I believe that we should make the following enhancements to the structured_output functinality. 
+
+- Return the result as an AgentResult with an additional value that includes the object
+- Do this so the user can access the token usage. 
+- Provide a backwards compatible API for users that want to continue to use the `structured_output` format as currently implemented
+- Do enable the user callback to be enacted
+- Enhance the testing to include checking for the circular reference. 
+
+### Related Issues
+
+https://github.com/strands-agents/sdk-python/issues/810, https://github.com/strands-agents/sdk-python/issues/695, https://github.com/strands-agents/sdk-python/pull/670

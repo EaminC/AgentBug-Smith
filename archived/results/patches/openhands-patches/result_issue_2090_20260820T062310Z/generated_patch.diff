@@ -1,0 +1,71 @@
+diff --git a/src/strands/vended_plugins/skills/agent_skills.py b/src/strands/vended_plugins/skills/agent_skills.py
+index 5e42b9230..08f2e98b7 100644
+--- a/src/strands/vended_plugins/skills/agent_skills.py
++++ b/src/strands/vended_plugins/skills/agent_skills.py
+@@ -32,6 +32,11 @@ SkillSource: TypeAlias = str | Path | Skill
+ 
+ SkillSources: TypeAlias = SkillSource | list[SkillSource]
+ """One or more skill sources."""
++import tempfile
++import shutil
++from git import Repo
++from urllib.parse import urlparse
++
+ 
+ 
+ def _normalize_sources(sources: SkillSources) -> list[SkillSource]:
+@@ -284,7 +289,7 @@ class AgentSkills(Plugin):
+         """Resolve a list of skill sources into Skill instances.
+ 
+         Each source can be a Skill instance, a path to a skill directory,
+-        or a path to a parent directory containing multiple skills.
++        a path to a parent directory containing multiple skills, or a GitHub URL.
+ 
+         Args:
+             sources: List of skill sources to resolve.
+@@ -294,13 +299,36 @@ class AgentSkills(Plugin):
+         """
+         resolved: dict[str, Skill] = {}
+ 
++        def is_github_url(source: str) -> bool:
++            parsed = urlparse(source)
++            return parsed.scheme in ("http", "https") and parsed.netloc == "github.com"
++
++        def clone_repo(url: str) -> Path | None:
++            tmp_dir = tempfile.mkdtemp(prefix="agent_skill_")
++            try:
++                # Clone the repo into the temp directory
++                Repo.clone_from(url, tmp_dir)
++                return Path(tmp_dir)
++            except Exception as e:
++                logger.warning(f"Failed to clone repo '{url}': {e}")
++                shutil.rmtree(tmp_dir)
++                return None
++
+         for source in sources:
+             if isinstance(source, Skill):
+                 if source.name in resolved:
+                     logger.warning("name=<%s> | duplicate skill name, overwriting previous skill", source.name)
+                 resolved[source.name] = source
+             else:
+-                path = Path(source).resolve()
++                # Detect if source is a GitHub URL
++                if isinstance(source, str) and is_github_url(source):
++                    path = clone_repo(source)
++                    if path is None:
++                        logger.warning(f"path=<%s> | could not clone GitHub skill repo, skipping", source)
++                        continue
++                else:
++                    path = Path(source).resolve()
++
+                 if not path.exists():
+                     logger.warning("path=<%s> | skill source path does not exist, skipping", path)
+                     continue
+@@ -339,6 +367,7 @@ class AgentSkills(Plugin):
+         logger.debug("source_count=<%d>, resolved_count=<%d> | skills resolved", len(sources), len(resolved))
+         return resolved
+ 
++
+     def _set_state_field(self, agent: Agent, key: str, value: Any) -> None:
+         """Set a single field in the plugin's agent state dict.
+ 

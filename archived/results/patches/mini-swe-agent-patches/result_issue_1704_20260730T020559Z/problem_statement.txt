@@ -1,0 +1,79 @@
+# Issue #1704: [Bug]: RedisMemory.add() leaks msg keys with TTL=-1 due to pipeline SCAN race
+
+**Describe the bug**
+
+Due to the usage of redis pipeline usage. When RedisMemory.add() stores a new message, the last msg key created in each add() call never gets a TTL set. Over multiple conversation turns, this causes orphan keys to accumulate in Redis and never expire.
+
+**Root Cause**
+In _working_memory/_redis_memory.py, add() (line ~540-554) uses a pipeline to batch Redis operations:
+
+
+pipe = self._client.pipeline()
+
+for m in messages_to_add:
+    await pipe.set(                                    # ① SET queued, NOT written yet
+        self._get_message_key(m.id),
+        json.dumps(m.to_dict(), ensure_ascii=False),
+    )
+
+await self._refresh_session_ttl(pipe=pipe)            # ② SCAN Redis → add expire for found keys
+await pipe.execute()                                   # ③ SET + EXPIRE committed together
+_refresh_session_ttl() (line ~277-313) uses SCAN to discover all session keys, then adds EXPIRE commands to the same pipeline:
+
+
+async def _refresh_session_ttl(self, pipe=None):
+    ...
+    cursor, keys = await self._client.scan(            # SCAN runs IMMEDIATELY
+        cursor, match=self._get_session_pattern(),
+    )
+    for key in keys:
+        await pipe.expire(key, self.key_ttl)           # EXPIRE queued in pipe
+The problem: At step ②, SCAN runs immediately against Redis's current state. But the pipe.set() at step ① has not been committed yet — it's still queued in the pipeline. So SCAN cannot see the new msg key, and no EXPIRE command is queued for it. When pipe.execute() runs at step ③, the new msg key is created but has no TTL (TTL=-1).
+
+The next add() call WILL find this key via SCAN and fix its TTL, but the last msg key in the current call remains uncovered.
+
+
+**To Reproduce**
+import asyncio
+from agentscope.memory import RedisMemory
+
+async def test():
+    mem = RedisMemory(
+        session_id="test-session",
+        user_id="test-user",
+        host="127.0.0.1",
+        port=6379,
+        password="...",
+        key_prefix="test:",
+        key_ttl=10,                     # TTL 10 seconds
+    )
+    from agentscope.message import Msg
+    await mem.add(Msg("user", "hello", "user"))
+    # Wait a few seconds, then check Redis:
+    #   test:user_id:test-user:session:test-session:messages  → TTL ~10s ✅
+    #   test:user_id:test-user:session:test-session:msg:xxx   → TTL=-1  ❌
+
+**Expected behavior**
+All keys created by add() should have TTL set, so they expire automatically when the session expires.
+
+**Error messages**
+None
+
+**Environment (please complete the following information):**
+
+- AgentScope Version: 1.0.19.post1
+- Python Version: 3.11.15
+- OS: windows
+
+**Suggested Fix**
+Call pipe.expire() immediately after pipe.set() for the new message key:
+
+
+for m in messages_to_add:
+    await pipe.set(
+        self._get_message_key(m.id),
+        json.dumps(m.to_dict(), ensure_ascii=False),
+    )
+    if self.key_ttl is not None:
+        await pipe.expire(self._get_message_key(m.id), self.key_ttl)  # ← add this
+The same should apply to pipe.rpush() for the session key (line ~532) and mark-related keys (lines ~547-549) if they are also new.

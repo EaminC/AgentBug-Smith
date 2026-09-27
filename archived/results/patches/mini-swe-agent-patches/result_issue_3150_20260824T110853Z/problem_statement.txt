@@ -1,0 +1,56 @@
+# Issue #3150: [PORT] Middleware pipeline: ExecuteToolStage + AgentStreamStage + interrupt path (TS→Py)
+
+> ⚠️ Filed by Strandly as part of the #2498 parity audit. The source feature is verified merged + unit-tested in `strands-ts`. Agent-produced — confirm scope before implementing. (Note: repo has no `port` label yet — I lack permission to create it; a maintainer should add it.)
+
+**Parent:** #2498
+
+## Source SDK
+`strands-ts`
+
+## Target SDK
+`strands-py`
+
+## Related Files
+```
+strands-ts/src/middleware/stages.ts
+strands-ts/src/middleware/types.ts
+strands-ts/src/middleware/registry.ts
+strands-ts/src/middleware/index.ts
+strands-ts/src/middleware/README.md
+strands-ts/src/types/interrupt.ts
+strands-ts/src/interrupt.ts
+strands-ts/src/agent/agent.ts
+strands-ts/src/middleware/__tests__/middleware-interrupts.test.ts
+strands-ts/src/middleware/__tests__/agent-middleware.test.ts
+strands-ts/src/middleware/__tests__/copy-on-input.test.ts
+strands-ts/src/middleware/__tests__/custom-stages.test.ts
+strands-ts/src/middleware/__tests__/registry.test.ts
+```
+
+## What needs to be migrated
+Python already has the middleware **core** (`MiddlewareStage`, phases, `MiddlewareRegistry`, `MiddlewareResult`, `InvokeModelStage`) in `strands-py/src/strands/_middleware/`. Its README states the gap: *"Only `InvokeModelStage` is implemented. `ExecuteToolStage` and `AgentStreamStage` will be added as needed."* This ports the two remaining stages **and** the middleware-initiated interrupt path.
+
+- **`ExecuteToolStage`** (`stages.ts:161`) — wraps a single tool execution. Context `ExecuteToolContext` (`stages.ts:104`): `{agent, tool: Tool|undefined, toolUse, invocationState}` + extends `MiddlewareInterruptible`. Result `{result: ToolResultBlock}`. Supports short-circuit (return a mock result without calling `next` → real tool doesn't run); hooks (`BeforeToolCallEvent`/`AfterToolCallEvent`) fire **outside** middleware even on short-circuit.
+- **`AgentStreamStage`** (`stages.ts:170`) — wraps the whole agent output stream (outermost). Context `{agent, args, options}` + `MiddlewareInterruptible`. Marked `@internal` in TS (not in public `index.ts`) — keep it internal in Python too.
+- **Middleware interrupt path** — `MiddlewareInterruptResult<T> = {response: T}` wrapper; `MiddlewareInterruptible.interrupt()`; `createMiddlewareInterrupt(interruptState, idPrefix)` factory (`agent.ts:368`), a **non-mutating** interrupt fn: id = `` `${idPrefix}:${name}` ``; returns stored response on resume; honors preemptive `response`; else throws `InterruptError` with `source:'middleware'`.
+
+## Python landing points
+- Stages → `strands-py/src/strands/_middleware/stages.py` (today only `InvokeModelStage`); export public ones from `_middleware/__init__.py`, keep `AgentStreamStage` internal.
+- `ExecuteToolStage` wiring → wrap the **core execution** segment of `ToolExecutor._stream` (`tools/executors/_executor.py:225-249`, the `selected_tool.stream(...)` region) so `Before/AfterToolCallEvent` hooks stay outside middleware.
+- `AgentStreamStage` wiring → wrap the per-invocation event-loop-cycle stream in `agent/agent.py` (`_run_loop` ~`1227`), hooks outside. `self._middleware_registry` already exists (`agent.py:407`).
+- Interrupt path → reuse `strands-py/src/strands/interrupt.py` (`Interrupt`, `InterruptException`, `_InterruptState`) + `types/interrupt.py` `_Interruptible`; add a `create_middleware_interrupt` factory returning the **wrapper** result (not the raw response).
+
+## Gotchas / open questions (need maintainer input)
+- **Generator return values.** Python async generators can't `return` a value; Python already uses the *"last yielded event is the result"* convention for `InvokeModelStage` (`event_loop.py:548`, `registry.py:83`). The two new stages must adopt it — pick the concrete terminal event types.
+- **`Interrupt.source` field is missing in Python** (`interrupt.py:22`). Porting `source:'middleware'` means adding a `source` field + serialization — a cross-cutting change.
+- **Python interrupts are tool-only today** (`event_loop.py:282`, resume keyed on tool_use/tool_results). An `AgentStreamStage` interrupt doesn't fit that resume shape — expect to extend `_InterruptState.resume()`. **Deepest risk.**
+- **No public `addMiddleware` in Python** (TS has `Agent.addMiddleware`). The new stages are unusable without a registration entry point — decide whether this port also adds one.
+
+## Completeness of source (strands-ts)
+- Merged: ✅ (`ExecuteToolStage` `agent.ts:2517`, `AgentStreamStage` `agent.ts:1155`, `createMiddlewareInterrupt` `agent.ts:368`).
+- Unit tests: ✅ (`middleware-interrupts.test.ts`, `agent-middleware.test.ts`, `copy-on-input.test.ts`, `custom-stages.test.ts`, `registry.test.ts`).
+- Integ tests: ❌ none for middleware stages.
+- Docs: ⚠️ no site/user-guide page; only `strands-ts/src/middleware/README.md` (design + behavioral spec). No user-facing docs to port.
+
+## Confirmation
+- [x] The change is complete in the source SDK (merged + unit-tested); every related artifact is listed above. Test/doc caveats noted above.

@@ -1,0 +1,561 @@
+STDOUT:
+
+[2026-09-01 04:49:44] Total number of tasks: 1
+
+[2026-09-01 04:49:44] Total number of processes: 1
+
+[2026-09-01 04:49:44] Task group info: (number of groups: 1)
+
+[2026-09-01 04:49:44]   local: 1 tasks
+
+[2026-09-01 04:49:44] Running in single process mode.
+
+[2026-09-01 04:49:44] ============= Running task issue_3988_20260511T074158Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] CrewAI Decorators Don't Support Async Methods - Causes "'coroutine' object has no attribute 'name'" Error                    │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Description                                                                                                                                 │
+│                                                                                                                                                 │
+│ ## Summary                                                                                                                                      │
+│ CrewAI's `@agent`, `@task`, and `@crew` decorators do not properly support async methods. When decorating async methods that return coroutines, │
+│ the decorators fail to unwrap the coroutine, resulting in the error: `'coroutine' object has no attribute 'name'`.                              │
+│                                                                                                                                                 │
+│ ## Environment                                                                                                                                  │
+│ - **OS**: Ubuntu 22.04 (Docker)                                                                                                                 │
+│ - **Python Version**: 3.13.0                                                                                                                    │
+│ - **CrewAI Version**: 0.62.2                                                                                                                    │
+│ - **Framework**: FastAPI + Telegram Bot (aiogram) + AsyncSQLAlchemy 2.0                                                                         │
+│                                                                                                                                                 │
+│ ## Description                                                                                                                                  │
+│ We're building an async-first architecture where CrewAI crews are executed within FastAPI/Telegram handlers. Tool initialization requires async │
+│ database operations via AsyncSession, so we need async tool creation.                                                                           │
+│                                                                                                                                                 │
+│ **Problem Flow:**                                                                                                                               │
+│ 1. We decorated agent/task methods with `async def` to support `await self._create_tools()`                                                     │
+│ 2. The `@agent`, `@task`, `@crew` decorators don't await the async methods                                                                      │
+│ 3. This returns a coroutine object instead of Agent/Task/Crew instances                                                                         │
+│ 4. When CrewAI tries to access `.name` attribute on the coroutine, it fails                                                                     │
+│                                                                                                                                                 │
+│ ### Error Stack                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ ERROR | src.agents.tools.base:run_crew_isolated:141 - Crew execution failed |                                                                   │
+│ crew_class=FounderCrew run_mode=answer error='coroutine' object has no attribute 'name'                                                         │
+│                                                                                                                                                 │
+│ Traceback:                                                                                                                                      │
+│   File "src/agents/tools/base.py", line 135, in run_crew_isolated                                                                               │
+│     result = crew_instance.crew(run_mode).kickoff_async(inputs)                                                                                 │
+│ AttributeError: 'coroutine' object has no attribute 'name'                                                                                      │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Workaround Attempted                                                                                                                         │
+│ We tried wrapping async `_arun()` calls in a sync `_run()` fallback:                                                                            │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ def _run(self, *args, **kwargs):                                                                                                                │
+│     return run_async(self._arun(*args, **kwargs))  # ❌ Creates new event loop → loop conflicts                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This reintroduces "Task got Future attached to a different loop" errors because it spawns a new event loop inside the existing one.             │
+│                                                                                                                                                 │
+│ ## Root Cause Analysis                                                                                                                          │
+│ The `@agent`, `@task`, and `@crew` decorators use class method introspection but don't check if the method is a coroutine function. They should │
+│ either:                                                                                                                                         │
+│                                                                                                                                                 │
+│ 1. **Auto-await async methods** (recommended for modern Python):                                                                                │
+│ ```python                                                                                                                                       │
+│ def decorator(method):                                                                                                                          │
+│     def wrapper(self):                                                                                                                          │
+│         result = method(self)                                                                                                                   │
+│         if asyncio.iscoroutine(result):                                                                                                         │
+│             return asyncio.run(result)  # Or: await result in async context                                                                     │
+│         return result                                                                                                                           │
+│     return wrapper                                                                                                                              │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ 2. **Explicitly reject async methods** with helpful error:                                                                                      │
+│ ```python                                                                                                                                       │
+│ def decorator(method):                                                                                                                          │
+│     if asyncio.iscoroutinefunction(method):                                                                                                     │
+│         raise TypeError(                                                                                                                        │
+│             f"Method '{method.__name__}' is async but @agent/@task/@crew "                                                                      │
+│             "decorators only support sync methods. "                                                                                            │
+│             "Create tools synchronously or use a different pattern."                                                                            │
+│         )                                                                                                                                       │
+│     return original_decorator(method)                                                                                                           │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Questions for CrewAI Team                                                                                                                    │
+│ 1. Are `@agent`, `@task`, `@crew` decorators intentionally limited to sync-only?                                                                │
+│ 2. Is there a supported pattern for async tool creation in async-first applications?                                                            │
+│ 3. Would a PR adding async support to decorators be welcome?                                                                                    │
+│ 4. Should we await async methods at decoration time or at call time?                                                                            │
+│                                                                                                                                                 │
+│ ## Production Context                                                                                                                           │
+│ This is a production issue affecting:                                                                                                           │
+│ - **Telegram Bot** (aiogram) with async handlers                                                                                                │
+│ - **FastAPI** application with async endpoints                                                                                                  │
+│ - **AsyncSQLAlchemy** database operations                                                                                                       │
+│ - **PostgreSQL** via asyncpg driver                                                                                                             │
+│                                                                                                                                                 │
+│ We need async-safe tool execution to avoid event loop conflicts and zombie database connections.                                                │
+│                                                                                                                                                 │
+│ ## Proposed Solution                                                                                                                            │
+│ Add async method detection and auto-await to the decorators:                                                                                    │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # In crewai/decorators.py or similar                                                                                                            │
+│ import asyncio                                                                                                                                  │
+│ from functools import wraps                                                                                                                     │
+│                                                                                                                                                 │
+│ def agent(method):                                                                                                                              │
+│     @wraps(method)                                                                                                                              │
+│     def wrapper(self, *args, **kwargs):                                                                                                         │
+│         result = method(self, *args, **kwargs)                                                                                                  │
+│         if asyncio.iscoroutine(result):                                                                                                         │
+│             # Option 1: Run in current event loop (if in async context)                                                                         │
+│             try:                                                                                                                                │
+│                 loop = asyncio.get_running_loop()                                                                                               │
+│                 # Schedule as task if already in event loop                                                                                     │
+│                 return asyncio.ensure_future(result)                                                                                            │
+│             except RuntimeError:                                                                                                                │
+│                 # No running loop - run new one                                                                                                 │
+│                 return asyncio.run(result)                                                                                                      │
+│         return result                                                                                                                           │
+│     return wrapper                                                                                                                              │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This allows developers to write naturally async code while maintaining backward compatibility.                                                  │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ ## Steps to Reproduce                                                                                                                           │
+│                                                                                                                                                 │
+│ ### Code Example                                                                                                                                │
+│ ```python                                                                                                                                       │
+│ from crewai import Agent, Task, Crew                                                                                                            │
+│ from crewai.task import Task                                                                                                                    │
+│ from crewai.agent import Agent                                                                                                                  │
+│                                                                                                                                                 │
+│ class FounderCrew:                                                                                                                              │
+│     @agent                                                                                                                                      │
+│     async def your-agent(self) -> Agent:                                                                                                        │
+│         """This is the problem - decorators don't support async"""                                                                              │
+│         tools = await self._create_tools()  # Async operation                                                                                   │
+│         return Agent(                                                                                                                           │
+│             config=self.agents_config["your-agent"],                                                                                            │
+│             tools=tools,                                                                                                                        │
+│         )                                                                                                                                       │
+│                                                                                                                                                 │
+│     @task                                                                                                                                       │
+│     async def your-agent(self) -> Task:                                                                                                         │
+│         """Task method with async"""                                                                                                            │
+│         return Task(                                                                                                                            │
+│             config=self.tasks_config["your-agent"],                                                                                             │
+│         )                                                                                                                                       │
+│                                                                                                                                                 │
+│     @crew                                                                                                                                       │
+│     async def crew(self, run_mode: str = "answer") -> Crew:                                                                                     │
+│         """Crew method with async/await"""                                                                                                      │
+│         tasks =                                                                                                                                 │
+│         agents =                                                                                                                                │
+│         return Crew(agents=agents, tasks=tasks, process=Process.sequential)                                                                     │
+│                                                                                                                                                 │
+│ # Called from FastAPI/Telegram async handler                                                                                                    │
+│ result = await crew.crew(run_mode="answer").kickoff_async(inputs={})                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Expected behavior                                                                                                                           │
+│                                                                                                                                                 │
+│ I think when I use the kickoff_async(), it should call the tools using _arun() by default, or should I create tools in async ?                  │
+│                                                                                                                                                 │
+│ ## Expected Behavior                                                                                                                            │
+│ - `@agent`, `@task`, and `@crew` decorators should either:                                                                                      │
+│   1. Support async methods natively by awaiting them, OR                                                                                        │
+│   2. Raise a clear error message stating async is not supported, OR                                                                             │
+│   3. Provide documentation and recommended patterns for async tool creation                                                                     │
+│                                                                                                                                                 │
+│ ## Actual Behavior                                                                                                                              │
+│ - Decorators return unawaited coroutine objects                                                                                                 │
+│ - Causes cascading `AttributeError` when CrewAI tries to access object properties                                                               │
+│ - No clear error message indicating the problem is with async decorator usage                                                                   │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Screenshots/Code snippets                                                                                                                   │
+│                                                                                                                                                 │
+│ <img width="755" height="716" alt="Image" src="https://github.com/user-attachments/assets/c04a7f68-5c9b-4ac4-b54f-b3441d37083d" />              │
+│                                                                                                                                                 │
+│ <img width="660" height="183" alt="Image" src="https://github.com/user-attachments/assets/c8446d13-132d-4995-bcad-a8e89451ade7" />              │
+│                                                                                                                                                 │
+│ <img width="540" height="161" alt="Image" src="https://github.com/user-attachments/assets/a128449e-ba11-4ae9-8b50-1d8c150f2aab" />              │
+│                                                                                                                                                 │
+│ <img width="664" height="174" alt="Image" src="https://github.com/user-attachments/assets/0865753c-4ceb-4215-a49c-c4bb149e0174" />              │
+│                                                                                                                                                 │
+│ ### Operating System                                                                                                                            │
+│                                                                                                                                                 │
+│ Ubuntu 20.04                                                                                                                                    │
+│                                                                                                                                                 │
+│ ### Python Version                                                                                                                              │
+│                                                                                                                                                 │
+│ 3.12                                                                                                                                            │
+│                                                                                                                                                 │
+│ ### crewAI Version                                                                                                                              │
+│                                                                                                                                                 │
+│ crewai==1.4.1                                                                                                                                   │
+│                                                                                                                                                 │
+│ ### crewAI Tools Version                                                                                                                        │
+│                                                                                                                                                 │
+│ crewai-tools==1.4.1                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Virtual Environment                                                                                                                         │
+│                                                                                                                                                 │
+│ Venv                                                                                                                                            │
+│                                                                                                                                                 │
+│ ### Evidence                                                                                                                                    │
+│                                                                                                                                                 │
+│ .                                                                                                                                               │
+│                                                                                                                                                 │
+│ ### Possible Solution                                                                                                                           │
+│                                                                                                                                                 │
+│ .                                                                                                                                               │
+│                                                                                                                                                 │
+│ ### Additional context                                                                                                                          │
+│                                                                                                                                                 │
+│ .                                                                                                                                               │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1728, output_tokens=13, cost=0.000267
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1906, output_tokens=1066, cost=0.000925
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import sys                                                        │
+│  import asyncio                                                    │
+│                                                                    │
+│  from functools import wraps                                       │
+│                                                                    │
+│  # Simulated minimal crewai classes and decorators to reproduce t  │
+│  issue                                                             │
+│                                                                    │
+│  class Agent:                                                      │
+│      def __init__(self, config=None, tools=None):                  │
+│          self.config = config                                      │
+│          self.tools = tools                                        │
+│          self.name = "AgentName"                                   │
+│                                                                    │
+│  class Task:                                                       │
+│      def __init__(self, config=None):                              │
+│          self.config = config                                      │
+│          self.name = "TaskName"                                    │
+│                                                                    │
+│  class Crew:                                                       │
+│      def __init__(self, agents=None, tasks=None, process=None):    │
+│          self.agents = agents or []                                │
+│          self.tasks = tasks or []                                  │
+│          self.process = process                                    │
+│          self.name = "CrewName"                                    │
+│      async def kickoff_async(self, inputs):                        │
+│          # Simulate kickoff by just returning a fixed string       │
+│          return "kickoff done"                                     │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  # Original decorators WITHOUT async support (the source of the    │
+│  problem)                                                          │
+│  def agent(func):                                                  │
+│      @wraps(func)                                                  │
+│      def wrapper(self, *args, **kwargs):                           │
+│          # Does not await async functions - returns coroutine      │
+│  object when func is async                                         │
+│          return func(self, *args, **kwargs)                        │
+│      return wrapper                                                │
+│                                                                    │
+│  def task(func):                                                   │
+│      @wraps(func)                                                  │
+│      def wrapper(self, *args, **kwargs):                           │
+│          # Similar issue                                           │
+│          return func(self, *args, **kwargs)                        │
+│      return wrapper                                                │
+│                                                                    │
+│  def crew(func):                                                   │
+│      @wraps(func)                                                  │
+│      def wrapper(self, *args, **kwargs):                           │
+│          # Similar issue                                           │
+│          return func(self, *args, **kwargs)                        │
+│      return wrapper                                                │
+│                                                                    │
+│                                                                    │
+│  class FounderCrew:                                                │
+│      agents_config = {"your-agent": {"some": "config"}}            │
+│      tasks_config = {"your-agent": {"some": "config"}}             │
+│                                                                    │
+│      async def _create_tools(self):                                │
+│          # Simulate async tool creation                            │
+│          await asyncio.sleep(0.01)                                 │
+│          return ["tool1", "tool2"]                                 │
+│                                                                    │
+│      @agent                                                        │
+│      async def your_agent(self) -> Agent:                          │
+│          # Async method decorated by @agent which does NOT await   │
+│  the coroutine inside                                              │
+│          tools = await self._create_tools()                        │
+│          return Agent(config=self.agents_config["your-agent"],     │
+│  tools=tools)                                                      │
+│                                                                    │
+│      @task                                                         │
+│      async def your_task(self) -> Task:                            │
+│          return Task(config=self.tasks_config["your-agent"])       │
+│                                                                    │
+│      @crew                                                         │
+│      async def crew(self, run_mode: str = "answer") -> Crew:       │
+│          # Await async decorated methods, which themselves return  │
+│  coroutines (unawaited)                                            │
+│          # Because your_agent() returns coroutine (due to          │
+│  decorator), awaiting it is mandatory.                             │
+│          # But the decorator does not await so returns a coroutin  │
+│  object => this likely fails downstream.                           │
+│          # We'll keep this call, it might error out because        │
+│  your_agent returns coroutine.                                     │
+│          agents = [await self.your_agent()]                        │
+│          tasks = [await self.your_task()]                          │
+│          return Crew(agents=agents, tasks=tasks,                   │
+│  process="sequential")                                             │
+│                                                                    │
+│  async def reproduce_issue():                                      │
+│      crew_instance = FounderCrew()                                 │
+│      try:                                                          │
+│          # The critical line - calling crew and kickoff_async      │
+│  (async kickoff)                                                   │
+│          cr = await crew_instance.crew()                           │
+│          # cr should be a Crew instance if decorators worked fine  │
+│          # But if decorators return coroutine object instead of    │
+│  awaited Agent or Task,                                            │
+│          # cr would be invalid and cause attribute errors on next  │
+│  usage.                                                            │
+│          # So let's assert that cr has attribute "name" (Crew mus  │
+│  have a name attribute)                                            │
+│          assert hasattr(cr, "name") and isinstance(cr.name, str),  │
+│  "Returned crew object missing .name"                              │
+│          # Call kickoff_async to simulate production usage         │
+│          result = await cr.kickoff_async(inputs={})                │
+│          assert result == "kickoff done"                           │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          # Because the bug causes coroutine object to be returned  │
+│  where it shouldn't,                                               │
+│          # we expect AttributeError or similar, so raise           │
+│  AssertionError to mark reproducing bug.                           │
+│          raise AssertionError("Issue reproduced - decorators do n  │
+│  support awaiting async methods") from e                           │
+│                                                                    │
+│  def main():                                                       │
+│      # Run async reproduction and catch assertion                  │
+│      try:                                                          │
+│          asyncio.run(reproduce_issue())                            │
+│      except AssertionError as e:                                   │
+│          # Bug present, exit with error code 1                     │
+│          print(f"\n{e}", file=sys.stderr)                          │
+│          sys.exit(1)                                               │
+│      except Exception as exc:                                      │
+│          # Unexpected error                                        │
+│          print(f"\nUnexpected error: {exc}", file=sys.stderr)      │
+│          sys.exit(2)                                               │
+│      else:                                                         │
+│          print("No issue detected: decorators support async metho  │
+│  as expected.")                                                    │
+│          sys.exit(0)                                               │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 04:50:01] Task issue_3988_20260511T074158Z failed with exception: .
+
+[2026-09-01 04:50:01] No patch generated. You can try running ACR again.
+
+[2026-09-01 04:50:01] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 04:49:44.141 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_3988_20260511T074158Z =============
+2026-09-01 04:49:44.256 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 04:49:47.152 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1728, output_tokens=13, cost=0.000267
+2026-09-01 04:50:01.519 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1906, output_tokens=1066, cost=0.000925
+2026-09-01 04:50:01.694 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7f1857920d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7f184dee98e0>]}
+    └ <function run_task_groups at 0x7f184d7223e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7f184dee98e0>]
+    └ <function run_tasks_serial at 0x7f184d722480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7f184dee98e0>
+    └ <function run_task_in_subprocess at 0x7f184d722660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7f184dee98e0>
+    │        │      └ <function run_raw_task at 0x7f184d722700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7f1857554ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f184d72ba10>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7f1857554860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f184d72ba10>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7f18575549a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f184d72ba10>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7f1857554a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7f184d72ba10>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7f18577242c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7f1857788fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+    │    └ <function Popen._launch at 0x7f184d6d4360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7f184d7763c0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7f1857724cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7f1857724220>
+    └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7f184d777bf0>, <multiprocessing.queues.SimpleQueue object at 0x7f184d7760...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+    │    └ <function _process_worker at 0x7f185754fc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2751685 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7f184da0b5f0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7f184d6dddc0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7f184da0b5f0>
+        │         └ <function run_raw_task at 0x7f184d722700>
+        └ <concurrent.futures.process._CallItem object at 0x7f184da0b5f0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_3988_20260511T074158Z/acr_output/issue_3988_20260511T074158Z_2026-09-01_04-49-44'
+             │            │    └ <function RawLocalTask.to_task at 0x7f184d722020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7f184d6dddc0>
+             └ <function do_inference at 0x7f184d7228e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7f184d7e8860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7f184e077880>
+       │                 │         │            └ PlainTask(commit_hash='4d8eec96e8432eda570207a601655ec29e9d1d6e', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3988', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7f184d776150>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_3988_20260511T074158Z/acr_output/issue_3988_20260511T074158Z_2026-09-01...
+       └ <function _run_one_task at 0x7f184d7e9b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7f184e074220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7f184df4d430>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7f184e077ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7f184df4d430>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport sys\nimport asyncio\n\nfrom functools import wraps\n\n# Simulated minimal crewai classes and decorat...
+                   │    │    └ <function Task.execute_reproducer at 0x7f184e076480>
+                   │    └ PlainTask(commit_hash='4d8eec96e8432eda570207a601655ec29e9d1d6e', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3988', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7f184df4d430>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 04:50:01.698 | INFO     | app.log:log_and_always_print:229 - Task issue_3988_20260511T074158Z failed with exception: .
+2026-09-01 04:50:01.700 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

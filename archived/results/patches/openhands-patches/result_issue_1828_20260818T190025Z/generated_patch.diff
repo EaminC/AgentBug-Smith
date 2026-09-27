@@ -1,0 +1,187 @@
+diff --git a/src/strands/session/repository_session_manager.py b/src/strands/session/repository_session_manager.py
+index dd3562289..78b7b2595 100644
+--- a/src/strands/session/repository_session_manager.py
++++ b/src/strands/session/repository_session_manager.py
+@@ -54,6 +54,9 @@ class RepositorySessionManager(SessionManager):
+             logger.debug("session_id=<%s> | session not found, creating new session", self.session_id)
+             session = Session(session_id=session_id, session_type=SessionType.AGENT)
+             session_repository.create_session(session)
++            self._is_new_session = True
++        else:
++            self._is_new_session = False
+ 
+         self.session = session
+ 
+@@ -160,6 +163,62 @@ class RepositorySessionManager(SessionManager):
+         }
+ 
+     def initialize(self, agent: "Agent", **kwargs: Any) -> None:
++        if agent.agent_id in self._latest_agent_message:
++            raise SessionException("The `agent_id` of an agent must be unique in a session.")
++        self._latest_agent_message[agent.agent_id] = None
++
++        if not getattr(self, '_is_new_session', False):
++            session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
++        else:
++            session_agent = None
++
++        if session_agent is None:
++            logger.debug(
++                "agent_id=<%s> | session_id=<%s> | creating agent",
++                agent.agent_id,
++                self.session_id,
++            )
++
++            session_agent = SessionAgent.from_agent(agent)
++            self.session_repository.create_agent(self.session_id, session_agent)
++            # Initialize messages with sequential indices
++            session_message = None
++            for i, message in enumerate(agent.messages):
++                session_message = SessionMessage.from_message(message, i)
++                self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
++            self._latest_agent_message[agent.agent_id] = session_message
++        else:
++            logger.debug(
++                "agent_id=<%s> | session_id=<%s> | restoring agent",
++                agent.agent_id,
++                self.session_id,
++            )
++            agent.state = AgentState(session_agent.state)
++
++            session_agent.initialize_internal_state(agent)
++
++            # Restore the conversation manager to its previous state, and get the optional prepend messages
++            prepend_messages = agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state)
++
++            if prepend_messages is None:
++                prepend_messages = []
++
++            # List the messages currently in the session, using an offset of the messages previously removed
++            # by the conversation manager.
++            session_messages = self.session_repository.list_messages(
++                session_id=self.session_id,
++                agent_id=agent.agent_id,
++                offset=agent.conversation_manager.removed_message_count,
++            )
++            if len(session_messages) > 0:
++                self._latest_agent_message[agent.agent_id] = session_messages[-1]
++
++            # Restore the agents messages array including the optional prepend messages
++            agent.messages = prepend_messages + [session_message.to_message() for session_message in session_messages]
++
++            # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
++            agent.messages = self._fix_broken_tool_use(agent.messages)
++
+         """Initialize an agent with a session.
+ 
+         Args:
+@@ -299,12 +358,15 @@ class RepositorySessionManager(SessionManager):
+             source: Multi-agent source object to restore state into
+             **kwargs: Additional keyword arguments for future extensibility.
+         """
+-        state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
+-        if state is None:
+-            self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
++        if not getattr(self, '_is_new_session', False):
++            state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
++            if state is None:
++                self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
++            else:
++                logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
++                source.deserialize_state(state)
+         else:
+-            logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
+-            source.deserialize_state(state)
++            self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
+ 
+     def initialize_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+         """Initialize a bidirectional agent with a session.
+@@ -317,7 +379,10 @@ class RepositorySessionManager(SessionManager):
+             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+         self._latest_agent_message[agent.agent_id] = None
+ 
+-        session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
++        if not getattr(self, '_is_new_session', False):
++            session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
++        else:
++            session_agent = None
+ 
+         if session_agent is None:
+             logger.debug(
+diff --git a/tests/strands/session/test_repository_session_manager.py b/tests/strands/session/test_repository_session_manager.py
+index f8f044a9b..d3b1c6802 100644
+--- a/tests/strands/session/test_repository_session_manager.py
++++ b/tests/strands/session/test_repository_session_manager.py
+@@ -338,6 +338,72 @@ def test_fix_broken_tool_use_handles_multiple_orphaned_tools(session_manager):
+     session_agent = SessionAgent(
+         agent_id="existing-agent",
+         state={"key": "value"},
++def test_is_new_session_flag_on_new_and_existing_sessions(mock_repository):
++    # New session should have _is_new_session True
++    new_session_manager = RepositorySessionManager(session_id="new-session", session_repository=mock_repository)
++    assert new_session_manager._is_new_session is True
++
++    # Existing session should have _is_new_session False
++    existing_session = Session(session_id="existing-session", session_type=SessionType.AGENT)
++    mock_repository.create_session(existing_session)
++    existing_session_manager = RepositorySessionManager(session_id="existing-session", session_repository=mock_repository)
++    assert existing_session_manager._is_new_session is False
++
++
++def test_initialize_skips_read_agent_for_new_session(mock_repository):
++    # Create a new session manager (new session)
++    new_session_manager = RepositorySessionManager(session_id="new-session-init", session_repository=mock_repository)
++
++    # Mock agent
++    agent = Agent(agent_id="agent1", messages=[{"role": "user", "content": [{"text": "Hello"}]}])
++
++    # Spy on session_repository.read_agent method
++    mock_repository.read_agent = lambda session_id, agent_id: (_ for _ in ()).throw(Exception("Should not call read_agent for new session"))
++
++    # Should not raise exception because read_agent is not called
++    new_session_manager.initialize(agent)
++
++
++def test_initialize_bidi_agent_skips_read_agent_for_new_session(mock_repository):
++    new_session_manager = RepositorySessionManager(session_id="new-session-bidi", session_repository=mock_repository)
++
++    class DummyBidiAgent:
++        def __init__(self, agent_id):
++            self.agent_id = agent_id
++            self.messages = []
++
++    agent = DummyBidiAgent("bidi-agent1")
++
++    # Spy on session_repository.read_agent method
++    mock_repository.read_agent = lambda session_id, agent_id: (_ for _ in ()).throw(Exception("Should not call read_agent for new session"))
++
++    # Should not raise exception because read_agent is not called
++    new_session_manager.initialize_bidi_agent(agent)
++
++
++def test_initialize_multi_agent_skips_read_multi_agent_for_new_session(mock_repository):
++    new_session_manager = RepositorySessionManager(session_id="new-session-multi", session_repository=mock_repository)
++
++    class DummyMultiAgent:
++        def __init__(self):
++            self.id = "multi-agent1"
++            self.deserialize_state_called = False
++
++        def deserialize_state(self, state):
++            self.deserialize_state_called = True
++
++    multi_agent = DummyMultiAgent()
++
++    # Spy on session_repository.read_multi_agent method
++    mock_repository.read_multi_agent = lambda session_id, agent_id, **kwargs: (_ for _ in ()).throw(Exception("Should not call read_multi_agent for new session"))
++
++    # Should not raise exception because read_multi_agent is not called
++    new_session_manager.initialize_multi_agent(multi_agent)
++
++    # But multi-agent create must be called
++    assert multi_agent.deserialize_state_called is False
++
++
+         conversation_manager_state=conversation_manager.get_state(),
+     )
+     session_manager.session_repository.create_agent("test-session", session_agent)

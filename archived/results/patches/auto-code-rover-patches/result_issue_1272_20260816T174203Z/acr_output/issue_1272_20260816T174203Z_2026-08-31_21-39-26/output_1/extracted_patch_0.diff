@@ -1,0 +1,77 @@
+diff --git a/src/strands/session/repository_session_manager.py b/src/strands/session/repository_session_manager.py
+index ad4733a35..b1ee6c557 100644
+--- a/src/strands/session/repository_session_manager.py
++++ b/src/strands/session/repository_session_manager.py
+@@ -163,6 +163,8 @@ class RepositorySessionManager(SessionManager):
+ 
+             # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
+             agent.messages = self._fix_broken_tool_use(agent.messages)
++            # Fix orphaned toolResult messages missing toolUse content (new fix)
++            agent.messages = self._fix_broken_tool_result(agent.messages)
+ 
+     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+         """Add tool_result after orphaned tool_use messages.
+@@ -188,7 +190,7 @@ class RepositorySessionManager(SessionManager):
+                     ]
+ 
+                     missing_tool_use_ids = list(set(tool_use_ids) - set(tool_result_ids))
+-                    # If there area missing tool use ids, that means the messages history is broken
++                    # If there are missing tool use ids, that means the messages history is broken
+                     if missing_tool_use_ids:
+                         logger.warning(
+                             "Session message history has an orphaned toolUse with no toolResult. "
+@@ -205,6 +207,54 @@ class RepositorySessionManager(SessionManager):
+                             messages.insert(index + 1, {"role": "user", "content": missing_content_blocks})
+         return messages
+ 
++    def _fix_broken_tool_result(self, messages: list[Message]) -> list[Message]:
++        """Add tool_use before orphaned tool_result messages.
++
++        This fixes the issue where toolResult messages may appear without preceding toolUse messages,
++        by inserting dummy toolUse content blocks before such messages to keep pairing consistent.
++        """
++        import copy
++
++        # We'll iterate over a copy since we'll be potentially inserting new messages.
++        i = 0
++        while i < len(messages):
++            message = messages[i]
++            # If message has toolResult content
++            has_tool_result = any("toolResult" in content for content in message["content"])
++            if has_tool_result:
++                # Collect all toolUseIds referenced by toolResult blocks in this message
++                tool_result_ids = [
++                    content["toolResult"]["toolUseId"] for content in message["content"] if "toolResult" in content
++                ]
++
++                # Check previous message if it has matching toolUseIds
++                prev_message = messages[i - 1] if i > 0 else None
++                prev_tool_use_ids = []
++                if prev_message is not None:
++                    prev_tool_use_ids = [
++                        content["toolUse"]["toolUseId"] for content in prev_message["content"] if "toolUse" in content
++                    ]
++
++                # Determine toolResult ids that have no matching preceding toolUse
++                missing_tool_use_ids = [tid for tid in tool_result_ids if tid not in prev_tool_use_ids]
++
++                if missing_tool_use_ids:
++                    logger.warning(
++                        "Session message history has an orphaned toolResult with no preceding toolUse. "
++                        "Inserting missing toolUse content blocks."
++                    )
++                    missing_tool_use_content = generate_missing_tool_use_content(missing_tool_use_ids)
++                    if prev_message is not None:
++                        # Append missing toolUse content blocks to previous message's content
++                        prev_message["content"].extend(missing_tool_use_content)
++                    else:
++                        # No previous message, insert a new message with dummy toolUse content before current
++                        dummy_message = {"role": "user", "content": missing_tool_use_content}
++                        messages.insert(0, dummy_message)
++                        i += 1  # Advance index to account for inserted message
++            i += 1
++        return messages
++
+     def sync_multi_agent(self, source: "MultiAgentBase", **kwargs: Any) -> None:
+         """Serialize and update the multi-agent state into the session repository.
+ 

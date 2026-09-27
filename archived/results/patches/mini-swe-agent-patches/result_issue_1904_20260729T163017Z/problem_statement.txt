@@ -1,0 +1,164 @@
+# Issue #1904: [Bug]: Mutable Default Config Objects in Agent.__init__ Cause Silent Cross-Instance State Sharing
+
+### Prerequisites
+
+- [x] I have searched the existing [issues](https://github.com/agentscope-ai/agentscope/issues) and [discussions](https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.
+- [x] This is a bug, not a usage question. (For questions, please use [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)
+
+### Background / Description
+
+## Bug Description
+
+`Agent.__init__` uses **mutable default arguments** for three configuration objects: `ModelConfig()`, `ContextConfig()`, and `ReActConfig()`. Python evaluates default parameter expressions **once at class-definition time**, not once per call. This means all `Agent` instances created without explicitly passing these config objects will **silently share the same singleton instances** of those configs.
+
+**Affected file:** `src/agentscope/agent/_agent.py`, lines 102–115
+
+```python
+# BUGGY — ModelConfig(), ContextConfig(), ReActConfig() are each instantiated ONCE
+def __init__(
+    self,
+    name: str,
+    system_prompt: str,
+    model: ChatModelBase,
+    ...
+    model_config: ModelConfig = ModelConfig(),        # ← shared singleton!
+    context_config: ContextConfig = ContextConfig(),  # ← shared singleton!
+    react_config: ReActConfig = ReActConfig(),        # ← shared singleton!
+) -> None:
+    ...
+    self.model_config = model_config      # agent1 and agent2 point to same object
+    self.context_config = context_config
+    self.react_config = react_config
+```
+
+**Impact:**
+- In multi-agent scenarios (AgentScope's primary use case), all agents that omit these arguments share the **same config instances by reference**.
+- Any code path that mutates a field on these objects (e.g., `agent.model_config.temperature = 0.5`) will **silently corrupt every other agent** sharing the same default.
+- The bug is completely silent — no error, no warning, and mutations are invisible to the developer.
+- Middleware hooks that modify config objects (a documented feature) will cause unintended cross-agent contamination with zero diagnostic signal.
+- The bug affects all three configs simultaneously: model behavior (`ModelConfig`), context window management (`ContextConfig`), and ReAct loop control (`ReActConfig`).
+
+**Expected behavior:** Each `Agent` instance must own an independent copy of the default configuration objects, so mutating one agent's config never affects another.
+
+### Error Messages
+
+```shell
+No exception is raised. The bug is completely silent — config mutations silently propagate across all Agent instances.
+
+Behavioral symptom (verifiable with Python's `id()` or `is` operator):
+
+
+>>> agent1 = Agent("a1", "You are agent 1.", model)
+>>> agent2 = Agent("a2", "You are agent 2.", model)
+
+# All three configs are the SAME object in memory:
+>>> agent1.model_config is agent2.model_config       # True  ← BUG
+>>> agent1.context_config is agent2.context_config   # True  ← BUG
+>>> agent1.react_config is agent2.react_config       # True  ← BUG
+
+# Mutate agent1 → agent2 is silently corrupted:
+>>> agent1.model_config.temperature = 0.9
+>>> agent2.model_config.temperature                  # 0.9  ← unexpected!
+
+
+No stack trace, no warning. The contamination is invisible to the developer.
+```
+
+### Steps to Reproduce
+
+**No LLM API key required** — this bug is fully reproducible without any model calls.
+
+```python
+# reproduce_bug.py
+from unittest.mock import MagicMock
+from agentscope.agent import Agent
+from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig
+
+# Use a mock model — no API key needed
+mock_model = MagicMock()
+
+# Step 1: Create two agents using DEFAULT configs (no explicit config passed)
+agent1 = Agent("assistant-1", "You are agent 1.", mock_model)
+agent2 = Agent("assistant-2", "You are agent 2.", mock_model)
+
+# Step 2: Check identity — are the config objects the same instance?
+print("=== Identity Checks ===")
+print(f"model_config shared:   {agent1.model_config is agent2.model_config}")     # True ← BUG
+print(f"context_config shared: {agent1.context_config is agent2.context_config}") # True ← BUG
+print(f"react_config shared:   {agent1.react_config is agent2.react_config}")     # True ← BUG
+
+# Step 3: Mutate agent1's config — agent2 is silently corrupted
+print("\n=== Cross-Contamination ===")
+agent1.model_config.temperature = 0.9
+print(f"agent1.model_config.temperature = 0.9")
+print(f"agent2.model_config.temperature = {agent2.model_config.temperature}")  # 0.9 ← unexpected!
+
+agent1.react_config.max_iters = 3
+print(f"agent1.react_config.max_iters = 3")
+print(f"agent2.react_config.max_iters = {agent2.react_config.max_iters}")  # 3 ← unexpected!
+```
+
+**Expected output:**
+```
+=== Identity Checks ===
+model_config shared:   False
+context_config shared: False
+react_config shared:   False
+
+=== Cross-Contamination ===
+agent1.model_config.temperature = 0.9
+agent2.model_config.temperature = <default value>
+agent1.react_config.max_iters = 3
+agent2.react_config.max_iters = <default value>
+```
+
+**Actual output:**
+```
+=== Identity Checks ===
+model_config shared:   True
+context_config shared: True
+react_config shared:   True
+
+=== Cross-Contamination ===
+agent1.model_config.temperature = 0.9
+agent2.model_config.temperature = 0.9    ← CONTAMINATED
+agent1.react_config.max_iters = 3
+agent2.react_config.max_iters = 3        ← CONTAMINATED
+```
+
+---
+
+**Suggested Fix** (standard Python idiom for mutable defaults):
+
+```python
+# In src/agentscope/agent/_agent.py
+
+def __init__(
+    self,
+    name: str,
+    system_prompt: str,
+    model: ChatModelBase,
+    toolkit: Toolkit | None = None,
+    middlewares: list[MiddlewareBase] | None = None,
+    state: AgentState | None = None,
+    offloader: Offloader | None = None,
+    model_config: ModelConfig | None = None,        # ← None sentinel
+    context_config: ContextConfig | None = None,    # ← None sentinel
+    react_config: ReActConfig | None = None,        # ← None sentinel
+) -> None:
+    ...
+    self.model_config = model_config if model_config is not None else ModelConfig()
+    self.context_config = context_config if context_config is not None else ContextConfig()
+    self.react_config = react_config if react_config is not None else ReActConfig()
+```
+
+This ensures each `Agent` instance gets its own independent config object.
+
+### Environment
+
+- AgentScope Version: v2.0.3 (latest as of 2026-06-20; bug exists in entire v2.x series — introduced when `ModelConfig`, `ContextConfig`, `ReActConfig` were added as typed default parameters)
+- Python Version: 3.11+ (required by project; bug is a language-level anti-pattern affecting all Python versions)
+- OS: All platforms (Linux / macOS / Windows — bug is platform-independent)
+- Affected file: `src/agentscope/agent/_agent.py`, lines 112–114
+- Severity: High — silent data corruption in AgentScope's primary multi-agent use case
+- Related: This is distinct from #1508 (path traversal in file tools); this bug is in the core `Agent` class constructor and affects all users who create multiple agents in the same Python process.

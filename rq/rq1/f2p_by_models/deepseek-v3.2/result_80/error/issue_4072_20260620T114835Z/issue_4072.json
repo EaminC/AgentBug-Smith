@@ -1,0 +1,33 @@
+{
+  "number": 4072,
+  "title": "[BUG] Async task that errors keeps its thread alive",
+  "url": "https://github.com/crewAIInc/crewAI/issues/4072",
+  "state": "closed",
+  "created_at": "2025-12-11T14:11:30Z",
+  "closed_at": "2025-12-11T17:03:35Z",
+  "body": "### Description\n\nIn the scenario in which a task is executed async and at the end it raises, the tread handling the execution never shuts down. \n\n### Steps to Reproduce\n\n1. Create and run a task async\n2. Wait for it's result\n\n### Expected behavior\n\nThe task/crew should finish with the raised exception\n\n### Screenshots/Code snippets\n```\nimport asyncio\nfrom typing import Any\n\nfrom crewai import Task, TaskOutput, Crew, Agent\nfrom crewai.agents.agent_builder.base_agent import BaseAgent\n\n\nclass MyErroneousTask(Task):\n    def _execute_core(\n        self,\n        agent: BaseAgent | None,\n        context: str | None,\n        tools: list[Any] | None,\n    ) -> TaskOutput:\n        raise ValueError(\"Something happened here\")\n\n\nmy_agent = Agent(\n    role=\"Agent's role\", backstory=\"Agent's backstory\", goal=\"Agent's goal\"\n)\nmy_crew = Crew(\n    agents=[my_agent],\n    tasks=[\n        MyErroneousTask(\n            description=\"Some task here, it doesn't matter\",\n            expected_output=\"Nothing\",\n            agent=my_agent,\n            async_execution=True,\n        )\n    ],\n)\n\n\nasync def run():\n    await my_crew.kickoff_async()\n\n    # This is never reached as the task's thread never completes\n    print(\"I'm finished\")\n\n\nasyncio.run(run())\n```\n\n### Operating System\n\nUbuntu 20.04\n\n### Python Version\n\n3.11\n\n### crewAI Version\n\nmain\n\n### crewAI Tools Version\n\nN/A\n\n### Virtual Environment\n\nVenv\n\n### Evidence\n\nThe code above exemplifies the issue.\n\n### Possible Solution\n\nLinked PR\n\n### Additional context\n\nN/A",
+  "labels": [
+    "bug"
+  ],
+  "linked_prs": [
+    {
+      "number": 4073,
+      "state": "closed",
+      "title": "fix: gracefully terminate the future when executing a task async",
+      "url": "https://github.com/crewAIInc/crewAI/pull/4073",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "e43c7debbd444486df77c83fc604641e18f1cd8a",
+      "head_sha": "9a1faffa1dec65dcea2e04d4f35c962c7ce7c4d5",
+      "patch": "diff --git a/lib/crewai/src/crewai/task.py b/lib/crewai/src/crewai/task.py\nindex 85e8dbb17..13d30b564 100644\n--- a/lib/crewai/src/crewai/task.py\n+++ b/lib/crewai/src/crewai/task.py\n@@ -494,8 +494,11 @@ class Task(BaseModel):\n         future: Future[TaskOutput],\n     ) -> None:\n         \"\"\"Execute the task asynchronously with context handling.\"\"\"\n-        result = self._execute_core(agent, context, tools)\n-        future.set_result(result)\n+        try:\n+          result = self._execute_core(agent, context, tools)\n+          future.set_result(result)\n+        except Exception as e:\n+          future.set_exception(e)\n \n     async def aexecute_sync(\n         self,\ndiff --git a/lib/crewai/tests/test_task.py b/lib/crewai/tests/test_task.py\nindex 41c14cb87..9a0010d89 100644\n--- a/lib/crewai/tests/test_task.py\n+++ b/lib/crewai/tests/test_task.py\n@@ -1727,3 +1727,24 @@ def test_task_output_includes_messages():\n     assert hasattr(task2_output, \"messages\")\n     assert isinstance(task2_output.messages, list)\n     assert len(task2_output.messages) > 0\n+\n+\n+def test_async_execution_fails():\n+    researcher = Agent(\n+      role=\"Researcher\",\n+      goal=\"Make the best research and analysis on content about AI and AI agents\",\n+      backstory=\"You're an expert researcher, specialized in technology, software engineering, AI and startups. You work as a freelancer and is now working on doing research and analysis for a new customer.\",\n+      allow_delegation=False,\n+    )\n+\n+    task = Task(\n+      description=\"Give me a list of 5 interesting ideas to explore for na article, what makes them unique and interesting.\",\n+      expected_output=\"Bullet point list of 5 interesting ideas.\",\n+      async_execution=True,\n+      agent=researcher,\n+    )\n+\n+    with patch.object(Task, \"_execute_core\", side_effect=RuntimeError(\"boom!\")):\n+      with pytest.raises(RuntimeError, match=\"boom!\"):\n+        execution = task.execute_async(agent=researcher)\n+        execution.result()\n",
+      "test_paths_in_patch": [
+        "lib/crewai/tests/test_task.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

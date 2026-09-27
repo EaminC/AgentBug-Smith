@@ -1,0 +1,79 @@
+diff --git a/src/strands/models/bedrock.py b/src/strands/models/bedrock.py
+index bab4031ed..8c20656fe 100644
+--- a/src/strands/models/bedrock.py
++++ b/src/strands/models/bedrock.py
+@@ -825,35 +825,45 @@ class BedrockModel(Model):
+                 response = self.client.converse_stream(**request)
+                 # Track tool use events to fix stopReason for streaming responses
+                 has_tool_use = False
+-                for chunk in response["stream"]:
+-                    if (
+-                        "metadata" in chunk
+-                        and "trace" in chunk["metadata"]
+-                        and "guardrail" in chunk["metadata"]["trace"]
+-                    ):
+-                        guardrail_data = chunk["metadata"]["trace"]["guardrail"]
+-                        if self._has_blocked_guardrail(guardrail_data):
+-                            for event in self._generate_redaction_events():
+-                                callback(event)
+-
+-                    # Track if we see tool use events
+-                    if "contentBlockStart" in chunk and chunk["contentBlockStart"].get("start", {}).get("toolUse"):
+-                        has_tool_use = True
+-
+-                    # Fix stopReason for streaming responses that contain tool use
+-                    if (
+-                        has_tool_use
+-                        and "messageStop" in chunk
+-                        and (message_stop := chunk["messageStop"]).get("stopReason") == "end_turn"
+-                    ):
+-                        # Create corrected chunk with tool_use stopReason
+-                        modified_chunk = chunk.copy()
+-                        modified_chunk["messageStop"] = message_stop.copy()
+-                        modified_chunk["messageStop"]["stopReason"] = "tool_use"
+-                        logger.warning("Override stop reason from end_turn to tool_use")
+-                        callback(modified_chunk)
+-                    else:
+-                        callback(chunk)
++                message_stop_chunk = None
++has_tool_use = False
++message_stop_chunk = None
++
++for chunk in response["stream"]:
++    if (
++        "metadata" in chunk
++        and "trace" in chunk["metadata"]
++        and "guardrail" in chunk["metadata"]["trace"]
++    ):
++        guardrail_data = chunk["metadata"]["trace"]["guardrail"]
++        if self._has_blocked_guardrail(guardrail_data):
++            for event in self._generate_redaction_events():
++                callback(event)
++
++    # Track if we see tool use events - check both start and delta
++    if "contentBlockStart" in chunk and chunk["contentBlockStart"].get("start", {}).get("toolUse"):
++        has_tool_use = True
++    if "contentBlockDelta" in chunk and chunk["contentBlockDelta"].get("delta", {}).get("toolUse"):
++        has_tool_use = True
++
++    # Buffer messageStop chunk if any
++    if "messageStop" in chunk:
++        message_stop_chunk = chunk
++        continue
++
++    # Callback immediately for other chunks
++    callback(chunk)
++
++# Callback delayed messageStop chunk last with override if needed
++if message_stop_chunk is not None:
++    if has_tool_use and message_stop_chunk["messageStop"].get("stopReason") == "end_turn":
++        modified_chunk = message_stop_chunk.copy()
++        modified_chunk["messageStop"] = message_stop_chunk["messageStop"].copy()
++        modified_chunk["messageStop"]["stopReason"] = "tool_use"
++        logger.warning("Override stop reason from end_turn to tool_use")
++        callback(modified_chunk)
++    else:
++        callback(message_stop_chunk)
+ 
+             else:
+                 response = self.client.converse(**request)

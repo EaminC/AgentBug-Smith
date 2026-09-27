@@ -1,0 +1,480 @@
+diff --git a/strands-py/src/strands/event_loop/event_loop.py b/strands-py/src/strands/event_loop/event_loop.py
+index 5d28879c7..ac73c71ce 100644
+--- a/strands-py/src/strands/event_loop/event_loop.py
++++ b/strands-py/src/strands/event_loop/event_loop.py
+@@ -219,7 +219,24 @@ async def event_loop_cycle(
+             - Message: The generated message from the model
+             - EventLoopMetrics: Updated metrics for the event loop
+             - Any: Updated request state
++    
++    #
+             - Sequence[Interrupt] | None: Interrupts raised during the cycle, if any
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+             - BaseModel | None: Structured output result, if any
+             - Checkpoint | None: Checkpoint captured when stop_reason == "checkpoint"
+ 
+@@ -288,38 +305,38 @@ async def event_loop_cycle(
+             elif _has_tool_use_in_latest_message(agent.messages):
+                 stop_reason = "tool_use"
+                 message = agent.messages[-1]
+-            else:
+                 model_events = _handle_model_execution(
+                     agent, cycle_span, cycle_trace, invocation_state, tracer, structured_output_context
+                 )
+                 async for model_event in model_events:
+                     if not isinstance(model_event, ModelStopReason):
+                         yield model_event
+-
+                 stop_reason, message, *_ = model_event["stop"]
+-                yield ModelMessageEvent(message=message)
+-        except Exception as e:
+-            tracer.end_span_with_error(cycle_span, str(e), e)
+-            raise
+ 
+-        try:
+             if stop_reason == "max_tokens":
+-                """
+-                Handle max_tokens limit reached by the model.
+-
+-                When the model reaches its maximum token limit, this represents a potentially unrecoverable
+-                state where the model's response was truncated. By default, Strands fails hard with an
+-                MaxTokensReachedException to maintain consistency with other failure types.
+-                """
++                partial_message = recover_message_on_max_tokens_reached(message)
++    
++    #
+                 raise MaxTokensReachedException(
+-                    message=(
+-                        "Agent has reached an unrecoverable state due to max_tokens limit. "
+-                        "For more information see: "
+-                        "https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/#maxtokensreachedexception"
+-                    )
+-                )
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
+ 
+-            if stop_reason == "tool_use":
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
++                    message="Agent loop stopped: max_tokens limit reached.",
++                    partial_message=partial_message
++                )
++            elif stop_reason == "tool_use":
+                 # Emit after_model checkpoint, unless we just resumed from one.
+                 if agent._checkpointing and not agent._cancel_signal.is_set():
+                     resume_position = agent._checkpoint_resume_position
+@@ -347,72 +364,76 @@ async def event_loop_cycle(
+                     cycle_span=cycle_span,
+                     cycle_start_time=cycle_start_time,
+                     invocation_state=invocation_state,
+-                    tracer=tracer,
+                     structured_output_context=structured_output_context,
+                     limits=limits,
+                 )
+                 async for tool_event in tool_events:
+                     yield tool_event
+-
++            elif stop_reason == "end_turn":
++                agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace)
+                 return
++            else:
++                agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace)
++                return
++        except Exception as e:
++            tracer.end_span_with_error(cycle_span, str(e), e)
++    
++    #
++            raise
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
+ 
+-            # End the cycle and return results
+-            agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace, attributes)
++        tracer.end_event_loop_cycle_span(cycle_span, message)
+ 
+-            # Force structured output tool call if LLM didn't use it automatically
+-            if structured_output_context.is_enabled and stop_reason == "end_turn":
+-                if structured_output_context.force_attempted:
+-                    raise StructuredOutputException(
+-                        "The model failed to invoke the structured output tool even after it was forced."
+-                    )
+-                structured_output_context.set_forced_mode()
+-                logger.debug("Forcing structured output tool")
+-                await agent._append_messages(
+-                    {"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]}
+-                )
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
+ 
+-                tracer.end_event_loop_cycle_span(cycle_span, message)
+-                events = recurse_event_loop(
+-                    agent=agent,
+-                    invocation_state=invocation_state,
+-                    structured_output_context=structured_output_context,
+-                    limits=limits,
+-                )
+-                async for typed_event in events:
+-                    yield typed_event
++        async for typed_event in events:
++            yield typed_event
++        try:
++            # Skipping model invocation if in interrupt state as interrupts are currently only supported for tool calls.
++            if agent._interrupt_state.activated:
++                stop_reason: StopReason = "tool_use"
++                message = agent._interrupt_state.context["tool_use_message"]
++            # Skip model invocation if the latest message contains ToolUse
++            elif _has_tool_use_in_latest_message(agent.messages):
++                stop_reason = "tool_use"
++                agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace)
++                return
++                return
++            else:
++                agent.event_loop_metrics.end_cycle(cycle_start_time, cycle_trace)
+                 return
+-
+-            tracer.end_event_loop_cycle_span(cycle_span, message)
+-            yield EventLoopStopEvent(stop_reason, message, agent.event_loop_metrics, invocation_state["request_state"])
+-        except (
+-            StructuredOutputException,
+-            EventLoopException,
+-            ContextWindowOverflowException,
+-            MaxTokensReachedException,
+-        ) as e:
+-            # These exceptions should bubble up directly rather than get wrapped in an EventLoopException
+-            tracer.end_span_with_error(cycle_span, str(e), e)
+-            raise
+         except Exception as e:
+             tracer.end_span_with_error(cycle_span, str(e), e)
+-            # Handle any other exceptions
+-            yield ForceStopEvent(reason=e)
+-            logger.exception("cycle failed")
+-            raise EventLoopException(e, invocation_state["request_state"]) from e
++    
++    #
++            raise
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
+ 
++        tracer.end_event_loop_cycle_span(cycle_span, message)
+ 
+-async def recurse_event_loop(
+-    agent: "Agent",
+-    invocation_state: dict[str, Any],
+-    structured_output_context: StructuredOutputContext | None = None,
+-    limits: Limits | None = None,
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
++
++            # Force structured output tool call if LLM didn't use it automatically
+ ) -> AsyncGenerator[TypedEvent, None]:
+     """Make a recursive call to event_loop_cycle with the current state.
+ 
+     This function is used when the event loop needs to continue processing after tool execution.
+-
+-    Args:
+-        agent: Agent for which the recursive call is being made.
+         invocation_state: Arguments to pass through event_loop_cycle
+         structured_output_context: Optional context for structured output management.
+         limits: Optional per-invocation budget caps. See :class:`~strands.types.agent.Limits`.
+@@ -555,7 +576,24 @@ async def _handle_model_execution(
+                     yield event
+ 
+             if model_result is None:
++    
++    #
+                 raise RuntimeError(
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+                     "Middleware chain did not produce a MiddlewareResult. "
+                     "Ensure all middleware forwards the result from next()."
+                 )
+@@ -592,24 +630,7 @@ async def _handle_model_execution(
+                 )
+                 continue  # Retry the model call
+ 
+-            if stop_reason == "max_tokens":
+-                message = recover_message_on_max_tokens_reached(message)
+-
+-            break  # Success! Break out of retry loop
+-
+-        except Exception as e:
+-            after_model_call_event = AfterModelCallEvent(
+-                agent=agent,
+-                invocation_state=invocation_state,
+-                exception=e,
+-            )
+-            await agent.hooks.invoke_callbacks_async(after_model_call_event)
+-
+-            # Emit backwards-compatible events if retry strategy supports it
+-            if (
+-                isinstance(agent._retry_strategy, ModelRetryStrategy)
+                 and agent._retry_strategy._backwards_compatible_event_to_yield
+-            ):
+                 yield agent._retry_strategy._backwards_compatible_event_to_yield
+ 
+             # Check if hooks want to retry the model call
+@@ -621,9 +642,43 @@ async def _handle_model_execution(
+ 
+                 continue  # Retry the model call
+ 
++    
++    #
+             # No retry requested, raise the exception
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+             yield ForceStopEvent(reason=e)
++    
++    #
+             raise e
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+ 
+     try:
+         # Add message in trace and mark the end of the stream messages trace
+@@ -641,7 +696,24 @@ async def _handle_model_execution(
+     except Exception as e:
+         yield ForceStopEvent(reason=e)
+         logger.exception("cycle failed")
++    
++    #
+         raise EventLoopException(e, invocation_state["request_state"]) from e
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+ 
+ 
+ def _make_invoke_model_terminal(
+@@ -688,7 +760,24 @@ def _make_invoke_model_terminal(
+                 )
+             except Exception as e:
+                 tracer.end_span_with_error(model_invoke_span, str(e), e)
++    
++    #
+                 raise
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
+ 
+     return terminal
+ 
+@@ -881,3 +970,71 @@ async def _handle_tool_execution(
+     )
+     async for event in events:
+         yield event
++        except Exception as e:
++            tracer.end_span_with_error(cycle_span, str(e), e)
++            # Handle any other exceptions
++            yield ForceStopEvent(reason=e)
++            logger.exception("cycle failed")
++    
++    #
++            raise EventLoopException(e, invocation_state["request_state"]) from e
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
++
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++    
++    #
++            raise StructuredOutputException(
++    # Force structured output tool call if LLM didn't use it automatically
++    if structured_output_context.is_enabled and stop_reason == "end_turn":
++        if structured_output_context.force_attempted:
++            raise StructuredOutputException("The model failed to invoke the structured output tool even after it was forced.")
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages({"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]})
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(agent=agent, invocation_state=invocation_state, structured_output_context=structured_output_context, limits=limits)
++
++        async for typed_event in events:
++            yield typed_event
++        return
++                "The model failed to invoke the structured output tool even after it was forced."
++            )
++        structured_output_context.set_forced_mode()
++        logger.debug("Forcing structured output tool")
++        await agent._append_messages(
++            {"role": "user", "content": [{"text": structured_output_context.structured_output_prompt}]}
++        )
++
++        tracer.end_event_loop_cycle_span(cycle_span, message)
++
++        events = recurse_event_loop(
++            agent=agent,
++            invocation_state=invocation_state,
++            structured_output_context=structured_output_context,
++            limits=limits,
++        )
++
++        async for typed_event in events:
++            yield typed_event
++        return
++
++    tracer.end_event_loop_cycle_span(cycle_span, message)
++    yield EventLoopStopEvent(stop_reason, message, agent.event_loop_metrics, invocation_state["request_state"])
+diff --git a/strands-py/src/strands/types/exceptions.py b/strands-py/src/strands/types/exceptions.py
+index 7d621191d..c3d96a2fb 100644
+--- a/strands-py/src/strands/types/exceptions.py
++++ b/strands-py/src/strands/types/exceptions.py
+@@ -18,7 +18,6 @@ class EventLoopException(Exception):
+         super().__init__(str(original_exception))
+ 
+ 
+-class MaxTokensReachedException(Exception):
+     """Exception raised when the model reaches its maximum token generation limit.
+ 
+     This exception is raised when the model stops generating tokens because it has reached the maximum number of
+@@ -146,3 +145,19 @@ class AggregateMemoryError(Exception):
+         """
+         super().__init__(message)
+         self.errors = errors
++class MaxTokensReachedException(Exception):
++    """Exception raised when the model reaches its maximum token generation limit.
++
++    This exception is raised when the model stops generating tokens because it has reached the maximum number of
++    tokens allowed for output generation. This can occur when the model's max_tokens parameter is set too low for
++    the complexity of the response, or when the model naturally reaches its configured output limit during generation.
++    """
++    def __init__(self, message: str, partial_message: dict | None = None):
++        """Initialize the exception with an error message and the incomplete message object.
++
++        Args:
++            message: The error message describing the token limit issue
++            partial_message: Optional partial message generated before the limit was reached
++        """
++        super().__init__(message)
++        self.partial_message = partial_message
+diff --git a/strands-py/tests/strands/types/test_exceptions.py b/strands-py/tests/strands/types/test_exceptions.py
+index 29f68a7d0..29cfbb6fd 100644
+--- a/strands-py/tests/strands/types/test_exceptions.py
++++ b/strands-py/tests/strands/types/test_exceptions.py
+@@ -79,6 +79,13 @@ class TestMaxTokensReachedException:
+         """Test that MaxTokensReachedException inherits from Exception."""
+         exception = MaxTokensReachedException("Test message")
+ 
++    def test_partial_message_storage(self):
++        """Test that MaxTokensReachedException stores a partial_message attribute correctly."""
++        message = 'Partial message test'
++        partial = {'content': [{'text': 'partial result'}], 'role': 'assistant'}
++        exc = MaxTokensReachedException(message, partial_message=partial)
++        assert exc.partial_message == partial
++
+         assert isinstance(exception, Exception)
+         assert issubclass(MaxTokensReachedException, Exception)
+ 

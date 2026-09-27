@@ -1,0 +1,61 @@
+1. Fetch top repos (optional)
+export GITHUB_TOKEN=<your GitHub token>
+python data_collection/collect/get_top_repos.py \
+  --language Python \
+  --output_path data/popular_repos \
+  --top_n 100
+
+2. Fetch PR data
+From a single repo (e.g. python-attrs/attrs):
+python data_collection/collect/print_pulls.py \
+  python-attrs/attrs \
+  data/python-attrs/attrs/prs.jsonl
+
+From your own issue list (issue_pr_map format):
+[
+  {"repo": "MLSysOps/MLE-agent", "issue_number": 273, "pr_number": 274},
+  {"repo": "githubnext/gh-aw", "issue_number": 1126, "pr_number": 1127},
+  ...
+]
+
+python data_collection/collect/fetch_prs_from_issue_map.py \
+  baseline/issue_pr_map.json \
+  data/my_instances/prs.jsonl
+
+3. Build task instances
+python data_collection/collect/build_dataset.py \
+  data/my_instances/prs.jsonl \
+  data/my_instances/instances.jsonl \
+  --language python
+
+4. Version tagging
+python data_collection/collect/get_version.py \
+  --instance_path data/my_instances/instances.jsonl \
+  --testbed github \
+  --max-workers 20
+
+Stage II: SWE-Builder (eval environment)
+python -m app.main swe-bench \
+  --model tensorblock/gpt-4.1\
+  --tasks-map "data/my_instances/instances_versions.jsonl" \
+  --num-processes 10 \
+  --model-temperature 0.2 \
+  --conv-round-limit 10 \
+  --output-dir "output/gpt-4.1-mini/mypy" \
+  --setup-dir "testbed" \
+  --results-path "output/gpt-4.1-mini/mypy/results"
+
+Stage III: Fail2Pass validation
+python evaluation/run_evaluation.py \
+  --dataset_name "output/gpt-4.1-mini/mypy/results/results.json" \
+  --predictions_path "gold" \
+  --max_workers 5 \
+  --run_id "mypy_fail2pass_check" \
+  --output_path "run_instances" \
+  --timeout 3600 \
+  --is_judge_fail2pass
+
+Classify Fail2Pass status
+python scripts/judge_fail2pass.py \
+  run_instances/mypy_fail2pass_check/gold \
+  reports/gold.mypy_fail2pass_check.json

@@ -1,0 +1,54 @@
+diff --git a/src/strands/models/bedrock.py b/src/strands/models/bedrock.py
+index 8909072f6..e8f8bfa8e 100644
+--- a/src/strands/models/bedrock.py
++++ b/src/strands/models/bedrock.py
+@@ -132,6 +132,9 @@ class BedrockModel(Model):
+         self.config = BedrockModel.BedrockConfig(model_id=DEFAULT_BEDROCK_MODEL_ID, include_tool_result_status="auto")
+         self.update_config(**model_config)
+ 
++        # Initialize private tool choice variable with default value {"auto": {}}
++        self._tool_choice: dict[str, dict] = {"auto": {}}
++
+         logger.debug("config=<%s> | initializing", self.config)
+ 
+         session = boto_session or boto3.Session()
+@@ -225,7 +228,7 @@ class BedrockModel(Model):
+                                 else []
+                             ),
+                         ],
+-                        "toolChoice": {"auto": {}},
++                        "toolChoice": self._tool_choice,
+                     }
+                 }
+                 if tool_specs
+@@ -735,14 +738,22 @@ class BedrockModel(Model):
+         """
+         tool_spec = convert_pydantic_to_tool_spec(output_model)
+ 
+-        response = self.stream(
+-            messages=prompt,
+-            tool_specs=[tool_spec],
+-            system_prompt=system_prompt,
+-            **kwargs,
+-        )
+-        async for event in streaming.process_stream(response):
+-            yield event
++        # Temporarily override self._tool_choice to specify the structured output tool choice
++        temp_tool_choice = self._tool_choice
++        self._tool_choice = {"tool": {"name": tool_spec["name"]}}
++
++        try:
++            response = self.stream(
++                messages=prompt,
++                tool_specs=[tool_spec],
++                system_prompt=system_prompt,
++                **kwargs,
++            )
++            async for event in streaming.process_stream(response):
++                yield event
++        finally:
++            # Restore the original tool choice config
++            self._tool_choice = temp_tool_choice
+ 
+         stop_reason, messages, _, _ = event["stop"]
+ 

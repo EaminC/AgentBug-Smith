@@ -1,0 +1,70 @@
+diff --git a/src/agentscope/skill/_local_loader.py b/src/agentscope/skill/_local_loader.py
+index 04f3205e..9ed2118f 100644
+--- a/src/agentscope/skill/_local_loader.py
++++ b/src/agentscope/skill/_local_loader.py
+@@ -25,7 +25,7 @@ class LocalSkillLoader(SkillLoaderBase):
+                 Whether to scan subdirectories. Defaults to False (only
+                 scan current directory).
+         """
+-        self.directory = os.path.abspath(directory)
++        self.directory = os.path.abspath(os.path.expanduser(directory))
+         self.scan_subdir = scan_subdir
+         self._cache: dict[str, Skill] = {}
+ 
+diff --git a/src/agentscope/workspace/_local_workspace.py b/src/agentscope/workspace/_local_workspace.py
+index 1e4468dd..a16c00e8 100644
+--- a/src/agentscope/workspace/_local_workspace.py
++++ b/src/agentscope/workspace/_local_workspace.py
+@@ -110,7 +110,7 @@ class LocalWorkspace(WorkspaceBase):
+ 
+         # ── seed-only ───────────────────────────────────────────
+         self.default_mcps: list[MCPClient] = list(default_mcps or [])
+-        self.skill_paths: list[str] = list(skill_paths or [])
++        self.skill_paths: list[str] = [os.path.abspath(os.path.expanduser(p)) for p in (skill_paths or [])]
+ 
+         # ── runtime state ───────────────────────────────────────
+         self._backend = LocalBackend()
+diff --git a/tests/skill_loader_test.py b/tests/skill_loader_test.py
+index 101be4ad..b329e11f 100644
+--- a/tests/skill_loader_test.py
++++ b/tests/skill_loader_test.py
+@@ -119,6 +119,18 @@ This is the subdir2 skill content.
+ 
+         # Should only load the root skill
+         self.assertEqual(len(skills), 1)
++    async def test_local_skill_loader_expands_user_home(self) -> None:
++        # Use a temp directory and represent it with ~ using expanduser
++        import os
++        real_path = os.path.abspath(self.test_dir)
++        # use ~ to represent the user's home directory
++        user_path = '~' + real_path[len(os.path.expanduser('~')):]
++        loader = LocalSkillLoader(user_path, scan_subdir=False)
++        skills = await loader.list_skills()
++        self.assertGreater(len(skills), 0)
++        skill_names = {s.name for s in skills}
++        self.assertIn("root_skill", skill_names)
++
+         self.assertEqual(skills[0].name, "root_skill")
+         self.assertEqual(
+             skills[0].description,
+diff --git a/tests/workspace_local_test.py b/tests/workspace_local_test.py
+index 1d6071f3..4ee46647 100644
+--- a/tests/workspace_local_test.py
++++ b/tests/workspace_local_test.py
+@@ -596,10 +596,14 @@ description: {description}
+             {"helper.py": "def helper():\n    return 42\n"},
+         )
+ 
+-        # Create workspace with skill paths
++        import os
++        # Use a skill path with ~ not expanded
++        skill_paths_with_tilde = ["~/" + os.path.relpath(skill1_dir, os.path.expanduser("~")), "~/" + os.path.relpath(skill2_dir, os.path.expanduser("~"))]
++
++        # Create workspace with skill paths using ~ shorthand
+         workspace = LocalWorkspace(
+             workdir=self.temp_dir.name,
+-            skill_paths=[skill1_dir, skill2_dir],
++            skill_paths=skill_paths_with_tilde,
+         )
+ 
+         # Initialize the workspace

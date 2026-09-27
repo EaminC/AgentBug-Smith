@@ -1,0 +1,78 @@
+# Issue #2173: [BUG] SlidingWindowConversationManager.reduce_context fails to trim tool-heavy conversations after v1.35.0
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.35.0
+
+### Python Version
+
+3.11
+
+### Operating System
+
+Linux
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+```
+from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.types.exceptions import ContextWindowOverflowException
+from unittest.mock import MagicMock
+
+manager = SlidingWindowConversationManager(window_size=4)
+
+agent = MagicMock()
+agent.messages = [
+    {"role": "user", "content": [{"text": "Review this PR"}]},
+    {"role": "assistant", "content": [{"toolUse": {"toolUseId": "1", "name": "get_diff", "input": {}}}]},
+    {"role": "user", "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": "diff data"}], "status": "success"}}]},
+    {"role": "assistant", "content": [{"toolUse": {"toolUseId": "2", "name": "get_file", "input": {}}}]},
+    {"role": "user", "content": [{"toolResult": {"toolUseId": "2", "content": [{"text": "file data"}], "status": "success"}}]},
+    {"role": "assistant", "content": [{"toolUse": {"toolUseId": "3", "name": "get_tree", "input": {}}}]},
+    {"role": "user", "content": [{"toolResult": {"toolUseId": "3", "content": [{"text": "tree data"}], "status": "success"}}]},
+    {"role": "assistant", "content": [{"text": "Here is my review"}]},
+]
+
+manager.reduce_context(agent, e=Exception("context window overflow"))
+```
+
+### Expected Behavior
+
+reduce_context should successfully trim the conversation, as it did in v1.34.1 (which trims to 3 messages for this input).
+
+### Actual Behavior
+
+reduce_context raises ContextWindowOverflowException: Unable to trim conversation context!
+
+The user-first enforcement added in PR#2087 skips all assistant messages as trim points. Combined with the existing toolResult check that skips user messages containing tool results, there are no valid trim points in tool-heavy conversations:
+
+user (prompt)           ← only plain user message, but before trim window
+assistant (tool call)   ← skipped: not a user message
+user (tool result)      ← skipped: contains toolResult
+assistant (tool call)   ← skipped: not a user message
+user (tool result)      ← skipped: contains toolResult
+assistant (tool call)   ← skipped: not a user message
+user (tool result)      ← skipped: contains toolResult
+assistant (response)    ← skipped: not a user message
+
+### Additional Context
+
+_No response_
+
+### Possible Solution
+
+When no plain user message exists within the trim range, fall back to trimming at an assistant(toolUse) + user(toolResult) boundary. This preserves the user-first fix for providers like Bedrock Nova (no bare assistant messages) while still allowing trimming in tool-heavy conversations. The conversation would start with a valid complete tool interaction pair.
+
+### Related Issues
+
+https://github.com/strands-agents/sdk-python/issues/2085

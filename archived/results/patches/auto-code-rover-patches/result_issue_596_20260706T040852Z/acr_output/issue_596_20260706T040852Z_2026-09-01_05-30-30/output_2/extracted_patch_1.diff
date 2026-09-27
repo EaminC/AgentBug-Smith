@@ -1,0 +1,65 @@
+diff --git a/interpreter/core/respond.py b/interpreter/core/respond.py
+index 06b4df127..ca2d7505a 100644
+--- a/interpreter/core/respond.py
++++ b/interpreter/core/respond.py
+@@ -7,12 +7,18 @@ from ..utils.truncate_output import truncate_output
+ import traceback
+ import litellm
+ 
++import time
++
+ def respond(interpreter):
+     """
+     Yields tokens, but also adds them to interpreter.messages. TBH probably would be good to seperate those two responsibilities someday soon
+     Responds until it decides not to run any more code or say anything else.
+     """
+ 
++    last_cost_report = 0.0
++    last_report_time = 0
++    cost_report_interval = 15  # seconds
++
+     while True:
+ 
+         ### PREPARE MESSAGES ###
+@@ -62,6 +68,21 @@ def respond(interpreter):
+                 # This is a coding llm
+                 # It will yield dict with either a message, language, or code (or language AND code)
+                 yield chunk
++
++                # Periodically display cost usage info if available
++                now = time.time()
++                current_cost = getattr(litellm, "_current_cost", 0.0)
++                if (current_cost - last_cost_report) > 0.01 or (now - last_report_time) > cost_report_interval:
++                    # Yield a message with cost info
++                    usage_message = {
++                        "message": f"💰 Approximate spend so far: ${current_cost:.4f} (budget: ${interpreter.max_budget if interpreter.max_budget else 'N/A'})"
++                    }
++                    # Avoid flooding - only yield if changed enough or time passed
++                    if current_cost > last_cost_report or (now - last_report_time) > cost_report_interval:
++                        yield usage_message
++                        last_cost_report = current_cost
++                        last_report_time = now
++
+         except litellm.exceptions.BudgetExceededError:
+             display_markdown_message(f"""> Max budget exceeded
+ 
+@@ -79,9 +100,9 @@ def respond(interpreter):
+                 raise Exception(f"{output}\n\nThere might be an issue with your API key(s).\n\nTo reset your API key (we'll use OPENAI_API_KEY for this example, but you may need to reset your ANTHROPIC_API_KEY, HUGGINGFACE_API_KEY, etc):\n        Mac/Linux: 'export OPENAI_API_KEY=your-key-here',\n        Windows: 'setx OPENAI_API_KEY your-key-here' then restart terminal.\n\n")
+             else:
+                 raise
+-        
+-        
+-        
++            
++            
++            
+         ### RUN CODE (if it's there) ###
+ 
+         if "code" in interpreter.messages[-1]:
+@@ -137,4 +158,4 @@ def respond(interpreter):
+             # Doesn't want to run code. We're done
+             break
+ 
+-    return
+\ No newline at end of file
++    return

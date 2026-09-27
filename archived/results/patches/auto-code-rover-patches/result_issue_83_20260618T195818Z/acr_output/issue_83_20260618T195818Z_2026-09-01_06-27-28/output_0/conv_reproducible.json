@@ -1,0 +1,18 @@
+[
+    {
+        "role": "system",
+        "content": "You are an experienced software engineer responsible for reproducing given issues."
+    },
+    {
+        "role": "user",
+        "content": "Here is an issue:\n\nIssue Title: [Bug]: Content is always None when MCP server returns an 'error' to the client\n\nDescription:\n## The bug\n\nIn [mcp client](https://github.com/dapr/dapr-agents/blob/main/dapr_agents/tool/mcp/client.py#L358-L366) the error handling from the `_process_tool_result()` always raises `ToolError` even though `content` _could_ hold a result output from the MCP server that we would like to re-iterate on:\n\n```python\n        # Handle error result\n        if hasattr(result, 'isError') and result.isError:\n            error_message = \"Unknown error\"\n            if hasattr(result, 'content') and result.content:\n                for content in result.content:\n                    if hasattr(content, 'text'):\n                        error_message = content.text\n                        break\n            raise ToolError(f\"MCP tool error: {error_message}\")\n```\n\nThis means that the return of `content` in [toolcall response](https://github.com/dapr/dapr-agents/blob/main/dapr_agents/agent/patterns/toolcall/base.py#L106-L115) always yields `None` when `response.get_content()` is called and the mcp client threw a `ToolError`.\n\nThe solution is to not raise the `ToolError` if `hasattr(result, 'content') && hasattr(content, 'text')` evaluates true as we need this `result.content.text`, even if it is an error from the MCP server, to feed it back to the model for next iteration:\n\n```python\n        # Extract text content from result\n        if hasattr(result, 'content') and result.content:\n            text_contents = []\n            for content in result.content:\n                if hasattr(content, 'text'):\n                    text_contents.append(content.text)\n            \n            # Return single string if only one content item\n            logger.info(f\"Tool result content: {text_contents}\")\n            if len(text_contents) == 1:\n                return text_contents[0]\n            elif text_contents:\n                return text_contents\n\n        if hasattr(result, 'isError') and result.isError:\n            # Only triggered if the above didn't return with text_contents\n            raise ToolError(f\"MCP tool error: {result}\")\n```\n\nIf we don't return the errors that may be thrown from the MCP server into `result.content.text`, the model will not get to learn from the output of the MCP server and thus get stuck in a failure loop.\n\n"
+    },
+    {
+        "role": "user",
+        "content": "Tell me whether the issue contains a reproducible example. Your answer should take the following Json format:\n```\n{\n    \"has-reproducible-example\": ...\n}\n```\nwhere \"has-reproducible-example\" should be either `true` or `false`."
+    },
+    {
+        "role": "assistant",
+        "content": "{\n    \"has-reproducible-example\": false\n}"
+    }
+]

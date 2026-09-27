@@ -1,0 +1,28 @@
+{
+  "number": 4791,
+  "title": "Pydantic serialization warning when saving group chat state",
+  "url": "https://github.com/microsoft/autogen/issues/4791",
+  "state": "closed",
+  "created_at": "2024-12-23T09:00:58Z",
+  "closed_at": "2024-12-23T23:17:42Z",
+  "body": "Run this:\n\n```python\nimport asyncio\nimport json\nfrom autogen_agentchat.agents import AssistantAgent\nfrom autogen_agentchat.teams import RoundRobinGroupChat\nfrom autogen_agentchat.conditions import TextMentionTermination\nfrom autogen_agentchat.ui import Console\nfrom autogen_ext.models.openai import OpenAIChatCompletionClient\n\ndef create_team() -> RoundRobinGroupChat:\n    model_client = OpenAIChatCompletionClient(model=\"gpt-4o\", seed=42, temperature=0)\n\n    writer = AssistantAgent(\n        name=\"writer\",\n        description=\"A writer.\",\n        system_message=\"You are a writer.\",\n        model_client=model_client,\n    )\n\n    critic = AssistantAgent(\n        name=\"critic\",\n        description=\"A critic.\",\n        system_message=\"You are a critic, provide feedback on the writing. Reply only 'APPROVE' if the task is done.\",\n        model_client=model_client,\n    )\n\n    # The termination condition is a text termination, which will cause the chat to terminate when the text \"APPROVE\" is received.\n    termination = TextMentionTermination(\"APPROVE\")\n\n    # The group chat will alternate between the writer and the critic.\n    group_chat = RoundRobinGroupChat([writer, critic], termination_condition=termination)\n\n    return group_chat\n\n\nasync def main() -> None:\n    # Create team.\n    group_chat = create_team()\n\n    # `run_stream` returns an async generator to stream the intermediate messages.\n    stream = group_chat.run_stream(task=\"Write a short story about a robot that discovers it has feelings.\")\n    # `Console` is a simple UI to display the stream.\n    await Console(stream)\n\n    # Save the state of the group chat and all participants.\n    state = await group_chat.save_state()\n    with open(\"group_chat_state.json\", \"w\") as f:\n        json.dump(state, f)\n    \n    # Create a new team with the same participants configuration.\n    group_chat = create_team()\n\n    # Load the state of the group chat and all participants.\n    with open(\"group_chat_state.json\", \"r\") as f:\n        state = json.load(f)\n    await group_chat.load_state(state)\n\n    # Resume the chat.\n    stream = group_chat.run_stream(task=\"Translate the story into Chinese.\")\n    await Console(stream)\n\nasyncio.run(main())\n```\n\nGet warning when saving state.\n\n```\n/Users/ekzhu/autogen/python/.venv/lib/python3.11/site-packages/pydantic/main.py:390: UserWarning: Pydantic serializer warnings:\n  PydanticSerializationUnexpectedValue: Expected `ToolCallRequestEvent` but got `TextMessage` with value `TextMessage(source='user'...s.', type='TextMessage')` - serialized value may not be as expected\n  PydanticSerializationUnexpectedValue: Expected `ToolCallExecutionEvent` but got `TextMessage` with value `TextMessage(source='user'...s.', type='TextMessage')` - serialized value may not be as expected\n  PydanticSerializationUnexpectedValue: Expected `ToolCallRequestEvent` but got `TextMessage` with value `TextMessage(source='write...d.', type='TextMessage')` - serialized value may not be as expected\n  PydanticSerializationUnexpectedValue: Expected `ToolCallExecutionEvent` but got `TextMessage` with value `TextMessage(source='write...d.', type='TextMessage')` - serialized value may not be as expected\n  PydanticSerializationUnexpectedValue: Expected `ToolCallRequestEvent` but got `TextMessage` with value `TextMessage(source='criti...VE', type='TextMessage')` - serialized value may not be as expected\n  PydanticSerializationUnexpectedValue: Expected `ToolCallExecutionEvent` but got `TextMessage` with value `TextMessage(source='criti...VE', type='TextMessage')` - serialized value may not be as expected\n  return self.__pydantic_serializer__.to_python(\n```\n\nCause: union type `AgentEvent | ChatMessage` in the group chat's message thread causes Pydantic to raise warning. \n\nSuggest fix: create an`_AgentMessage = Annotated[AgentEvent | ChatMessage, Field(discriminator=\"type\")]` private type in `_states.py`, use where the union is needed. ",
+  "labels": [
+    "good first issue",
+    "proj-agentchat"
+  ],
+  "linked_prs": [
+    {
+      "number": 4801,
+      "state": "closed",
+      "title": "Fix pydantic warnings when saving state",
+      "url": "https://github.com/microsoft/autogen/pull/4801",
+      "merged": true,
+      "base_branch": "main",
+      "body": "## Why are these changes needed?\r\n\r\nRemoves warnings coming from pydantic being unable to determine allowed message classes.\r\n\r\n## Related issue number\r\n\r\nCloses #4791\r\n\r\n## Checks\r\n\r\n- Checked that the script from the issue now works as intended\r\n- I am happy to add a test in `autogen-agentchat/tests/test_group_chat.py` to assert that no warnings are generated when state is generated by pydantic, but thought that was a bit overkill.\r\n"
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes. This is an agent issue because it involves memory content errors related to the serialization of the group chat state, which is a component of the agent system's memory mechanism. The issue directly impacts the storage and retrieval of agent-related data."
+  }
+}

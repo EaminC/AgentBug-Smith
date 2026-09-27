@@ -1,0 +1,1476 @@
+This is mini-swe-agent version 2.4.6.
+Check the v2 migration guide at https://klieret.short.gy/mini-v2-migration
+Loading global config from '/root/.config/mini-swe-agent/.env'
+Warning: Input is not a terminal (fd=0).
+Building agent config from specs: ['mini.yaml']
+
+System:
+You are a helpful assistant that can interact with a computer.
+
+User:
+Please solve this issue: # Issue #6050: Nested graph resumes re-execute 
+already-completed helper @task instead of reusing cached writes
+
+### Checked other resources
+
+- [x] This is a bug, not a usage question. For questions, please use the 
+LangChain Forum (https://forum.langchain.com/).
+- [x] I added a clear and detailed title that summarizes the issue.
+- [x] I read what a minimal reproducible example is 
+(https://stackoverflow.com/help/minimal-reproducible-example).
+- [x] I included a self-contained, minimal example that demonstrates the issue 
+INCLUDING all the relevant imports. The code run AS IS to reproduce the issue.
+
+### Example Code
+
+```python
+import time, uuid
+from typing import TypedDict
+from langgraph.func import task
+from langgraph.graph import StateGraph
+from langgraph.types import interrupt, Command
+from langgraph.constants import START, END
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+# ------- helper tasks -------------------------------------------------
+counter_parent = counter_sub = 0
+
+@task
+def get_time_parent() -> float:
+    global counter_parent
+    counter_parent += 1
+    print(f"get_time_parent called {counter_parent} times")
+    return time.time()
+
+@task
+def get_time_subgraph() -> float:
+    global counter_sub
+    counter_sub += 1
+    print(f"get_time_subgraph called {counter_sub} times")
+    return time.time()
+
+# ------- sub-graph ----------------------------------------------------
+class State(TypedDict):
+    state_counter: int
+
+checkpointer = InMemorySaver()
+
+sub = StateGraph(State)
+sub.add_node("some_node", lambda s: None)
+def human_node(_: State):
+    t1 = get_time_subgraph().result()
+    print("subgraph t1:", t1)
+    interrupt("what is your name?")
+sub.add_node("human_node", human_node)
+sub.add_edge(START, "some_node")
+sub.add_edge("some_node", "human_node")
+sub.add_edge("human_node", END)
+subgraph = sub.compile(checkpointer=checkpointer)
+
+# ------- parent graph -------------------------------------------------
+parent = StateGraph(State)
+def parent_node(_: State):
+    t1 = get_time_parent().result()
+    print("parent t1:", t1)
+    interrupt("what is your parent name?")
+parent.add_node("parent_node", parent_node)
+parent.add_node("subgraph", subgraph)
+parent.add_edge(START, "parent_node")
+parent.add_edge("parent_node", "subgraph")
+parent.add_edge("subgraph", END)
+graph = parent.compile(checkpointer=checkpointer)
+
+cfg_parent = {"configurable": {"thread_id": uuid.uuid4()}}
+
+
+# -------- run: first execution + 2 resumes ----------------------------
+print('--- First run---')
+for chunk in graph.stream({"state_counter": 1}, cfg_parent):
+    pass   # triggers first interrupt
+
+print('--- Resuming 1---')
+for chunk in graph.stream(Command(resume="resume-1"), cfg_parent):
+    pass   # triggers second interrupt (inside subgraph)
+
+print('--- Resuming 2---')
+for chunk in graph.stream(Command(resume="resume-2"), cfg_parent):
+    pass   # finishes successfully
+
+
+
+"""
+Output:
+
+get_time_parent called 1 times
+parent t1: 1756630407.224288
+parent t1: 1756630407.224288   # (expected)
+get_time_subgraph called 1 times
+subgraph t1: 1756630407.226399
+get_time_subgraph called 2 times
+subgraph t1: 1756630407.227942  # (task re-executed)
+"""
+```
+
+### Error Message and Stack Trace (if applicable)
+
+```shell
+
+```
+
+### Description
+
+A task inside a nested graph gets re-executed every time and does not read from 
+cached checkpointed values.  This works as expected in the parent-level graph, 
+but not in the nested graph, as shown in the example code.
+
+---
+
+### Debugging Notes
+
+The `PregelLoop` 
+[decides](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/lan
+ggraph/pregel/_loop.py#L501-L502) whether to reuse pending writes during the 
+first tick based on the flag 
+[`self.skip_done_tasks`](https://github.com/langchain-ai/langgraph/blob/main/lib
+s/langgraph/langgraph/pregel/_loop.py#L245):
+
+```python
+self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+...
+if self.skip_done_tasks and self.checkpoint_pending_writes:
+    self._match_writes(self.tasks)  # re-attaches cached writes
+````
+
+#### Observed Behavior
+
+* **Top-level graph**
+
+  * `CONFIG_KEY_CHECKPOINT_ID` is missing by default → `skip_done_tasks = True`
+  * Cached tasks writes are stitched back → tasks are **not** re-executed
+
+* **Nested graph (sub-graph)**
+
+  * `CONFIG_KEY_CHECKPOINT_ID` is present → `skip_done_tasks = False` on its 
+first tick
+  * `_match_writes` is skipped → tasks that already finished **run again** on 
+every resume
+
+---
+
+### Proposal to Fix the Issue
+
+Add a check to determine whether we are resuming a subgraph or not [during 
+`__init__`](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/l
+anggraph/pregel/_loop.py#L245):
+
+```python
+self.skip_done_tasks = (
+    CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+    or (
+        CONFIG_KEY_RESUMING in self.config[CONF]
+        and self.is_nested
+    )
+)
+```
+
+### System Info
+
+#### System Information
+------------------
+> OS:  Darwin
+> OS Version:  Darwin Kernel Version 22.6.0: Fri Sep 15 13:41:28 PDT 2023; 
+root:xnu-8796.141.3.700.8~1/RELEASE_ARM64_T6000
+> Python Version:  3.13.2 (main, Feb  4 2025, 14:51:09) [Clang 15.0.0 
+(clang-1500.1.0.2.5)]
+
+#### Package Information
+-------------------
+> langchain_core: 0.3.75
+> langsmith: 0.4.21
+> langgraph_cli: 0.4.0
+> langgraph_sdk: 0.2.4
+
+#### Optional packages not installed
+-------------------------------
+> langserve
+
+#### Other Dependencies
+------------------
+> click>=8.1.7: Installed. No version info available.
+> httpx<1,>=0.23.0: Installed. No version info available.
+> httpx>=0.25.2: Installed. No version info available.
+> jsonpatch<2.0,>=1.33: Installed. No version info available.
+> langgraph-api<0.5.0,>=0.3;: Installed. No version info available.
+> langgraph-runtime-inmem>=0.7;: Installed. No version info available.
+> langgraph-sdk>=0.1.0;: Installed. No version info available.
+> langsmith-pyo3>=0.1.0rc2;: Installed. No version info available.
+> langsmith>=0.3.45: Installed. No version info available.
+> openai-agents>=0.0.3;: Installed. No version info available.
+> opentelemetry-api>=1.30.0;: Installed. No version info available.
+> opentelemetry-exporter-otlp-proto-http>=1.30.0;: Installed. No version info 
+available.
+> opentelemetry-sdk>=1.30.0;: Installed. No version info available.
+> orjson>=3.10.1: Installed. No version info available.
+> orjson>=3.9.14;: Installed. No version info available.
+> packaging>=23.2: Installed. No version info available.
+> pydantic<3,>=1: Installed. No version info available.
+> pydantic>=2.7.4: Installed. No version info available.
+> pytest>=7.0.0;: Installed. No version info available.
+> python-dotenv>=0.8.0;: Installed. No version info available.
+> PyYAML>=5.3: Installed. No version info available.
+> requests-toolbelt>=1.0.0: Installed. No version info available.
+> requests>=2.0.0: Installed. No version info available.
+> rich>=13.9.4;: Installed. No version info available.
+> tenacity!=8.4.0,<10.0.0,>=8.1.0: Installed. No version info available.
+> typing-extensions>=4.7: Installed. No version info available.
+> vcrpy>=7.0.0;: Installed. No version info available.
+> zstandard>=0.23.0: Installed. No version info available.
+
+
+You can execute bash commands and edit files to implement the necessary changes.
+
+## Recommended Workflow
+
+This workflow should be done step-by-step so that you can iterate on your 
+changes and any possible problems.
+
+1. Analyze the codebase by finding and reading relevant files
+2. Create a script to reproduce the issue
+3. Edit the source code to resolve the issue
+4. Verify your fix works by running your script again
+5. Test edge cases to ensure your fix is robust
+6. Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+   Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+## Command Execution Rules
+
+You are operating in an environment where
+
+1. You issue at least one command
+2. The system executes the command(s) in a subshell
+3. You see the result(s)
+4. You write your next command(s)
+
+Each response should include:
+
+1. **Reasoning text** where you explain your analysis and plan
+2. At least one tool call with your command
+
+**CRITICAL REQUIREMENTS:**
+
+- Your response SHOULD include reasoning text explaining what you're doing
+- Your response MUST include AT LEAST ONE bash tool call
+- Directory or environment variable changes are not persistent. Every action is 
+executed in a new subshell.
+- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd 
+/path/to/working/dir && ...` or write/load environment variables from files
+- Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+  Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+Example of a CORRECT response:
+<example_response>
+I need to understand the structure of the repository first. Let me check what 
+files are in the current directory to get a better understanding of the 
+codebase.
+
+[Makes bash tool call with {"command": "ls -la"} as arguments]
+</example_response>
+
+<system_information>
+Linux 6.8.0-137-generic #137-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:28:23 UTC 
+2026 x86_64
+</system_information>
+
+## Useful command examples
+
+### Create a new file:
+
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
+```
+
+### Edit files with sed:```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+
+# Replace first occurrence on line 1
+sed -i '1s/old_string/new_string/' filename.py
+
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+
+```bash
+anything
+```
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 1, $0.00):
+```
+rg --json-path '.data.lines[0].text' --json-seq-path '.data.lines[].text' 
+--json-seq --json 'skip_done_tasks'
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 2, $0.00):
+```
+grep -r skip_done_tasks .
+```
+
+Tool:
+<returncode>
+0
+<output>
+./libs/langgraph/langgraph/pregel/_loop.py:    skip_done_tasks: bool
+./libs/langgraph/langgraph/pregel/_loop.py:        self.skip_done_tasks = 
+CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+./libs/langgraph/langgraph/pregel/_loop.py:            if self.skip_done_tasks:
+./libs/langgraph/langgraph/pregel/_loop.py:        if self.skip_done_tasks and 
+self.checkpoint_pending_writes:
+./libs/langgraph/langgraph/pregel/_loop.py:        # "not skip_done_tasks" only 
+applies to first tick after resuming
+./libs/langgraph/langgraph/pregel/_loop.py:        self.skip_done_tasks = True
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 3, $0.00):
+```
+head -40 ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from __future__ import annotations
+
+import asyncio
+import binascii
+import concurrent.futures
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+)
+from datetime import datetime, timezone
+from inspect import signature
+from types import TracebackType
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+)
+
+from langchain_core.callbacks import AsyncParentRunManager, ParentRunManager
+from langchain_core.runnables import RunnableConfig
+from langgraph.cache.base import BaseCache
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    PendingWrite,
+)
+from langgraph.store.base import BaseStore
+from typing_extensions import ParamSpec, Self
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 4, $0.00):
+```
+sed -n 230,280p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self.store = store
+        self.step = 0
+        self.stop = 0
+        self.input = input
+        self.checkpointer = checkpointer
+        self.cache = cache
+        self.nodes = nodes
+        self.specs = specs
+        self.input_keys = input_keys
+        self.output_keys = output_keys
+        self.stream_keys = stream_keys
+        self.interrupt_after = interrupt_after
+        self.interrupt_before = interrupt_before
+        self.manager = manager
+        self.is_nested = CONFIG_KEY_TASK_ID in self.config.get(CONF, {})
+        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+        self._migrate_checkpoint = migrate_checkpoint
+        self.trigger_to_nodes = trigger_to_nodes
+        self.retry_policy = retry_policy
+        self.cache_policy = cache_policy
+        self.durability = durability
+        if self.stream is not None and CONFIG_KEY_STREAM in config[CONF]:
+            self.stream = DuplexStream(self.stream, 
+config[CONF][CONFIG_KEY_STREAM])
+        scratchpad: PregelScratchpad | None = 
+config[CONF].get(CONFIG_KEY_SCRATCHPAD)
+        if isinstance(scratchpad, PregelScratchpad):
+            # if count is > 0, append to checkpoint_ns
+            # if count is 0, leave as is
+            if cnt := scratchpad.subgraph_counter():
+                self.config = patch_configurable(
+                    self.config,
+                    {
+                        CONFIG_KEY_CHECKPOINT_NS: NS_SEP.join(
+                            (
+                                config[CONF][CONFIG_KEY_CHECKPOINT_NS],
+                                str(cnt),
+                            )
+                        )
+                    },
+                )
+        if not self.is_nested and config[CONF].get(CONFIG_KEY_CHECKPOINT_NS):
+            self.config = patch_configurable(
+                self.config,
+                {CONFIG_KEY_CHECKPOINT_NS: "", CONFIG_KEY_CHECKPOINT_ID: None},
+            )
+        if (
+            CONFIG_KEY_CHECKPOINT_MAP in self.config[CONF]
+            and self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS)
+            in self.config[CONF][CONFIG_KEY_CHECKPOINT_MAP]
+        ):
+            self.checkpoint_config = patch_configurable(
+                self.config,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 5, $0.00):
+```
+sed -n 240,260p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self.stream_keys = stream_keys
+        self.interrupt_after = interrupt_after
+        self.interrupt_before = interrupt_before
+        self.manager = manager
+        self.is_nested = CONFIG_KEY_TASK_ID in self.config.get(CONF, {})
+        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+        self._migrate_checkpoint = migrate_checkpoint
+        self.trigger_to_nodes = trigger_to_nodes
+        self.retry_policy = retry_policy
+        self.cache_policy = cache_policy
+        self.durability = durability
+        if self.stream is not None and CONFIG_KEY_STREAM in config[CONF]:
+            self.stream = DuplexStream(self.stream, 
+config[CONF][CONFIG_KEY_STREAM])
+        scratchpad: PregelScratchpad | None = 
+config[CONF].get(CONFIG_KEY_SCRATCHPAD)
+        if isinstance(scratchpad, PregelScratchpad):
+            # if count is > 0, append to checkpoint_ns
+            # if count is 0, leave as is
+            if cnt := scratchpad.subgraph_counter():
+                self.config = patch_configurable(
+                    self.config,
+                    {
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 6, $0.00):
+```
+sed -n 261,269p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                        CONFIG_KEY_CHECKPOINT_NS: NS_SEP.join(
+                            (
+                                config[CONF][CONFIG_KEY_CHECKPOINT_NS],
+                                str(cnt),
+                            )
+                        )
+                    },
+                )
+        if not self.is_nested and config[CONF].get(CONFIG_KEY_CHECKPOINT_NS):
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 7, $0.00):
+```
+sed -n 270,280p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+            self.config = patch_configurable(
+                self.config,
+                {CONFIG_KEY_CHECKPOINT_NS: "", CONFIG_KEY_CHECKPOINT_ID: None},
+            )
+        if (
+            CONFIG_KEY_CHECKPOINT_MAP in self.config[CONF]
+            and self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS)
+            in self.config[CONF][CONFIG_KEY_CHECKPOINT_MAP]
+        ):
+            self.checkpoint_config = patch_configurable(
+                self.config,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 8, $0.00):
+```
+head -30 ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from __future__ import annotations
+
+import asyncio
+import binascii
+import concurrent.futures
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+)
+from datetime import datetime, timezone
+from inspect import signature
+from types import TracebackType
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+)
+
+from langchain_core.callbacks import AsyncParentRunManager, ParentRunManager
+from langchain_core.runnables import RunnableConfig
+from langgraph.cache.base import BaseCache
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 9, $0.01):
+```
+sed -n 240,280p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self.stream_keys = stream_keys
+        self.interrupt_after = interrupt_after
+        self.interrupt_before = interrupt_before
+        self.manager = manager
+        self.is_nested = CONFIG_KEY_TASK_ID in self.config.get(CONF, {})
+        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+        self._migrate_checkpoint = migrate_checkpoint
+        self.trigger_to_nodes = trigger_to_nodes
+        self.retry_policy = retry_policy
+        self.cache_policy = cache_policy
+        self.durability = durability
+        if self.stream is not None and CONFIG_KEY_STREAM in config[CONF]:
+            self.stream = DuplexStream(self.stream, 
+config[CONF][CONFIG_KEY_STREAM])
+        scratchpad: PregelScratchpad | None = 
+config[CONF].get(CONFIG_KEY_SCRATCHPAD)
+        if isinstance(scratchpad, PregelScratchpad):
+            # if count is > 0, append to checkpoint_ns
+            # if count is 0, leave as is
+            if cnt := scratchpad.subgraph_counter():
+                self.config = patch_configurable(
+                    self.config,
+                    {
+                        CONFIG_KEY_CHECKPOINT_NS: NS_SEP.join(
+                            (
+                                config[CONF][CONFIG_KEY_CHECKPOINT_NS],
+                                str(cnt),
+                            )
+                        )
+                    },
+                )
+        if not self.is_nested and config[CONF].get(CONFIG_KEY_CHECKPOINT_NS):
+            self.config = patch_configurable(
+                self.config,
+                {CONFIG_KEY_CHECKPOINT_NS: "", CONFIG_KEY_CHECKPOINT_ID: None},
+            )
+        if (
+            CONFIG_KEY_CHECKPOINT_MAP in self.config[CONF]
+            and self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS)
+            in self.config[CONF][CONFIG_KEY_CHECKPOINT_MAP]
+        ):
+            self.checkpoint_config = patch_configurable(
+                self.config,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 10, $0.01):
+```
+head -40 ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from __future__ import annotations
+
+import asyncio
+import binascii
+import concurrent.futures
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+)
+from datetime import datetime, timezone
+from inspect import signature
+from types import TracebackType
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+)
+
+from langchain_core.callbacks import AsyncParentRunManager, ParentRunManager
+from langchain_core.runnables import RunnableConfig
+from langgraph.cache.base import BaseCache
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    PendingWrite,
+)
+from langgraph.store.base import BaseStore
+from typing_extensions import ParamSpec, Self
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 11, $0.01):
+```
+sed -n 240,280p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self.stream_keys = stream_keys
+        self.interrupt_after = interrupt_after
+        self.interrupt_before = interrupt_before
+        self.manager = manager
+        self.is_nested = CONFIG_KEY_TASK_ID in self.config.get(CONF, {})
+        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+        self._migrate_checkpoint = migrate_checkpoint
+        self.trigger_to_nodes = trigger_to_nodes
+        self.retry_policy = retry_policy
+        self.cache_policy = cache_policy
+        self.durability = durability
+        if self.stream is not None and CONFIG_KEY_STREAM in config[CONF]:
+            self.stream = DuplexStream(self.stream, 
+config[CONF][CONFIG_KEY_STREAM])
+        scratchpad: PregelScratchpad | None = 
+config[CONF].get(CONFIG_KEY_SCRATCHPAD)
+        if isinstance(scratchpad, PregelScratchpad):
+            # if count is > 0, append to checkpoint_ns
+            # if count is 0, leave as is
+            if cnt := scratchpad.subgraph_counter():
+                self.config = patch_configurable(
+                    self.config,
+                    {
+                        CONFIG_KEY_CHECKPOINT_NS: NS_SEP.join(
+                            (
+                                config[CONF][CONFIG_KEY_CHECKPOINT_NS],
+                                str(cnt),
+                            )
+                        )
+                    },
+                )
+        if not self.is_nested and config[CONF].get(CONFIG_KEY_CHECKPOINT_NS):
+            self.config = patch_configurable(
+                self.config,
+                {CONFIG_KEY_CHECKPOINT_NS: "", CONFIG_KEY_CHECKPOINT_ID: None},
+            )
+        if (
+            CONFIG_KEY_CHECKPOINT_MAP in self.config[CONF]
+            and self.config[CONF].get(CONFIG_KEY_CHECKPOINT_NS)
+            in self.config[CONF][CONFIG_KEY_CHECKPOINT_MAP]
+        ):
+            self.checkpoint_config = patch_configurable(
+                self.config,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 12, $0.01):
+```
+rg --json-seq 'skip_done_tasks = ' ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 13, $0.01):
+```
+grep -n 'skip_done_tasks = ' ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+245:        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+544:        self.skip_done_tasks = True
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 14, $0.01):
+```
+sed -n 240,260p ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self.stream_keys = stream_keys
+        self.interrupt_after = interrupt_after
+        self.interrupt_before = interrupt_before
+        self.manager = manager
+        self.is_nested = CONFIG_KEY_TASK_ID in self.config.get(CONF, {})
+        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+        self._migrate_checkpoint = migrate_checkpoint
+        self.trigger_to_nodes = trigger_to_nodes
+        self.retry_policy = retry_policy
+        self.cache_policy = cache_policy
+        self.durability = durability
+        if self.stream is not None and CONFIG_KEY_STREAM in config[CONF]:
+            self.stream = DuplexStream(self.stream, 
+config[CONF][CONFIG_KEY_STREAM])
+        scratchpad: PregelScratchpad | None = 
+config[CONF].get(CONFIG_KEY_SCRATCHPAD)
+        if isinstance(scratchpad, PregelScratchpad):
+            # if count is > 0, append to checkpoint_ns
+            # if count is 0, leave as is
+            if cnt := scratchpad.subgraph_counter():
+                self.config = patch_configurable(
+                    self.config,
+                    {
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 15, $0.01):
+```
+sed -i '245s/.*/        self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in 
+config[CONF] or (CONFIG_KEY_RESUMING in config[CONF] and self.is_nested)/' 
+./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 16, $0.01):
+```
+head -60 ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from __future__ import annotations
+
+import asyncio
+import binascii
+import concurrent.futures
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+)
+from datetime import datetime, timezone
+from inspect import signature
+from types import TracebackType
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+)
+
+from langchain_core.callbacks import AsyncParentRunManager, ParentRunManager
+from langchain_core.runnables import RunnableConfig
+from langgraph.cache.base import BaseCache
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    PendingWrite,
+)
+from langgraph.store.base import BaseStore
+from typing_extensions import ParamSpec, Self
+
+from langgraph._internal._config import patch_configurable
+from langgraph._internal._constants import (
+    CONF,
+    CONFIG_KEY_CHECKPOINT_ID,
+    CONFIG_KEY_CHECKPOINT_MAP,
+    CONFIG_KEY_CHECKPOINT_NS,
+    CONFIG_KEY_RESUME_MAP,
+    CONFIG_KEY_RESUMING,
+    CONFIG_KEY_SCRATCHPAD,
+    CONFIG_KEY_STREAM,
+    CONFIG_KEY_TASK_ID,
+    CONFIG_KEY_THREAD_ID,
+    ERROR,
+    INPUT,
+    INTERRUPT,
+    NS_END,
+    NS_SEP,
+    NULL_TASK_ID,
+    PUSH,
+    RESUME,
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 17, $0.01):
+```
+head -10 ./tests/example_nested_resume.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+head: cannot open './tests/example_nested_resume.py' for reading: No such file 
+or directory
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 18, $0.01):
+```
+cat ./examples/nested_resume_example.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+cat: ./examples/nested_resume_example.py: No such file or directory
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 19, $0.01):
+```
+head -40 ./scripts/example_nested_resume.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+head: cannot open './scripts/example_nested_resume.py' for reading: No such file
+or directory
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 20, $0.01):
+```
+cat ./libs/langgraph/langgraph/pregel/_loop.py
+```
+
+Tool:
+<returncode>
+0
+<output_head>
+from __future__ import annotations
+
+import asyncio
+import binascii
+import concurrent.futures
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+)
+from datetime import datetime, timezone
+from inspect import signature
+from types import TracebackType
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+)
+
+from langchain_core.callbacks import AsyncParentRunManager, ParentRunManager
+from langchain_core.runnables import RunnableConfig
+from langgraph.cache.base import BaseCache
+from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
+    BaseCheckpointSaver,
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    PendingWrite,
+)
+from langgraph.store.base import BaseStore
+from typing_extensions import ParamSpec, Self
+
+from langgraph._internal._config import patch_configurable
+from langgraph._internal._constants import (
+    CONF,
+    CONFIG_KEY_CHECKPOINT_ID,
+    CONFIG_KEY_CHECKPOINT_MAP,
+    CONFIG_KEY_CHECKPOINT_NS,
+    CONFIG_KEY_RESUME_MAP,
+    CONFIG_KEY_RESUMING,
+    CONFIG_KEY_SCRATCHPAD,
+    CONFIG_KEY_STREAM,
+    CONFIG_KEY_TASK_ID,
+    CONFIG_KEY_THREAD_ID,
+    ERROR,
+    INPUT,
+    INTERRUPT,
+    NS_END,
+    NS_SEP,
+    NULL_TASK_ID,
+    PUSH,
+    RESUME,
+)
+from langgraph._internal._scratchpad import PregelScratchpad
+from langgraph._internal._typing import EMPTY_SEQ, MISSING
+from langgraph.channels.base import BaseChannel
+from langgraph.constants import TAG_HIDDEN
+from langgraph.errors import (
+    EmptyInputError,
+    GraphInterrupt,
+)
+from langgraph.managed.base import (
+    ManagedValueMapping,
+    ManagedValueSpec,
+)
+from langgraph.pregel._algo import (
+    Call,
+    GetNextVersion,
+    PregelTaskWrites,
+    apply_writes,
+    checkpoint_null_version,
+    increment,
+    prepare_next_tasks,
+    prepare_single_task,
+    should_interrupt,
+    task_path_str,
+)
+from langgraph.pregel._checkpoint import (
+    channels_from_checkpoint,
+    copy_checkpoint,
+    create_checkpoint,
+    empty_checkpoint,
+)
+from langgraph.pregel._executor import (
+    AsyncBackgroundExecutor,
+    BackgroundExecutor,
+    Submit,
+)
+from langgraph.pregel._io import (
+    map_command,
+    map_input,
+    map_output_updates,
+    map_output_values,
+    read_channels,
+)
+from langgraph.pregel._read import PregelNode
+from langgraph.pregel._utils import get_new_channel_versions, 
+is_xxh3_128_hexdigest
+from langgraph.pregel.debug import (
+    map_debug_checkpoint,
+    map_debug_task_results,
+    map_debug_tasks,
+)
+from langgraph.pregel.protocol import StreamChunk, StreamProtocol
+from langgraph.types import (
+    All,
+    CachePolicy,
+    Command,
+    Durability,
+    PregelExecutableTask,
+    RetryPolicy,
+    StreamMode,
+)
+
+V = TypeVar("V")
+P = ParamSpec("P")
+
+
+WritesT = Sequence[tuple[str, Any]]
+
+
+def DuplexStream(*streams: StreamProtocol) -> StreamProtocol:
+    def __call__(value: StreamChunk) -> None:
+        for stream in streams:
+            if value[1] in stream.modes:
+                stream(value)
+
+    return StreamProtocol(__call__, {mode for s in streams for mode in s.modes})
+
+
+class PregelLoop:
+    config: RunnableConfig
+    store: BaseStore | None
+    stream: StreamProtocol | None
+    step: int
+    stop: int
+
+    input: Any | None
+    cache: BaseCache[WritesT] | None
+    checkpointer: BaseCheckpointSaver | None
+    nodes: Mapping[str, PregelNode]
+    specs: Mapping[str, BaseChannel | ManagedValueSpec]
+    input_keys: str | Sequence[str]
+    output_keys: str | Sequence[str]
+    stream_keys: str | Sequence[str]
+    skip_done_tasks: bool
+    is_nested: bool
+    manager: None | AsyncParentRunManager | ParentRunManager
+    interrupt_after: All | Sequence[str]
+    interrupt_before: All | Sequence[str]
+    durability: Durability
+    retry_policy: Sequence[RetryPolicy]
+    cache_policy: CachePolicy | None
+
+    checkpointer_get_next_version: GetNextVersion
+    checkpointer_put_writes: Callable[[RunnableConfig, WritesT, str], Any] | 
+None
+    checkpointer_put_writes_accepts_task_path: bool
+    _checkpointer_put_after_previous: (
+        Callable[
+            [
+                concurrent.futures.Future | None,
+                RunnableConfig,
+                Checkpoint,
+                str,
+                ChannelVersions,
+            ],
+            Any,
+        ]
+        | None
+    )
+    _migrate_checkpoint: Callable[[Checkpoint], None] | None
+    submit: Submit
+    channels: Mapping[str, BaseChannel]
+    managed: ManagedValueMapping
+    checkpoint: Checkpoint
+    checkpoint_id_saved: str
+    checkpoint_ns: tuple[str, ...]
+    checkpoint_config: RunnableConfig
+    checkpoint_metadata: CheckpointMetadata
+    checkpoint_pending_writes: list[PendingWrite]
+    checkpoint_previous_versions: dict[str, str | float | int]
+    prev_checkpoint_config: RunnableConfig | None
+
+    status: Literal[
+        "input",
+    
+<output_tail>
+et_next_version = increment
+            self._checkpointer_put_after_previous = None  # type: 
+ignore[assignment]
+            self.checkpointer_put_writes = None
+            self.checkpointer_put_writes_accepts_task_path = False
+
+    async def _checkpointer_put_after_previous(
+        self,
+        prev: asyncio.Task | None,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        try:
+            if prev is not None:
+                await prev
+        finally:
+            await cast(BaseCheckpointSaver, self.checkpointer).aput(
+                config, checkpoint, metadata, new_versions
+            )
+
+    async def amatch_cached_writes(self) -> Sequence[PregelExecutableTask]:
+        if self.cache is None:
+            return []
+        matched: list[PregelExecutableTask] = []
+        if cached := {
+            (t.cache_key.ns, t.cache_key.key): t
+            for t in self.tasks.values()
+            if t.cache_key and not t.writes
+        }:
+            for key, values in (await self.cache.aget(tuple(cached))).items():
+                task = cached[key]
+                task.writes.extend(values)
+                matched.append(task)
+        return matched
+
+    async def aaccept_push(
+        self, task: PregelExecutableTask, write_idx: int, call: Call | None = 
+None
+    ) -> PregelExecutableTask | None:
+        if pushed := super().accept_push(task, write_idx, call):
+            for task in await self.amatch_cached_writes():
+                self.output_writes(task.id, task.writes, cached=True)
+        return pushed
+
+    def put_writes(self, task_id: str, writes: WritesT) -> None:
+        """Put writes for a task, to be read by the next tick."""
+        super().put_writes(task_id, writes)
+        if not writes or self.cache is None or not hasattr(self, "tasks"):
+            return
+        task = self.tasks.get(task_id)
+        if task is None or task.cache_key is None:
+            return
+        if writes[0][0] in (INTERRUPT, ERROR):
+            # only cache successful tasks
+            return
+        self.submit(
+            self.cache.aset,
+            {
+                (task.cache_key.ns, task.cache_key.key): (
+                    task.writes,
+                    task.cache_key.ttl,
+                )
+            },
+        )
+
+    # context manager
+
+    async def __aenter__(self) -> Self:
+        if self.checkpointer:
+            saved = await self.checkpointer.aget_tuple(self.checkpoint_config)
+        else:
+            saved = None
+        if saved is None:
+            saved = CheckpointTuple(
+                self.checkpoint_config, empty_checkpoint(), {"step": -2}, None, 
+[]
+            )
+        elif self._migrate_checkpoint is not None:
+            self._migrate_checkpoint(saved.checkpoint)
+        self.checkpoint_config = {
+            **self.checkpoint_config,
+            **saved.config,
+            CONF: {
+                CONFIG_KEY_CHECKPOINT_NS: "",
+                **self.checkpoint_config.get(CONF, {}),
+                **saved.config.get(CONF, {}),
+            },
+        }
+        self.prev_checkpoint_config = saved.parent_config
+        self.checkpoint_id_saved = saved.checkpoint["id"]
+        self.checkpoint = saved.checkpoint
+        self.checkpoint_metadata = saved.metadata
+        self.checkpoint_pending_writes = (
+            [(str(tid), k, v) for tid, k, v in saved.pending_writes]
+            if saved.pending_writes is not None
+            else []
+        )
+
+        self.submit = await self.stack.enter_async_context(
+            AsyncBackgroundExecutor(self.config)
+        )
+        self.channels, self.managed = channels_from_checkpoint(
+            self.specs, self.checkpoint
+        )
+        self.stack.push(self._suppress_interrupt)
+        self.status = "input"
+        self.step = self.checkpoint_metadata["step"] + 1
+        self.stop = self.step + self.config["recursion_limit"] + 1
+        self.checkpoint_previous_versions = 
+self.checkpoint["channel_versions"].copy()
+        self.updated_channels = self._first(
+            input_keys=self.input_keys,
+            updated_channels=set(self.checkpoint.get("updated_channels"))  # 
+type: ignore[arg-type]
+            if self.checkpoint.get("updated_channels")
+            else None,
+        )
+
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        # unwind stack
+        exit_task = asyncio.create_task(
+            self.stack.__aexit__(exc_type, exc_value, traceback)
+        )
+        try:
+            return await exit_task
+        except asyncio.CancelledError as e:
+            # Bubble up the exit task upon cancellation to permit the API
+            # consumer to await it before e.g., reusing the DB connection.
+            e.args = (*e.args, exit_task)
+            raise
+
+<elided_chars>
+37823
+<warning>
+Output too long.
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 21, $0.02):
+I have located the relevant code segment in 
+`libs/langgraph/langgraph/pregel/_loop.py` responsible for setting the 
+`self.skip_done_tasks` flag. According to the user's suggestion, the line:
+
+```python
+self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+```
+
+should be modified to:
+
+```python
+self.skip_done_tasks = (
+    CONFIG_KEY_CHECKPOINT_ID not in config[CONF]
+    or (
+        CONFIG_KEY_RESUMING in config[CONF]
+        and self.is_nested
+    )
+)
+```
+
+This fix addresses the issue where the nested graph doesn't skip re-execution of
+already completed tasks on resume, thus allowing the cached results to be reused
+properly.
+
+I have already applied this change in the file using `sed`.
+
+Next, I will write a minimal reproducible example script from the user's 
+provided example code in order to verify the fix.
+
+```
+cat <<EOF > test_nested_resume.py
+import time, uuid
+from typing import TypedDict
+from langgraph.func import task
+from langgraph.graph import StateGraph
+from langgraph.types import interrupt, Command
+from langgraph.constants import START, END
+from langgraph.checkpoint.memory import InMemorySaver
+
+
+# ------- helper tasks -------------------------------------------------
+counter_parent = counter_sub = 0
+
+@task
+def get_time_parent() -> float:
+    global counter_parent
+    counter_parent += 1
+    print(f"get_time_parent called {counter_parent} times")
+    return time.time()
+
+@task
+def get_time_subgraph() -> float:
+    global counter_sub
+    counter_sub += 1
+    print(f"get_time_subgraph called {counter_sub} times")
+    return time.time()
+
+# ------- sub-graph ----------------------------------------------------
+class State(TypedDict):
+    state_counter: int
+
+checkpointer = InMemorySaver()
+
+sub = StateGraph(State)
+sub.add_node("some_node", lambda s: None)
+def human_node(_: State):
+    t1 = get_time_subgraph().result()
+    print("subgraph t1:", t1)
+    interrupt("what is your name?")
+sub.add_node("human_node", human_node)
+sub.add_edge(START, "some_node")
+sub.add_edge("some_node", "human_node")
+sub.add_edge("human_node", END)
+subgraph = sub.compile(checkpointer=checkpointer)
+
+# ------- parent graph -------------------------------------------------
+parent = StateGraph(State)
+def parent_node(_: State):
+    t1 = get_time_parent().result()
+    print("parent t1:", t1)
+    interrupt("what is your parent name?")
+parent.add_node("parent_node", parent_node)
+parent.add_node("subgraph", subgraph)
+parent.add_edge(START, "parent_node")
+parent.add_edge("parent_node", "subgraph")
+parent.add_edge("subgraph", END)
+graph = parent.compile(checkpointer=checkpointer)
+
+cfg_parent = {"configurable": {"thread_id": uuid.uuid4()}}
+
+
+# -------- run: first execution + 2 resumes ----------------------------
+print('--- First run---')
+for chunk in graph.stream({"state_counter": 1}, cfg_parent):
+    pass   # triggers first interrupt
+
+print('--- Resuming 1---')
+for chunk in graph.stream(Command(resume="resume-1"), cfg_parent):
+    pass   # triggers second interrupt (inside subgraph)
+
+print('--- Resuming 2---')
+for chunk in graph.stream(Command(resume="resume-2"), cfg_parent):
+    pass   # finishes successfully
+EOF
+
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 22, $0.02):
+```
+python3 test_nested_resume.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+--- First run---
+get_time_parent called 1 times
+parent t1: 1787984417.839711
+--- Resuming 1---
+parent t1: 1787984417.839711
+get_time_subgraph called 1 times
+subgraph t1: 1787984417.8452485
+--- Resuming 2---
+subgraph t1: 1787984417.8452485
+
+────────────────────────────────────────────────────────────────────────────────
+
+User:
+Tool call error:
+
+<error>
+No tool calls found in the response. Every response MUST include at least one 
+tool call.
+</error>
+
+Here is general guidance on how to submit correct toolcalls:
+
+Every response needs to use the 'bash' tool at least once to execute commands.
+
+Call the bash tool with your command as the argument:
+- Tool: bash
+- Arguments: {"command": "your_command_here"}
+
+If you want to end the task, please issue the following command: `echo 
+COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+without any other command.
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 24, $0.02):
+```
+echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+```
+
+Tool:
+<returncode>
+-1
+<output>
+
+<exception_info>
+action was not executed
+
+Exit:
+
+Saved trajectory to '/output/trajectory.json'

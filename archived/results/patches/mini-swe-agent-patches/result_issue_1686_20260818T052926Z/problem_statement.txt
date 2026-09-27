@@ -1,0 +1,123 @@
+# Issue #1686: [FEATURE] Add add_hook Convenience Method to Agent
+
+# Overview
+Add a convenience method `add_hook` to the Agent class for easier hook registration, improving the developer experience for plugin authors and direct hook usage.
+
+**Parent Issue**: #1636
+
+---
+
+## Problem Statement
+Currently, registering a hook requires accessing the internal hooks registry:
+```python
+agent.hooks.add_callback(BeforeModelCallEvent, my_callback)
+```
+
+This exposes implementation details and is less discoverable for users.
+
+## Proposed Solution
+Add a public `add_hook` method to the Agent class that provides a cleaner API:
+```python
+agent.add_hook(BeforeModelCallEvent, my_callback)
+```
+
+## Implementation Requirements
+
+### Method Implementation
+```python
+def add_hook(
+    self, 
+    event_type: type[TEvent], 
+    callback: HookCallback[TEvent]
+) -> None:
+    """Register a callback function for a specific event type.
+    
+    This is a convenience method for adding hook callbacks to react to
+    agent lifecycle events. Callbacks can be either synchronous or
+    asynchronous functions.
+    
+    Args:
+        event_type: The class type of events this callback should handle.
+        callback: The callback function to invoke when events of this type occur.
+    
+    Example:
+        ```python
+        def log_model_call(event: BeforeModelCallEvent) -> None:
+            print(f"Calling model for agent: {event.agent.name}")
+        
+        agent = Agent()
+        agent.add_hook(BeforeModelCallEvent, log_model_call)
+        ```
+    
+    See Also:
+        - :class:`strands.hooks.HookCallback` for callback signature
+        - :mod:`strands.hooks.events` for available event types
+    """
+    self.hooks.add_callback(event_type, callback)
+```
+
+### Technical Notes
+- **Existing Pattern**: The `HookRegistry` class already has `add_callback(event_type, callback)` method at line 160 of `src/strands/hooks/registry.py`
+- **Agent Integration**: Agent already has `self.hooks = HookRegistry()` at line 258 of `src/strands/agent/agent.py`
+- **Type Imports**: Import `TEvent` and `HookCallback` from `strands.hooks.registry`
+
+### Benefits
+- Cleaner, more discoverable API
+- Hides internal `hooks` registry implementation
+- Plugins can use this method in their `init_plugin` implementation
+- Aligns with design document recommendations
+
+### Files to Modify
+- `src/strands/agent/agent.py` - Add `add_hook` method and required imports
+- `tests/strands/agent/test_agent.py` - Add tests for add_hook method
+
+### Example Usage
+```python
+from strands import Agent
+from strands.hooks import BeforeModelCallEvent, AfterToolCallEvent
+
+agent = Agent()
+
+# Register hooks directly
+agent.add_hook(BeforeModelCallEvent, lambda e: print("Model call starting"))
+agent.add_hook(AfterToolCallEvent, lambda e: print(f"Tool {e.tool_use['name']} completed"))
+
+# Use in plugin
+class MyPlugin:
+    name = "my-plugin"
+    
+    def init_plugin(self, agent):
+        agent.add_hook(BeforeModelCallEvent, self.on_model_call)
+```
+
+## Acceptance Criteria
+- [ ] `add_hook` method added to Agent class
+- [ ] Method delegates to `self.hooks.add_callback`
+- [ ] Method accepts both sync and async callbacks
+- [ ] Unit tests verify hook registration works correctly
+- [ ] Docstrings follow Google style with examples
+- [ ] Type hints properly support generic event types
+
+## Dependencies
+- None (can be implemented independently of other plugin sub-issues)
+
+---
+
+## Repository Context for Implementation
+
+### Relevant Code References
+- **HookRegistry.add_callback**: `src/strands/hooks/registry.py` lines 160-180
+- **Agent.__init__**: `src/strands/agent/agent.py` lines 110-306
+- **Hook events**: `src/strands/hooks/events.py`
+- **Test patterns**: `tests/strands/agent/test_agent.py`
+
+### Code Style Requirements (from AGENTS.md)
+- Use Google-style docstrings
+- Include type annotations for all parameters and return types
+- Use `%s` string interpolation in logging (not f-strings)
+- Follow existing import organization patterns
+
+### Testing Requirements
+- Unit tests only (per parent issue #1636 technical decisions)
+- Mirror src/ structure in tests/
+- Use pytest fixtures from `tests/fixtures/`

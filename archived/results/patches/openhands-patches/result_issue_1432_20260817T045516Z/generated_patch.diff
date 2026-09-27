@@ -1,0 +1,130 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index cacc69ece..a60d2fd3b 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -273,6 +273,10 @@ class Agent:
+ 
+         self.tool_executor = tool_executor or ConcurrentToolExecutor()
+ 
++        if model.get_config().get("cache_strategy") == "auto":
++            from ..hooks.conversation_cache import ConversationCachingHook
++            self.hooks.add_hook(ConversationCachingHook())
++
+         if hooks:
+             for hook in hooks:
+                 self.hooks.add_hook(hook)
+diff --git a/src/strands/models/litellm.py b/src/strands/models/litellm.py
+index ec6579c58..69dcc11f5 100644
+--- a/src/strands/models/litellm.py
++++ b/src/strands/models/litellm.py
+@@ -192,6 +192,23 @@ class LiteLLMModel(OpenAIModel):
+             A LiteLLM compatible messages array.
+         """
+         formatted_messages = cls._format_system_messages(system_prompt, system_prompt_content=system_prompt_content)
++
++        # Add cachePoint block after last assistant message if cache_strategy is "auto"
++        if kwargs.get("cache_strategy") == "auto":
++            last_assistant_idx = None
++            for i in reversed(range(len(messages))):
++                if messages[i]["role"] == "assistant":
++                    last_assistant_idx = i
++                    break
++            if last_assistant_idx is not None:
++                # Deep copy the messages list to avoid side effects
++                import copy
++                messages = copy.deepcopy(messages)
++                if "content" not in messages[last_assistant_idx]:
++                    messages[last_assistant_idx]["content"] = []
++                if isinstance(messages[last_assistant_idx]["content"], list):
++                    messages[last_assistant_idx]["content"].append({"cachePoint": {"type": "default"}})
++
+         formatted_messages.extend(cls._format_regular_messages(messages))
+ 
+         return [message for message in formatted_messages if message["content"] or "tool_calls" in message]
+diff --git a/src/strands/models/model.py b/src/strands/models/model.py
+index e6630f807..ddefaf896 100644
+--- a/src/strands/models/model.py
++++ b/src/strands/models/model.py
+@@ -16,38 +16,39 @@ logger = logging.getLogger(__name__)
+ T = TypeVar("T", bound=BaseModel)
+ 
+ 
++from typing import Any
++
+ class Model(abc.ABC):
+     """Abstract base class for Agent model providers.
+ 
+     This class defines the interface for all model implementations in the Strands Agents SDK. It provides a
+     standardized way to configure and process requests for different AI model providers.
++
++    Configuration Attributes:
++        cache_strategy: Optional[str] = None
++            Cache strategy to use. "auto" enables automatic prompt caching.
+     """
+ 
+-    @abc.abstractmethod
+-    # pragma: no cover
++    def __init__(self, **kwargs: Any) -> None:
++        self.config = kwargs
++
+     def update_config(self, **model_config: Any) -> None:
+         """Update the model configuration with the provided arguments.
+ 
+         Args:
+             **model_config: Configuration overrides.
+         """
+-        pass
++        self.config.update(model_config)
+ 
+-    @abc.abstractmethod
+-    # pragma: no cover
+-    def get_config(self) -> Any:
++    def get_config(self) -> dict[str, Any]:
+         """Return the model configuration.
+ 
+         Returns:
+             The model's configuration.
+         """
+-        pass
++        return self.config
+ 
+-    @abc.abstractmethod
+-    # pragma: no cover
+-    def structured_output(
+-        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+-    ) -> AsyncGenerator[dict[str, T | Any], None]:
++    async def structured_output(self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any) -> AsyncGenerator[dict[str, T | Any], None]:
+         """Get structured output from the model.
+ 
+         Args:
+@@ -62,21 +63,9 @@ class Model(abc.ABC):
+         Raises:
+             ValidationException: The response format from the model does not match the output_model
+         """
+-        pass
+-
+-    @abc.abstractmethod
+-    # pragma: no cover
+-    def stream(
+-        self,
+-        messages: Messages,
+-        tool_specs: list[ToolSpec] | None = None,
+-        system_prompt: str | None = None,
+-        *,
+-        tool_choice: ToolChoice | None = None,
+-        system_prompt_content: list[SystemContentBlock] | None = None,
+-        invocation_state: dict[str, Any] | None = None,
+-        **kwargs: Any,
+-    ) -> AsyncIterable[StreamEvent]:
++        raise NotImplementedError()
++
++    async def stream(self, messages: Messages, tool_specs: list[ToolSpec] | None = None, system_prompt: str | None = None, *, tool_choice: ToolChoice | None = None, system_prompt_content: list[SystemContentBlock] | None = None, invocation_state: dict[str, Any] | None = None, **kwargs: Any) -> AsyncIterable[StreamEvent]:
+         """Stream conversation with the model.
+ 
+         This method handles the full lifecycle of conversing with the model:
+@@ -100,4 +89,4 @@ class Model(abc.ABC):
+         Raises:
+             ModelThrottledException: When the model service is throttling requests from the client.
+         """
+-        pass
++        raise NotImplementedError()

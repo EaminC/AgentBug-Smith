@@ -1,0 +1,278 @@
+diff --git a/src/strands/tools/decorator.py b/src/strands/tools/decorator.py
+index 5c49f4b58..7762d5461 100644
+--- a/src/strands/tools/decorator.py
++++ b/src/strands/tools/decorator.py
+@@ -1,46 +1,8 @@
+ """Tool decorator for SDK.
+ 
+-This module provides the @tool decorator that transforms Python functions into SDK Agent tools with automatic metadata
+-extraction and validation.
+-
+-The @tool decorator performs several functions:
+-
+-1. Extracts function metadata (name, description, parameters) from docstrings and type hints
+-2. Generates a JSON schema for input validation
+-3. Handles two different calling patterns:
+-   - Standard function calls (func(arg1, arg2))
+-   - Tool use calls (agent.my_tool(param1="hello", param2=123))
+-4. Provides error handling and result formatting
+-5. Works with both standalone functions and class methods
+-
+-Example:
+-    ```python
+-    from strands import Agent, tool
+-
+-    @tool
+-    def my_tool(param1: str, param2: int = 42) -> dict:
+-        '''
+-        Tool description - explain what it does.
+-
+-        #Args:
+-            param1: Description of first parameter.
+-            param2: Description of second parameter (default: 42).
+-
+-        #Returns:
+-            A dictionary with the results.
+-        '''
+-        result = do_something(param1, param2)
+-        return {
+-            "status": "success",
+-            "content": [{"text": f"Result: {result}"}]
+-        }
+-
+-    agent = Agent(tools=[my_tool])
+-    agent.tool.my_tool(param1="hello", param2=123)
+-    ```
++Provides a decorator @tool to create Strands SDK Agent tools using Python functions.
++Extracts metadata from function signatures, docstrings, and type hints.
+ """
+-
+-import asyncio
+ import functools
+ import inspect
+ import logging
+@@ -165,58 +127,13 @@ class FunctionToolMetadata:
+             return create_model(model_name)
+ 
+     def extract_metadata(self) -> ToolSpec:
+-        """Extract metadata from the function to create a tool specification.
+-
+-        This method analyzes the function to create a standardized tool specification that Strands Agent can use to
+-        understand and interact with the tool.
+-
+-        The specification includes:
+-
+-        - name: The function name (or custom override)
+-        - description: The function's docstring
+-        - inputSchema: A JSON schema describing the expected parameters
+-
+-        Returns:
+-            A dictionary containing the tool specification.
+-        """
+-        func_name = self.func.__name__
+-
+-        # Extract function description from docstring, preserving paragraph breaks
+         description = inspect.getdoc(self.func)
+         if description:
+-            description = description.strip()
++            description = description.strip().split('''\n\n''')[0]  # Use only first paragraph
+         else:
+             description = func_name
+-
+-        # Get schema directly from the Pydantic model
+         input_schema = self.input_model.model_json_schema()
+-
+-        # Clean up Pydantic-specific schema elements
+         self._clean_pydantic_schema(input_schema)
+-
+-        # Create tool specification
+-        tool_spec: ToolSpec = {"name": func_name, "description": description, "inputSchema": {"json": input_schema}}
+-
+-        return tool_spec
+-
+-    def _clean_pydantic_schema(self, schema: dict[str, Any]) -> None:
+-        """Clean up Pydantic schema to match Strands' expected format.
+-
+-        Pydantic's JSON schema output includes several elements that aren't needed for Strands Agent tools and could
+-        cause validation issues. This method removes those elements and simplifies complex type structures.
+-
+-        Key operations:
+-
+-        1. Remove Pydantic-specific metadata (title, $defs, etc.)
+-        2. Process complex types like Union and Optional to simpler formats
+-        3. Handle nested property structures recursively
+-
+-        Args:
+-            schema: The Pydantic-generated JSON schema to clean up (modified in place).
+-        """
+-        # Remove Pydantic metadata
+-        keys_to_remove = ["title", "additionalProperties"]
+-        for key in keys_to_remove:
+             if key in schema:
+                 del schema[key]
+ 
+@@ -240,24 +157,24 @@ class FunctionToolMetadata:
+ 
+                 # Clean up nested properties recursively
+                 if "properties" in prop_schema:
+-                    self._clean_pydantic_schema(prop_schema)
++            self._clean_pydantic_schema(prop_schema)
+ 
+                 # Remove any remaining Pydantic metadata from properties
+                 for key in keys_to_remove:
+-                    if key in prop_schema:
+-                        del prop_schema[key]
++            if key in prop_schema:
++                del prop_schema[key]
+ 
+     def validate_input(self, input_data: dict[str, Any]) -> dict[str, Any]:
+         """Validate input data using the Pydantic model.
+ 
+         This method ensures that the input data meets the expected schema before it's passed to the actual function. It
+         converts the data to the correct types when possible and raises informative errors when not.
+-
+-        Args:
+-            input_data: A dictionary of parameter names and values to validate.
++    
++            Args:
++                input_data: A dictionary of parameter names and values to validate.
+ 
+         Returns:
+-            A dictionary with validated and converted parameter values.
++        A dictionary with validated and converted parameter values.
+ 
+         Raises:
+             ValueError: If the input data fails validation, with details about what failed.
+@@ -550,110 +467,15 @@ class DecoratedFunctionTool(AgentTool, Generic[P, R]):
+ 
+     @override
+     def get_display_properties(self) -> dict[str, str]:
+-        """Get properties to display in UI representations.
+-
+-        Returns:
+-            Function properties (e.g., function name).
+-        """
++        """Get properties to display in UI representations."""
+         properties = super().get_display_properties()
+         properties["Function"] = self._tool_func.__name__
+         return properties
+ 
+-
+-# Handle @decorator
+-@overload
+-def tool(__func: Callable[P, R]) -> DecoratedFunctionTool[P, R]: ...
+-# Handle @decorator()
+-@overload
+-def tool(
+-    description: Optional[str] = None,
+-    inputSchema: Optional[JSONSchema] = None,
+-    name: Optional[str] = None,
+-    context: bool | str = False,
+-) -> Callable[[Callable[P, R]], DecoratedFunctionTool[P, R]]: ...
+-# Suppressing the type error because we want callers to be able to use both `tool` and `tool()` at the
+-# call site, but the actual implementation handles that and it's not representable via the type-system
+-def tool(  # type: ignore
+-    func: Optional[Callable[P, R]] = None,
+-    description: Optional[str] = None,
+-    inputSchema: Optional[JSONSchema] = None,
+-    name: Optional[str] = None,
+-    context: bool | str = False,
+-) -> Union[DecoratedFunctionTool[P, R], Callable[[Callable[P, R]], DecoratedFunctionTool[P, R]]]:
+-    """Decorator that transforms a Python function into a Strands tool.
+-
+-    This decorator seamlessly enables a function to be called both as a regular Python function and as a Strands tool.
+-    It extracts metadata from the function's signature, docstring, and type hints to generate an OpenAPI-compatible tool
+-    specification.
+-
+-    When decorated, a function:
+-
+-    1. Still works as a normal function when called directly with arguments
+-    2. Processes tool use API calls when provided with a tool use dictionary
+-    3. Validates inputs against the function's type hints and parameter spec
+-    4. Formats return values according to the expected Strands tool result format
+-    5. Provides automatic error handling and reporting
+-
+-    The decorator can be used in two ways:
+-    - As a simple decorator: `@tool`
+-    - With parameters: `@tool(name="custom_name", description="Custom description")`
+-
+-    Args:
+-        func: The function to decorate. When used as a simple decorator, this is the function being decorated.
+-            When used with parameters, this will be None.
+-        description: Optional custom description to override the function's docstring.
+-        inputSchema: Optional custom JSON schema to override the automatically generated schema.
+-        name: Optional custom name to override the function's name.
+-        context: When provided, places an object in the designated parameter. If True, the param name
+-            defaults to 'tool_context', or if an override is needed, set context equal to a string to designate
+-            the param name.
+-
+-    Returns:
+-        An AgentTool that also mimics the original function when invoked
+-
+-    Example:
+-        ```python
+-        @tool
+-        def my_tool(name: str, count: int = 1) -> str:
+-            # Does something useful with the provided parameters.
+-            #
+-            # Parameters:
+-            #   name: The name to process
+-            #   count: Number of times to process (default: 1)
+-            #
+-            # Returns:
+-            #   A message with the result
+-            return f"Processed {name} {count} times"
+-
+-        agent = Agent(tools=[my_tool])
+-        agent.my_tool(name="example", count=3)
+-        # Returns: {
+-        #   "toolUseId": "123",
+-        #   "status": "success",
+-        #   "content": [{"text": "Processed example 3 times"}]
+-        # }
+-        ```
+-
+-    Example with parameters:
+-        ```python
+-        @tool(name="custom_tool", description="A tool with a custom name and description", context=True)
+-        def my_tool(name: str, count: int = 1, tool_context: ToolContext) -> str:
+-            tool_id = tool_context["tool_use"]["toolUseId"]
+-            return f"Processed {name} {count} times with tool ID {tool_id}"
+-        ```
+-    """
+-
+-    def decorator(f: T) -> "DecoratedFunctionTool[P, R]":
+-        # Resolve context parameter name
+-        if isinstance(context, bool):
+-            context_param = "tool_context" if context else None
+-        else:
+-            context_param = context.strip()
+-            if not context_param:
+-                raise ValueError("Context parameter name cannot be empty")
+-
+-        # Create function tool metadata
+-        tool_meta = FunctionToolMetadata(f, context_param)
++def tool(func: Optional[Callable[..., Any]] = None, description: Optional[str] = None, inputSchema: Optional[JSONSchema] = None, name: Optional[str] = None, context: bool | str = False) -> Callable:
++    """Decorator that converts a function into a Strands tool."""
++    def decorator(f: Callable) -> Callable:
++        tool_meta = FunctionToolMetadata(f, context if isinstance(context, str) else ("tool_context" if context else None))
+         tool_spec = tool_meta.extract_metadata()
+         if name is not None:
+             tool_spec["name"] = name
+@@ -663,16 +485,11 @@ def tool(  # type: ignore
+             tool_spec["inputSchema"] = inputSchema
+ 
+         tool_name = tool_spec.get("name", f.__name__)
+-
+         if not isinstance(tool_name, str):
+             raise ValueError(f"Tool name must be a string, got {type(tool_name)}")
+ 
+         return DecoratedFunctionTool(tool_name, tool_spec, f, tool_meta)
+ 
+-    # Handle both @tool and @tool() syntax
+     if func is None:
+-        # Need to ignore type-checking here since it's hard to represent the support
+-        # for both flows using the type system
+         return decorator
+-
+     return decorator(func)

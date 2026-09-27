@@ -1,0 +1,512 @@
+STDOUT:
+
+[2026-09-01 05:55:58] Total number of tasks: 1
+
+[2026-09-01 05:55:58] Total number of processes: 1
+
+[2026-09-01 05:55:58] Task group info: (number of groups: 1)
+
+[2026-09-01 05:55:58]   local: 1 tasks
+
+[2026-09-01 05:55:58] Running in single process mode.
+
+[2026-09-01 05:55:58] ============= Running task issue_6050_20260805T172922Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: Nested graph resumes re-execute already-completed helper @task instead of reusing cached writes                                    │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Checked other resources                                                                                                                     │
+│                                                                                                                                                 │
+│ -  This is a bug, not a usage question. For questions, please use the LangChain Forum (https://forum.langchain.com/).                           │
+│ -  I added a clear and detailed title that summarizes the issue.                                                                                │
+│ -  I read what a minimal reproducible example is (https://stackoverflow.com/help/minimal-reproducible-example).                                 │
+│ -  I included a self-contained, minimal example that demonstrates the issue INCLUDING all the relevant imports. The code run AS IS to reproduce │
+│ the issue.                                                                                                                                      │
+│                                                                                                                                                 │
+│ ### Example Code                                                                                                                                │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import time, uuid                                                                                                                               │
+│ from typing import TypedDict                                                                                                                    │
+│ from langgraph.func import task                                                                                                                 │
+│ from langgraph.graph import StateGraph                                                                                                          │
+│ from langgraph.types import interrupt, Command                                                                                                  │
+│ from langgraph.constants import START, END                                                                                                      │
+│ from langgraph.checkpoint.memory import InMemorySaver                                                                                           │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ # ------- helper tasks -------------------------------------------------                                                                        │
+│ counter_parent = counter_sub = 0                                                                                                                │
+│                                                                                                                                                 │
+│ @task                                                                                                                                           │
+│ def get_time_parent() -> float:                                                                                                                 │
+│     global counter_parent                                                                                                                       │
+│     counter_parent += 1                                                                                                                         │
+│     print(f"get_time_parent called {counter_parent} times")                                                                                     │
+│     return time.time()                                                                                                                          │
+│                                                                                                                                                 │
+│ @task                                                                                                                                           │
+│ def get_time_subgraph() -> float:                                                                                                               │
+│     global counter_sub                                                                                                                          │
+│     counter_sub += 1                                                                                                                            │
+│     print(f"get_time_subgraph called {counter_sub} times")                                                                                      │
+│     return time.time()                                                                                                                          │
+│                                                                                                                                                 │
+│ # ------- sub-graph ----------------------------------------------------                                                                        │
+│ class State(TypedDict):                                                                                                                         │
+│     state_counter: int                                                                                                                          │
+│                                                                                                                                                 │
+│ checkpointer = InMemorySaver()                                                                                                                  │
+│                                                                                                                                                 │
+│ sub = StateGraph(State)                                                                                                                         │
+│ sub.add_node("some_node", lambda s: None)                                                                                                       │
+│ def human_node(_: State):                                                                                                                       │
+│     t1 = get_time_subgraph().result()                                                                                                           │
+│     print("subgraph t1:", t1)                                                                                                                   │
+│     interrupt("what is your name?")                                                                                                             │
+│ sub.add_node("human_node", human_node)                                                                                                          │
+│ sub.add_edge(START, "some_node")                                                                                                                │
+│ sub.add_edge("some_node", "human_node")                                                                                                         │
+│ sub.add_edge("human_node", END)                                                                                                                 │
+│ subgraph = sub.compile(checkpointer=checkpointer)                                                                                               │
+│                                                                                                                                                 │
+│ # ------- parent graph -------------------------------------------------                                                                        │
+│ parent = StateGraph(State)                                                                                                                      │
+│ def parent_node(_: State):                                                                                                                      │
+│     t1 = get_time_parent().result()                                                                                                             │
+│     print("parent t1:", t1)                                                                                                                     │
+│     interrupt("what is your parent name?")                                                                                                      │
+│ parent.add_node("parent_node", parent_node)                                                                                                     │
+│ parent.add_node("subgraph", subgraph)                                                                                                           │
+│ parent.add_edge(START, "parent_node")                                                                                                           │
+│ parent.add_edge("parent_node", "subgraph")                                                                                                      │
+│ parent.add_edge("subgraph", END)                                                                                                                │
+│ graph = parent.compile(checkpointer=checkpointer)                                                                                               │
+│                                                                                                                                                 │
+│ cfg_parent = {"configurable": {"thread_id": uuid.uuid4()}}                                                                                      │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ # -------- run: first execution + 2 resumes ----------------------------                                                                        │
+│ print('--- First run---')                                                                                                                       │
+│ for chunk in graph.stream({"state_counter": 1}, cfg_parent):                                                                                    │
+│     pass   # triggers first interrupt                                                                                                           │
+│                                                                                                                                                 │
+│ print('--- Resuming 1---')                                                                                                                      │
+│ for chunk in graph.stream(Command(resume="resume-1"), cfg_parent):                                                                              │
+│     pass   # triggers second interrupt (inside subgraph)                                                                                        │
+│                                                                                                                                                 │
+│ print('--- Resuming 2---')                                                                                                                      │
+│ for chunk in graph.stream(Command(resume="resume-2"), cfg_parent):                                                                              │
+│     pass   # finishes successfully                                                                                                              │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ """                                                                                                                                             │
+│ Output:                                                                                                                                         │
+│                                                                                                                                                 │
+│ get_time_parent called 1 times                                                                                                                  │
+│ parent t1: 1756630407.224288                                                                                                                    │
+│ parent t1: 1756630407.224288   # (expected)                                                                                                     │
+│ get_time_subgraph called 1 times                                                                                                                │
+│ subgraph t1: 1756630407.226399                                                                                                                  │
+│ get_time_subgraph called 2 times                                                                                                                │
+│ subgraph t1: 1756630407.227942  # (task re-executed)                                                                                            │
+│ """                                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Error Message and Stack Trace (if applicable)                                                                                               │
+│                                                                                                                                                 │
+│ ```shell                                                                                                                                        │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Description                                                                                                                                 │
+│                                                                                                                                                 │
+│ A task inside a nested graph gets re-executed every time and does not read from cached checkpointed values.  This works as expected in the      │
+│ parent-level graph, but not in the nested graph, as shown in the example code.                                                                  │
+│                                                                                                                                                 │
+│ ---                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Debugging Notes                                                                                                                             │
+│                                                                                                                                                 │
+│ The `PregelLoop` (https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/pregel/_loop.py#L501-L502) whether to reuse      │
+│ pending writes during the first tick based on the flag                                                                                          │
+│ [`self.skip_done_tasks`](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/pregel/_loop.py#L245):                    │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ self.skip_done_tasks = CONFIG_KEY_CHECKPOINT_ID not in config[CONF]                                                                             │
+│ ...                                                                                                                                             │
+│ if self.skip_done_tasks and self.checkpoint_pending_writes:                                                                                     │
+│     self._match_writes(self.tasks)  # re-attaches cached writes                                                                                 │
+│ ````                                                                                                                                            │
+│                                                                                                                                                 │
+│ #### Observed Behavior                                                                                                                          │
+│                                                                                                                                                 │
+│ * **Top-level graph**                                                                                                                           │
+│                                                                                                                                                 │
+│   * `CONFIG_KEY_CHECKPOINT_ID` is missing by default → `skip_done_tasks = True`                                                                 │
+│   * Cached tasks writes are stitched back → tasks are **not** re-executed                                                                       │
+│                                                                                                                                                 │
+│ * **Nested graph (sub-graph)**                                                                                                                  │
+│                                                                                                                                                 │
+│   * `CONFIG_KEY_CHECKPOINT_ID` is present → `skip_done_tasks = False` on its first tick                                                         │
+│   * `_match_writes` is skipped → tasks that already finished **run again** on every resume                                                      │
+│                                                                                                                                                 │
+│ ---                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Proposal to Fix the Issue                                                                                                                   │
+│                                                                                                                                                 │
+│ Add a check to determine whether we are resuming a subgraph or not                                                                              │
+│ (https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/pregel/_loop.py#L245):                                            │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ self.skip_done_tasks = (                                                                                                                        │
+│     CONFIG_KEY_CHECKPOINT_ID not in config[CONF]                                                                                                │
+│     or (                                                                                                                                        │
+│         CONFIG_KEY_RESUMING in self.config[CONF]                                                                                                │
+│         and self.is_nested                                                                                                                      │
+│     )                                                                                                                                           │
+│ )                                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### System Info                                                                                                                                 │
+│                                                                                                                                                 │
+│ #### System Information                                                                                                                         │
+│ ------------------                                                                                                                              │
+│ > OS:  Darwin                                                                                                                                   │
+│ > OS Version:  Darwin Kernel Version 22.6.0: Fri Sep 15 13:41:28 PDT 2023; root:xnu-8796.141.3.700.8~1/RELEASE_ARM64_T6000                      │
+│ > Python Version:  3.13.2 (main, Feb  4 2025, 14:51:09) [Clang 15.0.0 (clang-1500.1.0.2.5)]                                                     │
+│                                                                                                                                                 │
+│ #### Package Information                                                                                                                        │
+│ -------------------                                                                                                                             │
+│ > langchain_core: 0.3.75                                                                                                                        │
+│ > langsmith: 0.4.21                                                                                                                             │
+│ > langgraph_cli: 0.4.0                                                                                                                          │
+│ > langgraph_sdk: 0.2.4                                                                                                                          │
+│                                                                                                                                                 │
+│ #### Optional packages not installed                                                                                                            │
+│ -------------------------------                                                                                                                 │
+│ > langserve                                                                                                                                     │
+│                                                                                                                                                 │
+│ #### Other Dependencies                                                                                                                         │
+│ ------------------                                                                                                                              │
+│ > click>=8.1.7: Installed. No version info available.                                                                                           │
+│ > httpx<1,>=0.23.0: Installed. No version info available.                                                                                       │
+│ > httpx>=0.25.2: Installed. No version info available.                                                                                          │
+│ > jsonpatch<2.0,>=1.33: Installed. No version info available.                                                                                   │
+│ > langgraph-api<0.5.0,>=0.3;: Installed. No version info available.                                                                             │
+│ > langgraph-runtime-inmem>=0.7;: Installed. No version info available.                                                                          │
+│ > langgraph-sdk>=0.1.0;: Installed. No version info available.                                                                                  │
+│ > langsmith-pyo3>=0.1.0rc2;: Installed. No version info available.                                                                              │
+│ > langsmith>=0.3.45: Installed. No version info available.                                                                                      │
+│ > openai-agents>=0.0.3;: Installed. No version info available.                                                                                  │
+│ > opentelemetry-api>=1.30.0;: Installed. No version info available.                                                                             │
+│ > opentelemetry-exporter-otlp-proto-http>=1.30.0;: Installed. No version info available.                                                        │
+│ > opentelemetry-sdk>=1.30.0;: Installed. No version info available.                                                                             │
+│ > orjson>=3.10.1: Installed. No version info available.                                                                                         │
+│ > orjson>=3.9.14;: Installed. No version info available.                                                                                        │
+│ > packaging>=23.2: Installed. No version info available.                                                                                        │
+│ > pydantic<3,>=1: Installed. No version info available.                                                                                         │
+│ > pydantic>=2.7.4: Installed. No version info available.                                                                                        │
+│ > pytest>=7.0.0;: Installed. No version info available.                                                                                         │
+│ > python-dotenv>=0.8.0;: Installed. No version info available.                                                                                  │
+│ > PyYAML>=5.3: Installed. No version info available.                                                                                            │
+│ > requests-toolbelt>=1.0.0: Installed. No version info available.                                                                               │
+│ > requests>=2.0.0: Installed. No version info available.                                                                                        │
+│ > rich>=13.9.4;: Installed. No version info available.                                                                                          │
+│ > tenacity!=8.4.0,<10.0.0,>=8.1.0: Installed. No version info available.                                                                        │
+│ > typing-extensions>=4.7: Installed. No version info available.                                                                                 │
+│ > vcrpy>=7.0.0;: Installed. No version info available.                                                                                          │
+│ > zstandard>=0.23.0: Installed. No version info available.                                                                                      │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1993, output_tokens=13, cost=0.000307
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2171, output_tokens=767, cost=0.000786
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import time, uuid                                                 │
+│  from typing import TypedDict                                      │
+│  from langgraph.func import task                                   │
+│  from langgraph.graph import StateGraph                            │
+│  from langgraph.types import interrupt, Command                    │
+│  from langgraph.constants import START, END                        │
+│  from langgraph.checkpoint.memory import InMemorySaver             │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  import sys                                                        │
+│                                                                    │
+│  # ------- helper tasks                                            │
+│  -------------------------------------------------                 │
+│  counter_parent = counter_sub = 0                                  │
+│                                                                    │
+│  @task                                                             │
+│  def get_time_parent() -> float:                                   │
+│      global counter_parent                                         │
+│      counter_parent += 1                                           │
+│      print(f"get_time_parent called {counter_parent} times")       │
+│      return time.time()                                            │
+│                                                                    │
+│  @task                                                             │
+│  def get_time_subgraph() -> float:                                 │
+│      global counter_sub                                            │
+│      counter_sub += 1                                              │
+│      print(f"get_time_subgraph called {counter_sub} times")        │
+│      return time.time()                                            │
+│                                                                    │
+│  # ------- sub-graph                                               │
+│  ----------------------------------------------------              │
+│  class State(TypedDict):                                           │
+│      state_counter: int                                            │
+│                                                                    │
+│  checkpointer = InMemorySaver()                                    │
+│                                                                    │
+│  sub = StateGraph(State)                                           │
+│  sub.add_node("some_node", lambda s: None)                         │
+│  def human_node(_: State):                                         │
+│      t1 = get_time_subgraph().result()                             │
+│      print("subgraph t1:", t1)                                     │
+│      interrupt("what is your name?")                               │
+│  sub.add_node("human_node", human_node)                            │
+│  sub.add_edge(START, "some_node")                                  │
+│  sub.add_edge("some_node", "human_node")                           │
+│  sub.add_edge("human_node", END)                                   │
+│  subgraph = sub.compile(checkpointer=checkpointer)                 │
+│                                                                    │
+│  # ------- parent graph                                            │
+│  -------------------------------------------------                 │
+│  parent = StateGraph(State)                                        │
+│  def parent_node(_: State):                                        │
+│      t1 = get_time_parent().result()                               │
+│      print("parent t1:", t1)                                       │
+│      interrupt("what is your parent name?")                        │
+│  parent.add_node("parent_node", parent_node)                       │
+│  parent.add_node("subgraph", subgraph)                             │
+│  parent.add_edge(START, "parent_node")                             │
+│  parent.add_edge("parent_node", "subgraph")                        │
+│  parent.add_edge("subgraph", END)                                  │
+│  graph = parent.compile(checkpointer=checkpointer)                 │
+│                                                                    │
+│  cfg_parent = {"configurable": {"thread_id": uuid.uuid4()}}        │
+│                                                                    │
+│  try:                                                              │
+│      print('--- First run---')                                     │
+│      for chunk in graph.stream({"state_counter": 1}, cfg_parent):  │
+│          pass   # triggers first interrupt                         │
+│                                                                    │
+│      print('--- Resuming 1---')                                    │
+│      for chunk in graph.stream(Command(resume="resume-1"),         │
+│  cfg_parent):                                                      │
+│          pass   # triggers second interrupt (inside subgraph)      │
+│                                                                    │
+│      print('--- Resuming 2---')                                    │
+│      for chunk in graph.stream(Command(resume="resume-2"),         │
+│  cfg_parent):                                                      │
+│          pass   # finishes successfully                            │
+│                                                                    │
+│      # Check if subgraph task re-executed                          │
+│      # Expected behavior:                                          │
+│      #   get_time_subgraph called 1 times  => task reused cached   │
+│  result on resume                                                  │
+│      # If counter_sub > 1 => bug present                           │
+│      if counter_sub > 1:                                           │
+│          raise AssertionError(f"Subgraph task re-executed          │
+│  {counter_sub} times, expected 1")                                 │
+│                                                                    │
+│  except Exception as e:                                            │
+│      print_stacktrace(e)                                           │
+│      sys.exit(1)                                                   │
+│                                                                    │
+│  print("Test passed, no unexpected re-executions detected.")       │
+│  sys.exit(0)                                                       │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 05:56:12] Task issue_6050_20260805T172922Z failed with exception: .
+
+[2026-09-01 05:56:12] No patch generated. You can try running ACR again.
+
+[2026-09-01 05:56:12] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 05:55:58.114 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_6050_20260805T172922Z =============
+2026-09-01 05:55:58.611 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 05:56:01.623 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1993, output_tokens=13, cost=0.000307
+2026-09-01 05:56:12.786 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=2171, output_tokens=767, cost=0.000786
+2026-09-01 05:56:12.902 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7ed870724d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7ed866535070>]}
+    └ <function run_task_groups at 0x7ed8665723e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7ed866535070>]
+    └ <function run_tasks_serial at 0x7ed866572480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7ed866535070>
+    └ <function run_task_in_subprocess at 0x7ed866572660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7ed866535070>
+    │        │      └ <function run_raw_task at 0x7ed866572700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7ed87038cae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7ed866839760>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7ed87038c860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7ed866839760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7ed87038c9a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7ed866839760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7ed87038ca40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7ed866839760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7ed8705582c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7ed8705bcfe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+    │    └ <function Popen._launch at 0x7ed86651c360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7ed866535cd0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7ed870558cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7ed870558220>
+    └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7ed866535b20>, <multiprocessing.queues.SimpleQueue object at 0x7ed866535a...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+    │    └ <function _process_worker at 0x7ed870387c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2756700 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7ed8669517f0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7ed866536060>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7ed8669517f0>
+        │         └ <function run_raw_task at 0x7ed866572700>
+        └ <concurrent.futures.process._CallItem object at 0x7ed8669517f0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_6050_20260805T172922Z/acr_output/issue_6050_20260805T172922Z_2026-09-01_05-55-58'
+             │            │    └ <function RawLocalTask.to_task at 0x7ed866572020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7ed866536060>
+             └ <function do_inference at 0x7ed8665728e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7ed866638860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7ed866ec7880>
+       │                 │         │            └ PlainTask(commit_hash='328129e5bd01805ed9a2c925df4d02d065e9ac15', local_path='/root/auto-code-rover/.acr_cache/acr_ws_6050', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7ed866536c00>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_6050_20260805T172922Z/acr_output/issue_6050_20260805T172922Z_2026-09-01...
+       └ <function _run_one_task at 0x7ed866639b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7ed866ec4220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7ed866a363f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7ed866ec7ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7ed866a363f0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport time, uuid\nfrom typing import TypedDict\nfrom langgraph.func import task\nfrom langgraph.graph impo...
+                   │    │    └ <function Task.execute_reproducer at 0x7ed866ec6480>
+                   │    └ PlainTask(commit_hash='328129e5bd01805ed9a2c925df4d02d065e9ac15', local_path='/root/auto-code-rover/.acr_cache/acr_ws_6050', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7ed866a363f0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 05:56:12.905 | INFO     | app.log:log_and_always_print:229 - Task issue_6050_20260805T172922Z failed with exception: .
+2026-09-01 05:56:12.906 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

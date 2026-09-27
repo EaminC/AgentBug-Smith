@@ -1,0 +1,78 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index 9c31ec4d5..4894f13e8 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -372,12 +372,72 @@ class Agent:
+         """
+ 
+         def execute() -> AgentResult:
+-            return asyncio.run(self.invoke_async(prompt, **kwargs))
++                    return asyncio.run(self.invoke_async(prompt, **kwargs))
+ 
+         with ThreadPoolExecutor() as executor:
+             future = executor.submit(execute)
+             return future.result()
+ 
++    def invoke(self, prompt: Union[str, list[ContentBlock]], invocation_state: Optional[dict[str, Any]] = None, **kwargs: Any) -> AgentResult:
++        """Synchronously invoke the agent with optional invocation state."""
++        if invocation_state is None:
++            invocation_state = {}
++        invocation_state.update(kwargs)
++
++        def execute() -> AgentResult:
++            return asyncio.run(self.invoke_async(prompt, invocation_state=invocation_state))
++
++        with ThreadPoolExecutor() as executor:
++            future = executor.submit(execute)
++            return future.result()
++
++    async def invoke_async(self, prompt: Union[str, list[ContentBlock]], **kwargs: Any) -> AgentResult:
++        """Process a natural language prompt through the agent's event loop.
++
++        This method implements the conversational interface (e.g., `agent("hello!")`). It adds the user's prompt to
++        the conversation history, processes it through the model, executes any tool calls, and returns the final result.
++
++        Args:
++            prompt: User input as text or list of ContentBlock objects for multi-modal content.
++            invocation_state: Optional state dictionary for invocation.
++            **kwargs: Additional parameters to pass through the event loop.
++
++        Returns:
++            Result object containing:
++
++                - stop_reason: Why the event loop stopped (e.g., "end_turn", "max_tokens")
++                - message: The final message from the model
++                - metrics: Performance metrics from the event loop
++                - state: The final state of the event loop
++        """
++
++        invocation_state = kwargs.pop("invocation_state", None)
++        if invocation_state is None:
++            invocation_state = {}
++        invocation_state.update(kwargs)
++
++        events = self.stream_async(prompt, invocation_state=invocation_state)
++        async for event in events:
++            _ = event
++
++        return cast(AgentResult, event["result"])
++
++
++    def invoke(self, prompt: Union[str, list[ContentBlock]], invocation_state: Optional[dict[str, Any]] = None, **kwargs: Any) -> AgentResult:
++        """Synchronously invoke the agent with optional invocation state."""
++        if invocation_state is None:
++            invocation_state = {}
++        # Merge kwargs into invocation_state to keep backward compatibility
++        invocation_state.update(kwargs)
++        def execute() -> AgentResult:
++            return asyncio.run(self.invoke_async(prompt, **invocation_state))
++
++        with ThreadPoolExecutor() as executor:
++            future = executor.submit(execute)
++            return future.result()
++
++
++
+     async def invoke_async(self, prompt: Union[str, list[ContentBlock]], **kwargs: Any) -> AgentResult:
+         """Process a natural language prompt through the agent's event loop.
+ 

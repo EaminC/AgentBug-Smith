@@ -1,0 +1,62 @@
+diff --git a/src/agentscope/skill/_local_loader.py b/src/agentscope/skill/_local_loader.py
+index 04f3205e..9ed2118f 100644
+--- a/src/agentscope/skill/_local_loader.py
++++ b/src/agentscope/skill/_local_loader.py
+@@ -25,7 +25,7 @@ class LocalSkillLoader(SkillLoaderBase):
+                 Whether to scan subdirectories. Defaults to False (only
+                 scan current directory).
+         """
+-        self.directory = os.path.abspath(directory)
++        self.directory = os.path.abspath(os.path.expanduser(directory))
+         self.scan_subdir = scan_subdir
+         self._cache: dict[str, Skill] = {}
+ 
+diff --git a/src/agentscope/workspace/_local_workspace.py b/src/agentscope/workspace/_local_workspace.py
+index 1e4468dd..62e53728 100644
+--- a/src/agentscope/workspace/_local_workspace.py
++++ b/src/agentscope/workspace/_local_workspace.py
+@@ -77,6 +77,7 @@ class LocalWorkspace(WorkspaceBase):
+         skill_paths: list[str] | None = None,
+         instructions: str = DEFAULT_WORKSPACE_INSTRUCTIONS,
+     ) -> None:
++
+         """Construct a :class:`LocalWorkspace`.
+ 
+         Args:
+@@ -110,7 +111,7 @@ class LocalWorkspace(WorkspaceBase):
+ 
+         # ── seed-only ───────────────────────────────────────────
+         self.default_mcps: list[MCPClient] = list(default_mcps or [])
+-        self.skill_paths: list[str] = list(skill_paths or [])
++        self.skill_paths: list[str] = [os.path.abspath(os.path.expanduser(p)) for p in (skill_paths or [])]
+ 
+         # ── runtime state ───────────────────────────────────────
+         self._backend = LocalBackend()
+diff --git a/tests/skill_loader_test.py b/tests/skill_loader_test.py
+index 101be4ad..50c98dcf 100644
+--- a/tests/skill_loader_test.py
++++ b/tests/skill_loader_test.py
+@@ -210,3 +210,23 @@ This is the modified content.
+             loader._cache[self.test_dir].name,
+             "modified_root_skill",
+         )
++
++    async def test_expanduser_in_path(self) -> None:
++        """Test that LocalSkillLoader expands ~ in paths."""
++        temp_dir = tempfile.mkdtemp()
++        try:
++            skill_md_path = os.path.join(temp_dir, "SKILL.md")
++            with open(skill_md_path, "w", encoding="utf-8") as f:
++                f.write("---\nname: skill_with_tilde\ndescription: Test skill with ~ in path\n---\n")
++
++            # Use ~ in path
++            path_with_tilde = os.path.join("~", os.path.relpath(temp_dir, os.path.expanduser("~")))
++
++            loader = LocalSkillLoader(path_with_tilde)
++
++            skills = await loader.list_skills()
++
++            self.assertEqual(len(skills), 1)
++            self.assertEqual(skills[0].name, "skill_with_tilde")
++        finally:
++            shutil.rmtree(temp_dir)

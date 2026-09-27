@@ -1,0 +1,99 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index 567a92b4a..a34621602 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -257,6 +257,36 @@ class Agent(AgentBase):
+ 
+         self.hooks = HookRegistry()
+ 
++    def add_hook(
++        self, 
++        event_type: type[TEvent], 
++        callback: HookCallback[TEvent]
++    ) -> None:
++        """Register a callback function for a specific event type.
++        
++        This is a convenience method for adding hook callbacks to react to
++        agent lifecycle events. Callbacks can be either synchronous or
++        asynchronous functions.
++        
++        Args:
++            event_type: The class type of events this callback should handle.
++            callback: The callback function to invoke when events of this type occur.
++        
++        Example:
++            ```python
++            def log_model_call(event: BeforeModelCallEvent) -> None:
++                print(f"Calling model for agent: {event.agent.name}")
++            
++            agent = Agent()
++            agent.add_hook(BeforeModelCallEvent, log_model_call)
++            ```
++        
++        See Also:
++            - :class:`strands.hooks.HookCallback` for callback signature
++            - :mod:`strands.hooks.events` for available event types
++        """
++        self.hooks.add_callback(event_type, callback)
++
+         self._interrupt_state = _InterruptState()
+ 
+         # Initialize lock for guarding concurrent invocations
+diff --git a/tests/strands/agent/test_agent.py b/tests/strands/agent/test_agent.py
+index eb039185c..d60a55a30 100644
+--- a/tests/strands/agent/test_agent.py
++++ b/tests/strands/agent/test_agent.py
+@@ -38,6 +38,53 @@ FORMATTED_DEFAULT_MODEL_ID = DEFAULT_BEDROCK_MODEL_ID.format("us")
+ 
+ @pytest.fixture
+ def mock_model(request):
++import asyncio
++from strands.hooks.registry import TEvent, HookCallback
++from strands.hooks.events import BeforeModelCallEvent
++
++
++def test_add_hook_registers_callback():
++    agent = Agent()
++    called = False
++
++    def callback(event: BeforeModelCallEvent) -> None:
++        nonlocal called
++        called = True
++
++    agent.add_hook(BeforeModelCallEvent, callback)
++
++    # Directly trigger the hook to test if it was called
++    event = BeforeModelCallEvent(agent=agent)
++    callbacks = agent.hooks._registered_callbacks.get(BeforeModelCallEvent, [])
++    for cb in callbacks:
++        res = cb(event)
++        if asyncio.iscoroutine(res):
++            asyncio.run(res)
++
++    assert called
++
++
++def test_add_hook_accepts_async_callback():
++    agent = Agent()
++    called = False
++
++    async def async_callback(event: BeforeModelCallEvent) -> None:
++        nonlocal called
++        called = True
++
++    agent.add_hook(BeforeModelCallEvent, async_callback)
++
++    # Directly trigger the hook to test if it was called
++    event = BeforeModelCallEvent(agent=agent)
++    callbacks = agent.hooks._registered_callbacks.get(BeforeModelCallEvent, [])
++    for cb in callbacks:
++        res = cb(event)
++        if asyncio.iscoroutine(res):
++            asyncio.run(res)
++
++    assert called
++
++
+     async def stream(*args, **kwargs):
+         # Skip deep copy of invocation_state which contains non-serializable objects (agent, spans, etc.)
+         copied_kwargs = {

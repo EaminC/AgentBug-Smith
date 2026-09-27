@@ -1,0 +1,147 @@
+diff --git a/src/agentscope/agent/_agent.py b/src/agentscope/agent/_agent.py
+index e6a61f07..118d568f 100644
+--- a/src/agentscope/agent/_agent.py
++++ b/src/agentscope/agent/_agent.py
+@@ -191,6 +191,9 @@ class Agent:
+         self._compress_context_middlewares = [
+             _ for _ in middlewares if _.is_implemented("on_compress_context")
+         ]
++        self._check_permission_middlewares = [
++            _ for _ in middlewares if _.is_implemented("on_check_permission")
++        ]
+ 
+     # =======================================================================
+     # Agent public methods
+@@ -1671,17 +1674,126 @@ class Agent:
+ 
+             return
+ 
++        # Helper: run the middleware chain for already ALLOWED tool calls on resume
++    async def _run_check_permission_middleware_for_confirmed_tool_call(
++        self,
++        tool_call: ToolCallBlock,
++        tool: "Tool",
++        parsed_input: dict,
++        innermost_handler: callable,
++    ) -> PermissionDecision:
++        """Run the on_check_permission middleware chain for tool calls
++        that are already ALLOWED (confirmed) by user.
++
++        Instead of calling the engine, immediately return an ALLOW
++        decision after chaining through middleware.
++        """
++        async def allow_innermost_handler(
++            *,
++            tool_call: ToolCallBlock,
++            tool: "Tool",
++            tool_input: dict,
++        ) -> PermissionDecision:
++            return PermissionDecision(
++                behavior=PermissionBehavior.ALLOW,
++                message="Already allowed by user confirmation.",
++            )
++
++        async def execute_chain(
++            index: int,
++            tool_call: ToolCallBlock,
++            tool: "Tool",
++            tool_input: dict,
++        ) -> PermissionDecision:
++            if index >= len(self._check_permission_middlewares):
++                return await allow_innermost_handler(
++                    tool_call=tool_call,
++                    tool=tool,
++                    tool_input=tool_input,
++                )
++            mw = self._check_permission_middlewares[index]
++            input_kwargs = dict(
++                tool_call=tool_call,
++                tool=tool,
++                tool_input=tool_input,
++            )
++
++            async def next_handler(**kwargs: dict) -> PermissionDecision:
++                combined_kwargs = {**input_kwargs, **kwargs}
++                return await execute_chain(
++                    index + 1,
++                    combined_kwargs.get("tool_call", tool_call),
++                    combined_kwargs.get("tool", tool),
++                    combined_kwargs.get("tool_input", tool_input),
++                )
++
++            return await mw.on_check_permission(
++                agent=self,
++                input_kwargs=input_kwargs,
++                next_handler=next_handler,
++            )
++
+         # ===================================================================
+-        # Step 2: Check permission by toolkit and permission engine
++        # Step 2: Check permission by toolkit and permission engine,
++        # utilizing middleware chain if present.
+         # ===================================================================
++        async def innermost_handler(
++            *,
++            tool_call: ToolCallBlock,
++            tool: "Tool",
++            tool_input: dict,
++        ) -> PermissionDecision:
++            # Innermost handler calling the built-in engine
++            return await self._engine.check_permission(tool, tool_input)
++
++        # Compose the onion-style middleware chain for permission check
++        async def execute_check_permission_chain(
++            index: int,
++            tool_call: ToolCallBlock,
++            tool: "Tool",
++            tool_input: dict,
++        ) -> PermissionDecision:
++            if index >= len(self._check_permission_middlewares):
++                return await innermost_handler(
++                    tool_call=tool_call,
++                    tool=tool,
++                    tool_input=tool_input,
++                )
++            mw = self._check_permission_middlewares[index]
++            input_kwargs = dict(
++                tool_call=tool_call,
++                tool=tool,
++                tool_input=tool_input,
++            )
++
++            async def next_handler(**kwargs: dict) -> PermissionDecision:
++                combined_kwargs = {**input_kwargs, **kwargs}
++                return await execute_check_permission_chain(
++                    index + 1,
++                    combined_kwargs.get("tool_call", tool_call),
++                    combined_kwargs.get("tool", tool),
++                    combined_kwargs.get("tool_input", tool_input),
++                )
++
++            return await mw.on_check_permission(
++                agent=self,
++                input_kwargs=input_kwargs,
++                next_handler=next_handler,
++            )
++
+         if tool_call.state == ToolCallState.ALLOWED:
+-            # Already allowed by user confirmation, skip permission checking
+-            decision = PermissionDecision(
+-                behavior=PermissionBehavior.ALLOW,
+-                message="Already allowed by user confirmation.",
++            # Already allowed by user confirmation,
++            # run middleware chain with ALLOW decision without re-checking engine
++            decision = await self._run_check_permission_middleware_for_confirmed_tool_call(
++                tool_call=tool_call,
++                tool=tool,
++                parsed_input=parsed_input,
++                innermost_handler=innermost_handler,
+             )
+         else:
+-            decision = await self._engine.check_permission(
++            decision = await execute_check_permission_chain(
++                0,
++                tool_call,
+                 tool,
+                 parsed_input,
+             )

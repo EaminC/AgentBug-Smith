@@ -1,0 +1,145 @@
+# Issue #2122: [BUG] Empty toolResult content array causes ValidationException with Nemotron (and potentially other strict models) via Bedrock Converse API
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.35.0
+
+### Python Version
+
+3.13 (Debian) & 3.14.2 (macOS)
+
+### Operating System
+
+Debian (python:3.13-slim via ECS Fargate) & macOS 26
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+When a tool returns no content (e.g., an MCP tool returns an empty result), the SDK passes `toolResult.content: []` (empty array) to the Bedrock Converse API. This causes a `ValidationException` with Nemotron models.
+
+Minimal reproducer using the Strands SDK with a tool that returns empty content:
+
+```python
+from strands import Agent, tool
+from strands.models import BedrockModel
+
+@tool
+def list_tables() -> dict:
+    """List all tables in the database.
+
+    Returns:
+        A dict with status and content containing table names.
+    """
+    # Returns a pre-formatted tool result with empty content array.
+    # This is the same format that MCP tools produce when they return
+    # a successful result with no content items (e.g., postgres-mcp-server
+    # run_query returning an empty result set).
+    #
+    # The SDK's _wrap_tool_result passes dicts with "status" and "content"
+    # keys through directly without normalization.
+    return {
+        "status": "success",
+        "content": [],
+    }
+
+# FAILS with Nemotron:
+agent = Agent(
+    model=BedrockModel(model_id="nvidia.nemotron-super-3-120b", streaming=False),
+    tools=[list_tables],
+)
+result = agent("What tables are in the database?")
+
+# SUCCEEDS with Claude (same tool, same code):
+agent = Agent(
+    model=BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", streaming=False),
+    tools=[list_tables],
+)
+result = agent("What tables are in the database?")
+```
+
+Output with Nemotron (strands-agents 1.35.0):
+```
+Tool #1: list_tables
+cycle failed
+...
+botocore.errorfactory.ValidationException: An error occurred (ValidationException) when calling the
+Converse operation: The model returned the following errors:
+{"error":{"code":"validation_error","message":"Failed to deserialize the JSON body into the target type:
+?[2]: Invalid 'messages': missing field `content` at line 1 column 308","param":null,
+"type":"invalid_request_error"}}
+└ Bedrock region: us-east-1
+└ Model id: nvidia.nemotron-super-3-120b
+```
+
+Output with Claude Sonnet 4.5 (same code, same tool):
+```
+Tool #1: list_tables
+SUCCESS: Agent responded without error.
+```
+
+In a real Strands agent scenario, this happens when:
+1. Agent calls an MCP tool (e.g., `postgres-mcp-server` `run_query`)
+2. The MCP tool returns a successful result but with no content items
+3. `_handle_tool_result` in `mcp_client.py` maps the empty content to `content: []`
+4. The event loop constructs a `toolResult` message with `content: []`
+5. `_format_bedrock_messages` passes it through to the Converse API unchanged
+6. Nemotron's endpoint rejects it; Claude accepts it
+
+
+### Expected Behavior
+
+The SDK should normalize empty `toolResult.content` arrays before sending to the Converse API, ensuring cross-model compatibility. A `toolResult` with `content: []` should be replaced with `content: [{"text": ""}]`.
+
+### Actual Behavior
+
+Nemotron returns a `ValidationException`:
+
+```
+botocore.errorfactory.ValidationException: An error occurred (ValidationException) when calling the
+Converse operation: The model returned the following errors:
+{"error":{"code":"validation_error","message":"Failed to deserialize the JSON body into the target type:
+?[2]: Invalid 'messages': missing field `content` at line 1 column 308","param":null,
+"type":"invalid_request_error"}}
+└ Bedrock region: us-east-1
+└ Model id: nvidia.nemotron-super-3-120b
+```
+
+Key observations from the error:
+- The error format `{"error":{"code":"validation_error","type":"invalid_request_error"}}` is OpenAI-style, originating from Nemotron's inference endpoint — not from Bedrock's own validation layer.
+- Bedrock accepts the request (no client-side validation error), but the Converse-to-Nemotron translation layer produces a message missing the required `content` field when it encounters an empty content array.
+- Claude Sonnet 4.5 processes the identical payload successfully.
+- The AWS [ToolResultBlock docs](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultBlock.html) mark `content` as `Required: Yes` but do not specify a minimum array length, so `[]` is technically valid per the spec.
+
+### Additional Context
+
+This was discovered with a Strands agent using `nvidia.nemotron-super-3-120b` via the Bedrock Converse API. The agent used the [`awslabs/postgres-mcp-server`](https://github.com/awslabs/mcp/tree/main/src/postgres-mcp-server) MCP tool, which returned empty content for a successful `run_query` call. The error was 100% reproducible — every tool use cycle that produced an empty tool result triggered the failure.
+
+### Possible Solution
+
+Normalize empty `toolResult.content` arrays in `_format_bedrock_messages` in `src/strands/models/bedrock.py`. This follows existing normalization patterns in the same function (filtering `SDK_UNKNOWN_MEMBER`, dropping DeepSeek `reasoningContent`) and matches the TypeScript SDK's approach in `bedrock.ts → _formatMessages`.
+
+```python
+# In _format_bedrock_messages, before formatting content blocks:
+if "toolResult" in content_block:
+    if not content_block["toolResult"].get("content"):
+        content_block["toolResult"]["content"] = [{"text": ""}]
+```
+
+This is:
+- Model-agnostic and defensive — protects against all strict model providers, not just Nemotron
+- Consistent with existing SDK normalization patterns in `_format_bedrock_messages`
+- Consistent with the TypeScript SDK's `_formatMessages` which already filters empty content
+- A single-point fix at the model-provider boundary
+
+### Related Issues
+
+- TypeScript SDK fix pattern: [`sdk-typescript/src/models/bedrock.ts → _formatMessages`](https://github.com/strands-agents/sdk-typescript/blob/main/src/models/bedrock.ts) - Python SDK normalization: [`sdk-python/src/strands/models/bedrock.py → _format_bedrock_messages`](https://github.com/strands-agents/sdk-python/blob/main/src/strands/models/bedrock.py) - Empty content test pattern: [`sdk-python/tests/strands/experimental/bidi/models/test_nova_sonic.py`](https://github.com/strands-agents/sdk-python/blob/main/tests/strands/experimental/bidi/models/test_nova_sonic.py)

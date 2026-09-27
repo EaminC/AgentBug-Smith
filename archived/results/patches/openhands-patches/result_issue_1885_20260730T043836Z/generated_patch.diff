@@ -1,0 +1,91 @@
+diff --git a/src/agentscope/agent/_agent.py b/src/agentscope/agent/_agent.py
+index 8c7acc90..b06a1858 100644
+--- a/src/agentscope/agent/_agent.py
++++ b/src/agentscope/agent/_agent.py
+@@ -2473,60 +2473,50 @@ class Agent:
+             elif isinstance(block, DataBlock):
+                 data_blocks.append(block)
+ 
+-        # Handle the text blocks. We only auto-close the open text block
+-        # when the current chunk has neither text NOR data — a chunk that
+-        # carries only data (e.g. an omni-style audio PCM delta arriving
+-        # between two text deltas) must keep the text stream alive so the
+-        # frontend doesn't fragment one logical text stream into many
+-        # separate bubbles. A chunk with tool calls (and no text/data)
+-        # still closes text, which preserves text → tool → text render
+-        # order via distinct text blocks.
+-        if text_blocks:
+-            # If the current chunk has text blocks but no text block id,
+-            # start with a start event
+-            if not block_ids.get("text"):
+-                block_ids["text"] = _generate_id()
+-                yield TextBlockStartEvent(
+-                    reply_id=self.state.reply_id,
+-                    block_id=block_ids["text"],
+-                )
+-            # Go on using the existing text block id to generate delta events
+-            yield TextBlockDeltaEvent(
+-                reply_id=self.state.reply_id,
+-                block_id=block_ids["text"],
+-                delta="".join([_.text for _ in text_blocks]),
+-            )
+-
+-        elif block_ids.get("text") and not data_blocks:
+-            yield TextBlockEndEvent(
++        # Close thinking block first if thinking is absent in this chunk
++        if not thinking_blocks and block_ids.get("thinking") and not data_blocks:
++            yield ThinkingBlockEndEvent(
+                 reply_id=self.state.reply_id,
+-                block_id=block_ids["text"],
++                block_id=block_ids["thinking"],
+             )
+-            block_ids["text"] = None
++            block_ids["thinking"] = None
+ 
+-        # Same reasoning as the text block above — keep the thinking
+-        # stream open across data-only chunks.
++        # Handle thinking blocks (open/continue)
+         if thinking_blocks:
+-            # Generate a new thinking block id and start event
+             if not block_ids.get("thinking"):
+                 block_ids["thinking"] = _generate_id()
+                 yield ThinkingBlockStartEvent(
+                     reply_id=self.state.reply_id,
+                     block_id=block_ids["thinking"],
+                 )
+-            # Generate the thinking delta event with the existing id
+             yield ThinkingBlockDeltaEvent(
+                 reply_id=self.state.reply_id,
+                 block_id=block_ids["thinking"],
+                 delta="".join([_.thinking for _ in thinking_blocks]),
+             )
+ 
+-        elif block_ids.get("thinking") and not data_blocks:
+-            yield ThinkingBlockEndEvent(
++        # Close text block if text is absent in this chunk
++        if not text_blocks and block_ids.get("text") and not data_blocks:
++            yield TextBlockEndEvent(
+                 reply_id=self.state.reply_id,
+-                block_id=block_ids["thinking"],
++                block_id=block_ids["text"],
+             )
+-            block_ids["thinking"] = None
++            block_ids["text"] = None
++
++        # Handle text blocks (open/continue)
++        if text_blocks:
++            if not block_ids.get("text"):
++                block_ids["text"] = _generate_id()
++                yield TextBlockStartEvent(
++                    reply_id=self.state.reply_id,
++                    block_id=block_ids["text"],
++                )
++            yield TextBlockDeltaEvent(
++                reply_id=self.state.reply_id,
++                block_id=block_ids["text"],
++                delta="".join([_.text for _ in text_blocks]),
++            )
++
+ 
+         # Handle the tool calls that exist in the current chunk
+         for tool_call in tool_call_blocks:

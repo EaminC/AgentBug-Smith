@@ -1,0 +1,72 @@
+
+pip install -e .
+
+# Input: baseline/issue_pr_map.json
+# Convert your repo/issue/pr mapping into SWE-bench-Live crawl inputs.
+python baseline/sbl_prepare_pull2issue_from_issue_pr_map.py \
+  --input baseline/issue_pr_map.json \
+  --cutoff_date 20090101 \
+  --gh_token_file baseline/tokens.txt \
+  --token_id 0
+
+
+# Notes:
+# - cutoff_date: set to any early date to include everything you have.
+# - gh_token_file: can contain multiple GitHub tokens (one per line) to avoid rate limits.
+
+
+
+# Step 2: run the curation pipeline over the prepared inputs.
+chmod +x ./baseline/setup.sh
+./baseline/step2.sh
+
+# Step 3 (prepare): merge non-empty task instances and generate RepoLaunch dataset/config.
+python baseline/sbl_step3_prepare_launch_dataset.py
+
+# Step 3 (RepoLaunch): this step uses LLMs to turn each repo into a testable container,
+# and produces organize.jsonl.
+#
+# RepoLaunch requires Python >= 3.12. Use a dedicated conda env (e.g. sbl-launch).
+
+export OPENAI_API_KEY=...   # your OpenAI/OpenAI-compatible key
+export TAVILY_API_KEY=...
+export OPENAI_BASE_URL=...  # optional, for OpenAI-compatible endpoints
+
+cd /home/cc/SWE-bench-Live/launch
+conda run --no-capture-output -n sbl-launch python -m launch.run --config-path data/sbl_baseline/config.json
+
+
+# Alternatively (if conda run behaves differently in your environment):
+cd /home/cc/SWE-bench-Live/launch
+conda activate sbl-launch
+python -m launch.run --config-path data/sbl_baseline/config.json
+
+# Example (DO NOT commit real keys):
+# export TAVILY_API_KEY="tvly-..."
+# export OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
+# export OPENAI_API_KEY="forge-..."
+
+# Step 4 (build F2P dataset): validate organize.jsonl and write validated_instances.jsonl
+# (includes FAIL_TO_PASS / PASS_TO_PASS).
+cd /home/cc/SWE-bench-Live
+python -m evaluation.validation \
+  --input_dir launch/data/sbl_baseline/organize.jsonl \
+  --platform linux \
+  --workers 4 \
+  --output_dir logs/val \
+  --overwrite 1
+
+# Optional: use swe-factory's fail2pass judge (exit-code based), driven by RepoLaunch
+# print_cmd + parser, and write a swe-factory style summary json.
+cd /home/cc/SWE-bench-Live
+python baseline/sf_make_judge_f2p_folder_from_organize_jsonl.py \
+  --input launch/data/sbl_baseline/organize.jsonl \
+  --out-dir baseline/sf_judge_f2p_outputs \
+  --platform linux \
+  --workers 2 \
+  --overwrite 1
+
+python /home/cc/swe-factory/scripts/judge_fail2pass.py \
+  /home/cc/SWE-bench-Live/baseline/sf_judge_f2p_outputs \
+  /home/cc/SWE-bench-Live/baseline/sf_judge_f2p_summary.json \
+  --processes 20

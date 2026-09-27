@@ -1,0 +1,118 @@
+# Issue #3623: AfterModelCallEvent.retry drops the discarded call's token usage from accumulated_usage
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+Installed from source, commit `23541039` (42 commits past `python/v1.50.2`)
+
+### Language Runtime Version
+
+Python 3.12.3
+
+### Operating System
+
+Linux (Docker `python:3.12-slim`)
+
+### Installation Method
+
+git clone
+
+### Steps to Reproduce
+
+Register an `AfterModelCallEvent` hook that retries the first model response (based on its content) and accepts the second. Give the two responses different `usage` in their stream `metadata` event so the two can be told apart.
+
+```python
+import asyncio
+import strands
+from strands import Agent
+from strands.models import Model
+
+
+class ScriptedModel(Model):
+    def __init__(self, responses):
+        self._responses = responses
+        self._index = 0
+
+    def format_request(self, messages, tool_specs=None, system_prompt=None):
+        return None
+
+    def format_chunk(self, event):
+        return event
+
+    def get_config(self):
+        return {}
+
+    def update_config(self, **kwargs):
+        pass
+
+    async def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):
+        return
+        yield
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, tool_choice=None, **kwargs):
+        text, usage = self._responses[self._index]
+        self._index += 1
+        yield {"messageStart": {"role": "assistant"}}
+        yield {"contentBlockStart": {"start": {}}}
+        yield {"contentBlockDelta": {"delta": {"text": text}}}
+        yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "end_turn"}}
+        yield {"metadata": {"usage": usage, "metrics": {"latencyMs": 0}}}
+
+
+async def main():
+    model = ScriptedModel(
+        [
+            ("Short", {"inputTokens": 1000, "outputTokens": 1000, "totalTokens": 2000}),
+            ("This is a much longer and more detailed response",
+             {"inputTokens": 7, "outputTokens": 7, "totalTokens": 14}),
+        ]
+    )
+
+    class MinLengthRetryHook:
+        def register_hooks(self, registry):
+            registry.add_callback(strands.hooks.AfterModelCallEvent, self.handle_after_model_call)
+
+        async def handle_after_model_call(self, event):
+            if event.stop_response:
+                text = "".join(b.get("text", "") for b in event.stop_response.message.get("content", []))
+                if len(text) < 10:
+                    event.retry = True
+
+    agent = Agent(model=model, hooks=[MinLengthRetryHook()])
+    result = agent("Generate a response")
+    print("final text:", result.message["content"][0]["text"])
+    print("accumulated_usage:", agent.event_loop_metrics.accumulated_usage)
+
+
+asyncio.run(main())
+```
+
+Run with `pip install -e strands-py` (no extras needed), no live model provider required.
+
+### Expected Behavior
+
+Both model calls actually happened and both reported real usage. `agent.event_loop_metrics.accumulated_usage` should reflect that the first (retried) call was a real, billed call too, so the total should be at least 1007/1007.
+
+### Actual Behavior
+
+`accumulated_usage` only shows the second call's usage:
+
+```
+accumulated_usage: {'inputTokens': 7, 'outputTokens': 7, 'totalTokens': 14}
+```
+
+The first call's 1000/1000 tokens never show up anywhere. The hook only rejected the *response*, not the fact that the call was made, so from a billing/accounting standpoint those tokens are just gone.
+
+### Additional Context
+
+This also means a `Limits(total_tokens=...)` cap can undercount real spend whenever a hook retries a model call: the retried-away call's usage never reaches the running total that the limit is checked against.

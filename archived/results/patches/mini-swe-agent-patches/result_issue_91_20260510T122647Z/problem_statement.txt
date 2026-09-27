@@ -1,0 +1,87 @@
+# Issue #91: [Feature]: DialogAgent与TextToImageAgent在一个msghub中时，TextToImageAgent不能接收传达的消息。
+
+当我在实例化三个agent前提下，使用msghub模块进行群聊交流，出现TextToImageAgent无法接收DialogAgent的content，但是记忆里面有记录。代码如下：
+
+```
+import agentscope
+from agentscope.agents import TextToImageAgent,DialogAgent,UserAgent
+from agentscope.message import Msg
+from agentscope.msghub import msghub
+agent_to_chat = agentscope.init(model_configs=[
+    {
+        "config_name": "qwen-max",
+        "model_type": "dashscope_chat",
+        "model_name": "qwen-max",
+        "api_key": "..............................................."
+    }
+])
+agent_to_image = agentscope.init(model_configs=[
+    {
+        "config_name": "wanx-v1",
+        "model_type": "dashscope_image_synthesis",
+        "model_name": "wanx-v1",
+        "api_key": "..............................................."
+    }
+])
+agent_1 = DialogAgent(
+    name="assistants",
+    sys_prompt="You are tasked with narrowing down the user's description of the need to 100 words or less and relaying it to the painter for him to draw. Note that the language you generate after listening must be spoken to the painter!",
+    model_config_name="qwen-max"
+)
+agent_2 = TextToImageAgent(
+    name="painter",
+    sys_prompt="You are a painter, and your task is to take an assistant's description of the image and generate it",
+    model_config_name="wanx-v1"
+)
+useragent = UserAgent()
+x = Msg(name="host",content='I want a fancy upscale restaurant design you know, the kind of western restaurant similar to haha')
+with msghub(participants=[agent_1,agent_2]) as hub:
+    agent_1(x)
+    # 问题差不多是，在hub群聊中，image_agent 不能提取chat_agent的content，但是memory有记录。
+    agent_2()
+    useragent()
+```
+
+```
+# 代码报错如下：
+Traceback (most recent call last):
+  File "D:\python_project_yeah\NLP\agent\different-agent-demo\9different-agent.py", line 36, in <module>
+    agent_2()
+  File "D:\python_project_yeah\NLP\agentscope\src\agentscope\agents\agent.py", line 117, in __call__
+    res = self.reply(*args, **kwargs)
+  File "D:\python_project_yeah\NLP\agentscope\src\agentscope\agents\text_to_image_agent.py", line 51, in reply
+    print('x.content:',x.content)
+
+```
+
+当我翻阅AgentScope的内置代码text_to_image_agent.py时，我进行一些调试工作，在reply函数中print(x)andprint(x)，具体如下：
+```
+    def reply(self, x: dict = None) -> dict:
+        if x is not None:
+            self.memory.add(x)
+        # 调试程序两步
+        print(x)
+        print('*'*100)
+
+
+        image_urls = self.model(x.content).image_urls
+        # TODO: optimize the construction of content
+        msg = Msg(
+            self.name,
+            content="This is the generated image",
+            url=image_urls,
+        )
+        logger.chat(msg)
+        self.memory.add(msg)
+        return msg
+```
+接着运行我的agent程序发现结果为print(x)结果为 None
+我自己的解决办法是
+```
+with msghub(participants=[agent_1,agent_2]) as hub:
+    agent_1(x)
+    # 问题差不多是，在hub群聊中，image_agent 不能提取chat_agent的content，但是memory有记录。
+    agent_2(agent_2.memory.get_memory()[0])
+```
+这个代码运行成功。
+可能对平时影响不大，但是这我个人使用中遇到的问题，不知道你们是否已经了解，希望你们能在TextToImageAgent的reply函数中有更好的优化

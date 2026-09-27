@@ -1,0 +1,354 @@
+STDOUT:
+
+[2026-09-01 00:58:29] Total number of tasks: 1
+
+[2026-09-01 00:58:29] Total number of processes: 1
+
+[2026-09-01 00:58:29] Task group info: (number of groups: 1)
+
+[2026-09-01 00:58:29]   local: 1 tasks
+
+[2026-09-01 00:58:29] Running in single process mode.
+
+[2026-09-01 00:58:29] ============= Running task issue_1817_20260729T223044Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Single invalid MCP config entry crashes entire workspace, blocking all chat                                                 │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Prerequisites                                                                                                                               │
+│                                                                                                                                                 │
+│ -  I have searched the existing (https://github.com/agentscope-ai/agentscope/issues) and                                                        │
+│ (https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.                                                         │
+│ -  This is a bug, not a usage question. (For questions, please use                                                                              │
+│ [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)                                           │
+│                                                                                                                                                 │
+│ ### Background / Description                                                                                                                    │
+│                                                                                                                                                 │
+│ A single invalid MCP entry in a workspace's .mcp file (e.g. is_stateful: false for an STDIO MCP, which raises ValueError in                     │
+│ MCPClient.model_post_init()) causes LocalWorkspace.initialize() to crash. This makes the entire workspace permanently                           │
+│ non-functional: chat messages silently fail to receive replies, and the workspace MCP/skill panels return 500 Internal Server                   │
+│ Error.                                                                                                                                          │
+│                                                                                                                                                 │
+│ The root cause is that MCP deserialization and connection in initialize() have zero error handling, unlike the skill loading code               │
+│ in the same method which consistently wraps operations in try/except.                                                                           │
+│                                                                                                                                                 │
+│ Error Messages                                                                                                                                  │
+│                                                                                                                                                 │
+│ File "src/agentscope/workspace/_local_workspace.py", line 196-199, in initialize                                                                │
+│     self._mcps = [                                                                                                                              │
+│         MCPClient.model_validate(m)                                                                                                             │
+│         for m in json.loads(await f.read())                                                                                                     │
+│     ]                                                                                                                                           │
+│ ValueError: STDIO MCP must be stateful (is_stateful=True).                                                                                      │
+│                                                                                                                                                 │
+│ After this crash:                                                                                                                               │
+│ - is_alive stays False                                                                                                                          │
+│ - Workspace is never cached                                                                                                                     │
+│ - Every subsequent request re-triggers the same failure                                                                                         │
+│ - GET /workspace/mcp returns 500 Internal Server Error                                                                                          │
+│ - Chat messages receive {"status": "started"} but no response ever arrives                                                                      │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Error Messages                                                                                                                              │
+│                                                                                                                                                 │
+│ ```shell                                                                                                                                        │
+│ File "src/agentscope/workspace/_local_workspace.py", line 196-199, in initialize                                                                │
+│     self._mcps = [                                                                                                                              │
+│         MCPClient.model_validate(m)                                                                                                             │
+│         for m in json.loads(await f.read())                                                                                                     │
+│     ]                                                                                                                                           │
+│ ValueError: STDIO MCP must be stateful (is_stateful=True).                                                                                      │
+│                                                                                                                                                 │
+│ After this crash:                                                                                                                               │
+│ - is_alive stays False                                                                                                                          │
+│ - Workspace is never cached                                                                                                                     │
+│ - Every subsequent request re-triggers the same failure                                                                                         │
+│ - GET /workspace/mcp returns 500 Internal Server Error                                                                                          │
+│ - Chat messages receive {"status": "started"} but no response ever arrives                                                                      │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ 1. Create a .mcp file with an invalid entry:                                                                                                    │
+│                                                                                                                                                 │
+│ [                                                                                                                                               │
+│   {                                                                                                                                             │
+│     "name": "bad_mcp",                                                                                                                          │
+│     "is_stateful": false,                                                                                                                       │
+│     "mcp_config": {                                                                                                                             │
+│       "type": "stdio_mcp",                                                                                                                      │
+│       "command": "echo",                                                                                                                        │
+│       "args": ["hello"]                                                                                                                         │
+│     }                                                                                                                                           │
+│   }                                                                                                                                             │
+│ ]                                                                                                                                               │
+│                                                                                                                                                 │
+│ 2. Initialize a workspace from that directory:                                                                                                  │
+│                                                                                                                                                 │
+│ ws = LocalWorkspace(workdir="/path/to/workdir")                                                                                                 │
+│ await ws.initialize()  # ValueError raised                                                                                                      │
+│                                                                                                                                                 │
+│ 3. Observe: the entire workspace is dead, not just the bad MCP entry.                                                                           │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ ### Environment                                                                                                                                 │
+│                                                                                                                                                 │
+│ - AgentScope Version: 2.0.1                                                                                                                     │
+│ - Python Version: 3.12                                                                                                                          │
+│ - OS: Windows 11 / WSL2                                                                                                                         │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=742, output_tokens=13, cost=0.000119
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=920, output_tokens=498, cost=0.000437
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import os                                                         │
+│  import sys                                                        │
+│  import asyncio                                                    │
+│  import json                                                       │
+│  from agentscope.workspace._local_workspace import LocalWorkspace  │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  async def main():                                                 │
+│      # Setup a temporary workspace directory                       │
+│      workdir = "./reproducer_workdir"                              │
+│      os.makedirs(workdir, exist_ok=True)                           │
+│                                                                    │
+│      # Write the invalid .mcp config file (with is_stateful: fals  │
+│  for STDIO MCP)                                                    │
+│      mcp_path = os.path.join(workdir, ".mcp")                      │
+│      invalid_mcp = [                                               │
+│          {                                                         │
+│              "name": "bad_mcp",                                    │
+│              "is_stateful": False,                                 │
+│              "mcp_config": {                                       │
+│                  "type": "stdio_mcp",                              │
+│                  "command": "echo",                                │
+│                  "args": ["hello"]                                 │
+│              }                                                     │
+│          }                                                         │
+│      ]                                                             │
+│      with open(mcp_path, "w", encoding="utf-8") as f:              │
+│          json.dump(invalid_mcp, f, indent=2)                       │
+│                                                                    │
+│      # Try to initialize the workspace and catch the expected cra  │
+│      ws = LocalWorkspace(workdir=workdir)                          │
+│      try:                                                          │
+│          await ws.initialize()                                     │
+│      except Exception as e:                                        │
+│          # The bug manifests as a ValueError complaining about     │
+│  is_stateful=False                                                 │
+│          # We assert that is the case, else fail the test          │
+│          print_stacktrace(e)                                       │
+│          msg = str(e)                                              │
+│          if "STDIO MCP must be stateful" in msg:                   │
+│              raise AssertionError(                                 │
+│                  "Bug reproducer: ValueError on invalid MCP confi  │
+│  crashes workspace"                                                │
+│              ) from e                                              │
+│          else:                                                     │
+│              # Unknown error, re-raise                             │
+│              raise                                                 │
+│      else:                                                         │
+│          # If no exception, bug is fixed                           │
+│          print("No error on invalid MCP config. Bug appears        │
+│  fixed.")                                                          │
+│          sys.exit(0)                                               │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      asyncio.run(main())                                           │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 00:58:40] Task issue_1817_20260729T223044Z failed with exception: .
+
+[2026-09-01 00:58:40] No patch generated. You can try running ACR again.
+
+[2026-09-01 00:58:40] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 00:58:29.835 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1817_20260729T223044Z =============
+2026-09-01 00:58:29.968 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 00:58:32.483 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=742, output_tokens=13, cost=0.000119
+2026-09-01 00:58:40.632 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=920, output_tokens=498, cost=0.000437
+2026-09-01 00:58:40.740 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x79b791020d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x79b786ce4e30>]}
+    └ <function run_task_groups at 0x79b786d2a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x79b786ce4e30>]
+    └ <function run_tasks_serial at 0x79b786d2a480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x79b786ce4e30>
+    └ <function run_task_in_subprocess at 0x79b786d2a660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x79b786ce4e30>
+    │        │      └ <function run_raw_task at 0x79b786d2a700>
+    │        └ <function ProcessPoolExecutor.submit at 0x79b790c30ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x79b78741fbf0>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x79b790c30860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x79b78741fbf0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x79b790c309a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x79b78741fbf0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x79b790c30a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x79b78741fbf0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x79b790e182c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x79b790e7cfe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+    │    └ <function Popen._launch at 0x79b786cdc360>
+    └ <multiprocessing.popen_fork.Popen object at 0x79b787049700>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x79b790e18cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x79b790e18220>
+    └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x79b786d81760>, <multiprocessing.queues.SimpleQueue object at 0x79b786d82d...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+    │    └ <function _process_worker at 0x79b790c2bc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2697889 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x79b7871374d0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x79b786ce6090>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x79b7871374d0>
+        │         └ <function run_raw_task at 0x79b786d2a700>
+        └ <concurrent.futures.process._CallItem object at 0x79b7871374d0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1817_20260729T223044Z/acr_output/issue_1817_20260729T223044Z_2026-09-01_00-58-29'
+             │            │    └ <function RawLocalTask.to_task at 0x79b786d2a020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x79b786ce6090>
+             └ <function do_inference at 0x79b786d2a8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x79b786df0860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x79b78767f880>
+       │                 │         │            └ PlainTask(commit_hash='8d2e94be74a37b9435eda7304ba6c32b94388bd7', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1817', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x79b7870ce480>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1817_20260729T223044Z/acr_output/issue_1817_20260729T223044Z_2026-09-01...
+       └ <function _run_one_task at 0x79b786df1b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x79b78767c220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x79b7874d0aa0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x79b78767fce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x79b7874d0aa0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport os\nimport sys\nimport asyncio\nimport json\nfrom agentscope.workspace._local_workspace import Local...
+                   │    │    └ <function Task.execute_reproducer at 0x79b78767e480>
+                   │    └ PlainTask(commit_hash='8d2e94be74a37b9435eda7304ba6c32b94388bd7', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1817', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x79b7874d0aa0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 00:58:40.743 | INFO     | app.log:log_and_always_print:229 - Task issue_1817_20260729T223044Z failed with exception: .
+2026-09-01 00:58:40.744 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

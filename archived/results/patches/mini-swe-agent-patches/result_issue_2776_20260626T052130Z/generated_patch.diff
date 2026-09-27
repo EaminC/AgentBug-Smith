@@ -1,0 +1,163 @@
+diff --git a/src/crewai/memory/storage/mem0_storage.py b/src/crewai/memory/storage/mem0_storage.py
+index bf1b5ef1e..7071fdb7c 100644
+--- a/src/crewai/memory/storage/mem0_storage.py
++++ b/src/crewai/memory/storage/mem0_storage.py
+@@ -10,6 +10,84 @@ MAX_AGENT_ID_LENGTH_MEM0 = 255
+ 
+ 
+ class Mem0Storage(Storage):
++    def search(self, query: str, limit: int = 3, score_threshold: float = 0.35, run_id: str = "", include_agent_memory: bool = True) -> List[Any]:
++        params = {"query": query, "limit": limit, "output_format": "v2"}
++        if user_id := self._get_user_id():
++            params["user_id"] = user_id
++
++        agent_name = self._get_agent_name() if include_agent_memory else None
++
++        if self.memory_type == "short_term":
++            if agent_name:
++                params["agent_id"] = agent_name
++            params["metadata"] = {"type": "short_term"}
++            if run_id:
++                params["run_id"] = run_id
++        elif self.memory_type == "long_term":
++            if agent_name:
++                params["agent_id"] = agent_name
++            params["metadata"] = {"type": "long_term"}
++        elif self.memory_type == "entities":
++            if agent_name:
++                params["agent_id"] = agent_name
++            params["metadata"] = {"type": "entity"}
++        elif self.memory_type == "external":
++            if agent_name:
++                params["agent_id"] = agent_name
++            params["metadata"] = {"type": "external"}
++
++        if isinstance(self.memory, Memory):
++            del params["metadata"], params["output_format"]
++
++        results = self.memory.search(**params)
++        return [r for r in results["results"] if r["score"] >= score_threshold]
++    def save(self, value: Any, metadata: Dict[str, Any], run_id: str = "", include_agent_memory: bool = True, memory_inclusion: str = "", custom_categories: list = None) -> None:
++        user_id = self._get_user_id()
++        agent_name = self._get_agent_name()
++        assistant_message = [{"role" : "assistant","content" : value}] 
++        params = None
++        if self.memory_type == "short_term":
++            params = {
++                "agent_id": agent_name if include_agent_memory else None,
++                "infer": False,
++                "metadata": {"type": "short_term", **metadata},
++            }
++            if run_id:
++                params["run_id"] = run_id
++        elif self.memory_type == "long_term":
++            params = {
++                "agent_id": agent_name if include_agent_memory else None,
++                "infer": False,
++                "metadata": {"type": "long_term", **metadata},
++            }
++        elif self.memory_type == "entities":
++            params = {
++                "agent_id": agent_name if include_agent_memory else None,
++                "infer": False,
++                "metadata": {"type": "entity", **metadata},
++            }
++        elif self.memory_type == "external":
++            params = {
++                "user_id": user_id,
++                "agent_id": agent_name if include_agent_memory else None,
++                "metadata": {"type": "external", **metadata},
++            }
++
++        if params is not None:
++            # Remove agent_id key if disabled
++            if not include_agent_memory and "agent_id" in params:
++                del params["agent_id"]
++
++            # Add memory inclusion and custom categories if provided
++            if memory_inclusion:
++                params["memory_inclusion"] = memory_inclusion
++            if custom_categories:
++                params["custom_categories"] = custom_categories
++
++            if isinstance(self.memory, MemoryClient):
++                params["output_format"] = "v2"
++            
++            self.memory.add(assistant_message, **params)
+     """
+     Extends Storage to handle embedding and searching across entities using Mem0.
+     """
+@@ -61,73 +139,7 @@ class Mem0Storage(Storage):
+         """
+         return role.replace("\n", "").replace(" ", "_").replace("/", "_")
+ 
+-    def save(self, value: Any, metadata: Dict[str, Any]) -> None:
+-        user_id = self._get_user_id()
+-        agent_name = self._get_agent_name()
+-        assistant_message = [{"role" : "assistant","content" : value}] 
+-        params = None
+-        if self.memory_type == "short_term":
+-            params = {
+-                "agent_id": agent_name,
+-                "infer": False,
+-                "metadata": {"type": "short_term", **metadata},
+-            }
+-        elif self.memory_type == "long_term":
+-            params = {
+-                "agent_id": agent_name,
+-                "infer": False,
+-                "metadata": {"type": "long_term", **metadata},
+-            }
+-        elif self.memory_type == "entities":
+-            params = {
+-                "agent_id": agent_name,
+-                "infer": False,
+-                "metadata": {"type": "entity", **metadata},
+-            }
+-        elif self.memory_type == "external":
+-            params = {
+-                "user_id": user_id,
+-                "agent_id": agent_name,
+-                "metadata": {"type": "external", **metadata},
+-            }
+-
+-        if params:
+-            if isinstance(self.memory, MemoryClient):
+-                params["output_format"] = "v1.1"
+-            
+-            self.memory.add(assistant_message, **params)
+-
+-    def search(
+-        self,
+-        query: str,
+-        limit: int = 3,
+-        score_threshold: float = 0.35,
+-    ) -> List[Any]:
+-        params = {"query": query, "limit": limit, "output_format": "v1.1"}
+-        if user_id := self._get_user_id():
+-            params["user_id"] = user_id
+ 
+-        agent_name = self._get_agent_name()
+-        if self.memory_type == "short_term":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "short_term"}
+-        elif self.memory_type == "long_term":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "long_term"}
+-        elif self.memory_type == "entities":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "entity"}
+-        elif self.memory_type == "external":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "external"}
+-
+-        # Discard the filters for now since we create the filters
+-        # automatically when the crew is created.
+-        if isinstance(self.memory, Memory):
+-            del params["metadata"], params["output_format"]
+-            
+-        results = self.memory.search(**params)
+-        return [r for r in results["results"] if r["score"] >= score_threshold]
+ 
+     def _get_user_id(self) -> str:
+         return self._get_config().get("user_id", "")

@@ -1,0 +1,76 @@
+# Issue #2210: [FEATURE] Support `strict: true` on tool definitions in BedrockModel
+
+## Overview
+
+Bedrock's Converse API supports a `strict` field on `ToolSpecification` ([API docs](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html)) that enables schema validation on tool names and inputs ([structured output docs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)). This prevents the model from hallucinating tool names or generating inputs that don't match the defined schema.
+
+Currently there's no way to enable this through the SDK because `BedrockModel._format_request` only forwards `name`, `description`, and `inputSchema` from each tool spec, and `additional_request_fields`/`additional_args` operate at the top-level request, not inside individual `toolSpec` objects.
+
+### Use Case
+
+Tool name hallucination in production — the model occasionally generates garbled tool names (e.g. `store-case-syummary-tool` instead of `store-case-summary-tool`). The agent self-corrects on the next cycle, but it wastes a cycle and extra tokens. The `strict: true` flag eliminates this class of error entirely.
+
+---
+
+## Implementation Requirements
+
+Based on clarification discussion and repository analysis:
+
+### Approach
+
+Add a `strict_tools` config option to `BedrockConfig` that applies `strict: true` to **all** tool specs in the request. This is a model-level blanket toggle — per-tool granularity is tracked separately in #1642 / PR #1862.
+
+```python
+model = BedrockModel(
+    model_id="us.anthropic.claude-sonnet-4-6",
+    strict_tools=True,
+)
+```
+
+### Files to Modify
+
+1. **`src/strands/models/bedrock.py`**
+   - Add `strict_tools: bool | None` to `BedrockConfig` TypedDict with appropriate docstring
+   - Update `_format_request` to inject `"strict": True` into each `toolSpec` dict when `strict_tools` is enabled:
+     ```python
+     "toolSpec": {
+         "name": tool_spec["name"],
+         "description": tool_spec["description"],
+         "inputSchema": tool_spec["inputSchema"],
+         **({"strict": True} if self.config.get("strict_tools") else {}),
+     }
+     ```
+   - Add a warning log when `strict_tools=True` is used alongside citations configuration (Bedrock docs state structured outputs is incompatible with citations for Anthropic models)
+
+2. **`tests/strands/models/test_bedrock.py`**
+   - Test that `strict_tools=True` injects `"strict": True` into each `toolSpec` in the formatted request
+   - Test that default behavior (no `strict_tools` or `strict_tools=None`) does NOT include `strict` in tool specs
+   - Test that `strict_tools=False` does NOT include `strict` in tool specs
+   - Test the citations incompatibility warning is emitted when appropriate
+
+### What NOT to change
+- **Do NOT modify `ToolSpec` TypedDict** in `src/strands/types/tools.py` — per-tool `strict` field is handled by #1642 / PR #1862
+- **No GitHub workflow changes** needed
+- **No changes to other model providers** — this is Bedrock-specific
+
+### Interaction with PR #1862
+
+If PR #1862 (per-tool `strict` on `ToolSpec`) lands before or after this feature:
+- `strict_tools` on `BedrockConfig` acts as a model-level default
+- Per-tool `strict` on individual `ToolSpec` entries could override the model-level setting in a future follow-up
+- For this PR, only the model-level `strict_tools` config needs to be implemented
+
+### Important Bedrock Behavior Notes
+- First-time schema compilation for a new schema may take up to a few minutes
+- Subsequently, cached grammars are used (24-hour TTL)
+- Structured outputs is **incompatible with citations** for Anthropic models
+
+### Acceptance Criteria
+
+- [ ] `BedrockConfig` accepts `strict_tools` as an optional boolean parameter
+- [ ] When `strict_tools=True`, all `toolSpec` objects in the formatted request include `"strict": true`
+- [ ] When `strict_tools` is not set, `None`, or `False`, tool specs do NOT include a `strict` field
+- [ ] A warning is logged when `strict_tools=True` is used alongside citations configuration
+- [ ] Unit tests cover all scenarios (enabled, disabled, default, citations warning)
+- [ ] Existing tests continue to pass
+- [ ] Code follows repository conventions (type annotations, Google-style docstrings, structured logging)

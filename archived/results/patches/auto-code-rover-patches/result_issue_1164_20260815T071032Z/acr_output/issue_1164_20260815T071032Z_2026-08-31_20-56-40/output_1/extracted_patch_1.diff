@@ -1,0 +1,61 @@
+diff --git a/src/strands/session/s3_session_manager.py b/src/strands/session/s3_session_manager.py
+index e5713e5b7..a45bcd767 100644
+--- a/src/strands/session/s3_session_manager.py
++++ b/src/strands/session/s3_session_manager.py
+@@ -256,6 +256,8 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
+         message_key = self._get_message_path(session_id, agent_id, message_id)
+         self._write_s3_object(message_key, session_message.to_dict())
+ 
++    from concurrent.futures import ThreadPoolExecutor, as_completed
++
+     def list_messages(
+         self, session_id: str, agent_id: str, limit: int | None = None, offset: int = 0, **kwargs: Any
+     ) -> list[SessionMessage]:
+@@ -279,18 +281,40 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
+                             message_index_keys.append((index, key))
+ 
+             # Sort by index and extract just the keys
+-            message_keys = [k for _, k in sorted(message_index_keys)]
++            sorted_message_index_keys = sorted(message_index_keys)
+ 
+-            # Apply pagination to keys before loading content
++            # Apply pagination to keys before loading content and keep indices
+             if limit is not None:
+-                message_keys = message_keys[offset : offset + limit]
++                paginated = sorted_message_index_keys[offset : offset + limit]
+             else:
+-                message_keys = message_keys[offset:]
++                paginated = sorted_message_index_keys[offset:]
++
++            # Separate the indices and keys
++            indices_with_keys = paginated
+ 
+-            # Load only the required message objects
+             messages: list[SessionMessage] = []
+-            for key in message_keys:
+-                message_data = self._read_s3_object(key)
++
++            # Use ThreadPoolExecutor to load the messages concurrently
++            with ThreadPoolExecutor() as executor:
++                # Map futures to their indices to preserve ordering
++                future_to_index = {
++                    executor.submit(self._read_s3_object, key): idx for idx, key in indices_with_keys
++                }
++
++                results = []
++                for future in as_completed(future_to_index):
++                    idx = future_to_index[future]
++                    try:
++                        message_data = future.result()
++                    except Exception:
++                        # Log the error or ignore the failure for this particular message
++                        message_data = None
++                    results.append((idx, message_data))
++
++            # Sort results by index to maintain message order
++            results.sort(key=lambda pair: pair[0])
++
++            for _, message_data in results:
+                 if message_data:
+                     messages.append(SessionMessage.from_dict(message_data))
+ 

@@ -1,0 +1,357 @@
+STDOUT:
+
+[2026-09-01 05:23:30] Total number of tasks: 1
+
+[2026-09-01 05:23:30] Total number of processes: 1
+
+[2026-09-01 05:23:30] Task group info: (number of groups: 1)
+
+[2026-09-01 05:23:30]   local: 1 tasks
+
+[2026-09-01 05:23:30] Running in single process mode.
+
+[2026-09-01 05:23:30] ============= Running task issue_563_20260730T151938Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: Orchestrator agent only allows one active run at a time                                                                            │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ The orchestrator agent appears to process only a single run concurrently. When one workflow is already running, starting another workflow       │
+│ blocks until the current run completes.                                                                                                         │
+│                                                                                                                                                 │
+│ I've seen this behaviour in this quickstart which involves many agents from different frameworks                                                │
+│ https://github.com/diagridio/catalyst-quickstarts/tree/main/agents/dapr-agents/orchestrator                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=178, output_tokens=13, cost=0.000034
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=356, output_tokens=1182, cost=0.000763
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  import threading                                                  │
+│  import time                                                       │
+│  import requests                                                   │
+│  import traceback                                                  │
+│  import sys                                                        │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  # The quickstart orchestrator agent runs by default on            │
+│  localhost:3500 (Dapr default HTTP port)                           │
+│  # and the orchestrator service listens on http://localhost:3501   │
+│  (Dapr gRPC default port usually)                                  │
+│  # From the quickstart repo, likely the agent HTTP server is       │
+│  http://localhost:3500 or custom 3501                              │
+│  # We will try to post to the orchestrator HTTP API to start       │
+│  workflows.                                                        │
+│  #                                                                 │
+│  # Note: The orchestrator quickstart API endpoint is usually       │
+│  "/orchestrator" or "/start".                                      │
+│  # Based on the repo, the start endpoint is at /orchestrator/star  │
+│  or we can inspect the main.py.                                    │
+│  #                                                                 │
+│  # For the purpose of reproducing the issue, we will:              │
+│  # - Start workflow run 1 via HTTP API                             │
+│  # - Shortly after, start workflow run 2 via HTTP API              │
+│  # - Because the issue states only one active run at a time, the   │
+│  2nd request will block or delay                                   │
+│  #                                                                 │
+│  # We will measure the time of the calls and assert if the 2nd ru  │
+│  waited for the first to finish                                    │
+│  # indicating serialization instead of concurrency.                │
+│                                                                    │
+│  ORCHESTRATOR_START_URL =                                          │
+│  "http://localhost:3500/orchestrator/start"                        │
+│                                                                    │
+│  # These parameters may require adjustments if orchestrator expec  │
+│  specific payload:                                                 │
+│  # From the quickstart, usually something like {"input": {"sleep"  │
+│  5}} to simulate long running                                      │
+│                                                                    │
+│  def start_workflow_run(run_id: int, results: dict):               │
+│      """Starts a workflow run via POST and records the time it to  │
+│  to complete."""                                                   │
+│      try:                                                          │
+│          payload = {                                               │
+│              "input": {                                            │
+│                  "run_id": run_id,                                 │
+│                  "sleep": 5  # To simulate a long-running task (5  │
+│  seconds sleep)                                                    │
+│              }                                                     │
+│          }                                                         │
+│          start_time = time.perf_counter()                          │
+│          r = requests.post(ORCHESTRATOR_START_URL, json=payload,   │
+│  timeout=20)                                                       │
+│          end_time = time.perf_counter()                            │
+│          results[run_id] = {                                       │
+│              "status_code": r.status_code,                         │
+│              "response": r.json() if 'application/json' in         │
+│  r.headers.get('Content-Type', '') else r.text,                    │
+│              "duration": end_time - start_time,                    │
+│          }                                                         │
+│      except Exception as e:                                        │
+│          results[run_id] = {                                       │
+│              "exception": e,                                       │
+│          }                                                         │
+│                                                                    │
+│  def main():                                                       │
+│      # We run two workflow runs nearly concurrently                │
+│      results = {}                                                  │
+│      thread1 = threading.Thread(target=start_workflow_run, args=(  │
+│  results))                                                         │
+│      thread2 = threading.Thread(target=start_workflow_run, args=(  │
+│  results))                                                         │
+│                                                                    │
+│      thread1.start()                                               │
+│      # slight delay to simulate close concurrency but not identic  │
+│      time.sleep(0.1)                                               │
+│      thread2.start()                                               │
+│                                                                    │
+│      thread1.join()                                                │
+│      thread2.join()                                                │
+│                                                                    │
+│      # Check for exceptions                                        │
+│      for run_id, result in results.items():                        │
+│          if "exception" in result:                                 │
+│              print(f"Run {run_id} raised exception:")              │
+│              print_stacktrace(result["exception"])                 │
+│              raise result["exception"]                             │
+│                                                                    │
+│      # Both should succeed with http 200                           │
+│      for run_id, result in results.items():                        │
+│          assert result["status_code"] == 200, f"Run {run_id} fail  │
+│  with status {result['status_code']} and response                  │
+│  {result['response']}"                                             │
+│                                                                    │
+│      # Now check durations:                                        │
+│      # Because each run sleeps 5 seconds inside the workflow,      │
+│      # run1 duration should be ~5 sec or more (due to processing)  │
+│      # run2 duration should also start quickly if concurrency      │
+│  allowed,                                                          │
+│      # but if run2 is blocked waiting, will be about run1 + run2   │
+│  duration (~10 sec).                                               │
+│                                                                    │
+│      d1 = results[1]["duration"]  # duration of run1               │
+│      d2 = results[2]["duration"]  # duration of run2               │
+│                                                                    │
+│      # We'll print the durations for user info                     │
+│      print(f"Run 1 duration: {d1:.2f} sec")                        │
+│      print(f"Run 2 duration: {d2:.2f} sec")                        │
+│                                                                    │
+│      # Check if run2 waited for run1 to complete before starting:  │
+│      # If there's concurrency, run2 duration should be about 5 se  │
+│  (similar to run1)                                                 │
+│      # If serialized, run2 duration ~ (5 + 5 sec) = 10 or more     │
+│                                                                    │
+│      # Let's be conservative and say if run2 duration > 8 sec, th  │
+│  serial issue present                                              │
+│      # This threshold can catch blocking.                          │
+│                                                                    │
+│      if d2 > 8.0:                                                  │
+│          # Issue present: 2nd workflow blocked until first         │
+│  completed                                                         │
+│          err = AssertionError(                                     │
+│              "Orchestrator agent only allows one active run at a   │
+│  time: "                                                           │
+│              f"second run took {d2:.2f}s, indicating it waited fo  │
+│  the first run (took {d1:.2f}s)."                                  │
+│          )                                                         │
+│          print_stacktrace(err)                                     │
+│          raise err                                                 │
+│                                                                    │
+│      # If we reach this, assume concurrency is working:            │
+│      print("No issue detected: multiple runs processed             │
+│  concurrently.")                                                   │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 05:23:47] Task issue_563_20260730T151938Z failed with exception: .
+
+[2026-09-01 05:23:47] No patch generated. You can try running ACR again.
+
+[2026-09-01 05:23:47] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 05:23:30.743 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_563_20260730T151938Z =============
+2026-09-01 05:23:30.921 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 05:23:33.773 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=178, output_tokens=13, cost=0.000034
+2026-09-01 05:23:47.524 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=356, output_tokens=1182, cost=0.000763
+2026-09-01 05:23:47.637 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x78e16c924d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x78e1622e9070>]}
+    └ <function run_task_groups at 0x78e16232e3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x78e1622e9070>]
+    └ <function run_tasks_serial at 0x78e16232e480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x78e1622e9070>
+    └ <function run_task_in_subprocess at 0x78e16232e660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x78e1622e9070>
+    │        │      └ <function run_raw_task at 0x78e16232e700>
+    │        └ <function ProcessPoolExecutor.submit at 0x78e16c1f8ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e1623278c0>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x78e16c1f8860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e1623278c0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x78e16c1f89a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e1623278c0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x78e16c1f8a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e1623278c0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x78e16c3ec2c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x78e16c450fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+    │    └ <function Popen._launch at 0x78e1622e0360>
+    └ <multiprocessing.popen_fork.Popen object at 0x78e162326090>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x78e16c3eccc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x78e16c3ec220>
+    └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x78e1622e9b20>, <multiprocessing.queues.SimpleQueue object at 0x78e1622e98...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+    │    └ <function _process_worker at 0x78e16c1f3c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2754233 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x78e16c3bea50>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x78e1622ea180>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x78e16c3bea50>
+        │         └ <function run_raw_task at 0x78e16232e700>
+        └ <concurrent.futures.process._CallItem object at 0x78e16c3bea50>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_563_20260730T151938Z/acr_output/issue_563_20260730T151938Z_2026-09-01_05-23-30'
+             │            │    └ <function RawLocalTask.to_task at 0x78e16232e020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x78e1622ea180>
+             └ <function do_inference at 0x78e16232e8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x78e1623f4860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x78e162c83880>
+       │                 │         │            └ PlainTask(commit_hash='ab20bd44d2ee7a63d3cd47a220c9fb916a767b11', local_path='/root/auto-code-rover/.acr_cache/acr_ws_563', p...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x78e1622eaed0>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_563_20260730T151938Z/acr_output/issue_563_20260730T151938Z_2026-09-01_0...
+       └ <function _run_one_task at 0x78e1623f5b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x78e162c80220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x78e16264d5e0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x78e162c83ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x78e16264d5e0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\nimport threading\nimport time\nimport requests\nimport traceback\nimport sys\n\ndef print_stacktrace(e: Exc...
+                   │    │    └ <function Task.execute_reproducer at 0x78e162c82480>
+                   │    └ PlainTask(commit_hash='ab20bd44d2ee7a63d3cd47a220c9fb916a767b11', local_path='/root/auto-code-rover/.acr_cache/acr_ws_563', p...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x78e16264d5e0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 05:23:47.641 | INFO     | app.log:log_and_always_print:229 - Task issue_563_20260730T151938Z failed with exception: .
+2026-09-01 05:23:47.642 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

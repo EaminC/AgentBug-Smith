@@ -1,0 +1,157 @@
+# Issue #1724: [Bug]: `get_skill_instructions()` and `_get_available_tools()` do not collect Skills from all ToolGroups
+
+## Description
+
+`Toolkit.get_skill_instructions()` and `Toolkit._get_available_tools()` call `_get_available_skills()` without passing the `groups` parameter, resulting in only the "basic" group's skills being collected. Skills registered in other ToolGroups are not injected into the system prompt, and the model cannot see the SkillViewer tool for these skills.
+
+## Source Location
+
+- File: `src/agentscope/tool/_toolkit.py`
+- `get_skill_instructions()`: line 442
+- `_get_available_tools()`: line 477
+
+## Steps to Reproduce
+
+1. Register multiple ToolGroups, each with different skills:
+
+```python
+tool_groups = [
+    ToolGroup(
+        name="repair",
+        description="Repair query",
+        tools=[...],
+        skills_or_loaders=["./skills/repair"],
+    ),
+    ToolGroup(
+        name="order",
+        description="Order query",
+        tools=[...],
+        skills_or_loaders=["./skills/order"],
+    ),
+]
+
+toolkit = Toolkit(tool_groups=tool_groups)
+```
+
+2. Call `get_skill_instructions()`:
+
+```python
+instructions = await toolkit.get_skill_instructions()
+print(instructions)
+```
+
+**Expected behavior**: Returns skill instructions from all groups (repair, order)
+
+**Actual behavior**: Only returns skills from the "basic" group (if any), other groups' skills are ignored
+
+## Root Cause
+
+### Issue 1: `get_skill_instructions()` (line 442)
+
+```python
+async def get_skill_instructions(self) -> str | None:
+    skills = await self._get_available_skills()  # ← groups parameter not passed
+```
+
+`_get_available_skills()` only collects the "basic" group by default:
+
+```python
+async def _get_available_skills(self, groups=None):
+    groups_filter = ["basic"] + (groups or [])  # groups=None → only ["basic"]
+```
+
+### Issue 2: `_get_available_tools()` (line 477)
+
+```python
+async def _get_available_tools(self, groups):
+    available_tools = {}
+
+    # SkillViewer only registered with "basic" group skills
+    skills = await self._get_available_skills()  # ← groups parameter not passed
+    if len(skills):
+        available_tools[self.builtin_skill_viewer.tool.name] = self.builtin_skill_viewer
+```
+
+## Fix
+
+### Fix 1: `get_skill_instructions()` (line 442)
+
+```python
+# Before
+skills = await self._get_available_skills()
+
+# After
+all_group_names = [g.name for g in self.tool_groups]
+skills = await self._get_available_skills(all_group_names)
+```
+
+### Fix 2: `_get_available_tools()` (line 477)
+
+```python
+# Before
+skills = await self._get_available_skills()
+
+# After
+all_group_names = [g.name for g in self.tool_groups]
+skills = await self._get_available_skills(all_group_names)
+```
+
+## Before/After Comparison
+
+### Before Fix
+
+```
+You: What skills do you support?
+Assistant: <|FunctionCallBegin|>[{"name": "Skill", "parameters": {"name": "View supported skills", "parameters": {}}}]<|FunctionCallEnd|>
+```
+
+Model calls Skill tool but cannot get the complete skill list.
+
+### After Fix
+
+```
+You: What skills do you support?
+Assistant: I support the following skills:
+1. realme-repair-progress: Query and display realme device repair order progress...
+2. realme-order-price-protection: Provide realme phone and accessories order price protection query service...
+3. realme-price-discount-query: Handle user inquiries about realme phone, tablet product prices, discounts...
+4. order-status-query: Provide full-process order and logistics status query service...
+5. realme-product-authenticity-and-warranty-query: Provide realme product authenticity verification...
+6. realme-charger-advisor: Provide realme phone charger purchase consultation service...
+7. find-service-center: Help users query nearby service centers...
+```
+
+Model correctly returns all registered skills.
+
+## Environment
+
+- agentscope version: 2.0
+- Python version: 3.13.5
+- OS: Windows 11
+
+## Workaround
+
+Inherit from `Toolkit` and override the relevant methods:
+
+```python
+class FixedToolkit(Toolkit):
+    async def get_skill_instructions(self) -> str | None:
+        all_group_names = [g.name for g in self.tool_groups]
+        skills = await self._get_available_skills(all_group_names)
+        if len(skills) == 0:
+            return None
+        template = Template(self.skill_instruction_template)
+        return template.render(
+            skills=skills.values(),
+            skill_viewer=self.builtin_skill_viewer.tool.name,
+        )
+
+    async def _get_available_tools(self, groups):
+        result = await super()._get_available_tools(groups)
+        if self.builtin_skill_viewer.tool.name not in result:
+            all_group_names = [g.name for g in self.tool_groups]
+            skills = await self._get_available_skills(all_group_names)
+            if len(skills):
+                result[self.builtin_skill_viewer.tool.name] = self.builtin_skill_viewer
+        return result
+```

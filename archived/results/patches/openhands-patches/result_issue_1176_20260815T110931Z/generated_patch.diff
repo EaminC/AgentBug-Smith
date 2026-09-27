@@ -1,0 +1,67 @@
+diff --git a/src/strands/agent/agent.py b/src/strands/agent/agent.py
+index c4ebc0b54..9c0dd7b86 100644
+--- a/src/strands/agent/agent.py
++++ b/src/strands/agent/agent.py
+@@ -355,6 +355,10 @@ class Agent:
+             )
+         )
+ 
++    def __init__(self, *args, **kwargs) -> None:
++        self._invoke_lock = asyncio.Lock()
++        super().__init__(*args, **kwargs)
++
+     async def invoke_async(
+         self,
+         prompt: AgentInput = None,
+@@ -363,39 +367,22 @@ class Agent:
+         structured_output_model: Type[BaseModel] | None = None,
+         **kwargs: Any,
+     ) -> AgentResult:
+-        """Process a natural language prompt through the agent's event loop.
+-
+-        This method implements the conversational interface with multiple input patterns:
+-        - String input: Simple text input
+-        - ContentBlock list: Multi-modal content blocks
+-        - Message list: Complete messages with roles
+-        - No input: Use existing conversation history
++        if not hasattr(self, "_invoke_lock"):
++            self._invoke_lock = asyncio.Lock()
+ 
+-        Args:
+-            prompt: User input in various formats:
+-                - str: Simple text input
+-                - list[ContentBlock]: Multi-modal content blocks
+-                - list[Message]: Complete messages with roles
+-                - None: Use existing conversation history
+-            invocation_state: Additional parameters to pass through the event loop.
+-            structured_output_model: Pydantic model type(s) for structured output (overrides agent default).
+-            **kwargs: Additional parameters to pass through the event loop.[Deprecating]
++        if not self._invoke_lock.locked():
++            async with self._invoke_lock:
++                events = self.stream_async(
++                    prompt, invocation_state=invocation_state, structured_output_model=structured_output_model, **kwargs
++                )
++                async for event in events:
++                    _ = event
+ 
+-        Returns:
+-            Result: object containing:
++                return cast(AgentResult, event["result"])
++        else:
++            raise RuntimeError("Agent is currently handling another invocation")
+ 
+-                - stop_reason: Why the event loop stopped (e.g., "end_turn", "max_tokens")
+-                - message: The final message from the model
+-                - metrics: Performance metrics from the event loop
+-                - state: The final state of the event loop
+-        """
+-        events = self.stream_async(
+-            prompt, invocation_state=invocation_state, structured_output_model=structured_output_model, **kwargs
+-        )
+-        async for event in events:
+-            _ = event
+ 
+-        return cast(AgentResult, event["result"])
+ 
+     def structured_output(self, output_model: Type[T], prompt: AgentInput = None) -> T:
+         """This method allows you to get structured output from the agent.

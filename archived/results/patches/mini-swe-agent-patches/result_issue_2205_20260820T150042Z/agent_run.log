@@ -1,0 +1,1120 @@
+This is mini-swe-agent version 2.4.6.
+Check the v2 migration guide at https://klieret.short.gy/mini-v2-migration
+Loading global config from '/root/.config/mini-swe-agent/.env'
+Warning: Input is not a terminal (fd=0).
+Building agent config from specs: ['mini.yaml']
+
+System:
+You are a helpful assistant that can interact with a computer.
+
+User:
+Please solve this issue: # Issue #2205: [BUG] SlidingWindowConversationManager: 
+window_size=0 fails to clear messages
+
+### Steps to Reproduce
+
+With `window_size=0` and 2 messages: `trim_index = len(messages) - 0 = 2`. The 
+`while trim_index < len(messages)` loop condition (`2 < 2`) is immediately 
+false, so the `else` clause fires — treating it as "no valid trim point found".
+
+- With `e=None` (routine management): logs a warning and leaves messages 
+unchanged
+- With `e` set (overflow): raises `ContextWindowOverflowException`
+
+TypeScript explicitly supports `window_size=0` as "remove all messages" and has 
+a test for it.
+
+### Expected Behavior
+
+`window_size=0` should either:
+1. Clear all messages (matching TypeScript behavior), or
+2. Be rejected at construction time with a `ValueError` if it's not a valid 
+configuration
+
+### Actual Behavior
+
+`window_size=0` silently fails to clear messages during routine management, or 
+raises an exception during overflow handling.
+
+### Possible Solution
+
+Either add a special case for `window_size=0` before the trim loop, or validate 
+`window_size >= 1` in `__init__`.
+
+
+### Additional context
+
+This was a finding from an agentic cross-SDK consistency scan between Python and
+TypeScript SDKs (https://github.com/strands-agents/sdk-typescript/issues/789). 
+The finding has been triaged, but verify that this needs an actual fix.
+
+
+You can execute bash commands and edit files to implement the necessary changes.
+
+## Recommended Workflow
+
+This workflow should be done step-by-step so that you can iterate on your 
+changes and any possible problems.
+
+1. Analyze the codebase by finding and reading relevant files
+2. Create a script to reproduce the issue
+3. Edit the source code to resolve the issue
+4. Verify your fix works by running your script again
+5. Test edge cases to ensure your fix is robust
+6. Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+   Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+## Command Execution Rules
+
+You are operating in an environment where
+
+1. You issue at least one command
+2. The system executes the command(s) in a subshell
+3. You see the result(s)
+4. You write your next command(s)
+
+Each response should include:
+
+1. **Reasoning text** where you explain your analysis and plan
+2. At least one tool call with your command
+
+**CRITICAL REQUIREMENTS:**
+
+- Your response SHOULD include reasoning text explaining what you're doing
+- Your response MUST include AT LEAST ONE bash tool call
+- Directory or environment variable changes are not persistent. Every action is 
+executed in a new subshell.
+- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd 
+/path/to/working/dir && ...` or write/load environment variables from files
+- Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+  Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+Example of a CORRECT response:
+<example_response>
+I need to understand the structure of the repository first. Let me check what 
+files are in the current directory to get a better understanding of the 
+codebase.
+
+[Makes bash tool call with {"command": "ls -la"} as arguments]
+</example_response>
+
+<system_information>
+Linux 6.8.0-137-generic #137-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:28:23 UTC 
+2026 x86_64
+</system_information>
+
+## Useful command examples
+
+### Create a new file:
+
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
+```
+
+### Edit files with sed:```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+
+# Replace first occurrence on line 1
+sed -i '1s/old_string/new_string/' filename.py
+
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+
+```bash
+anything
+```
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 1, $0.00):
+```
+rg --json-path '{.data.lines[0].text}' -w 'SlidingWindowConversationManager' -j 
+5
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 2, $0.00):
+```
+find . -type f -name '*sliding*' -o -name '*window*' -o -name '*conversation*' |
+head -10
+```
+
+Tool:
+<returncode>
+0
+<output>
+./tests/strands/agent/test_conversation_manager.py
+./tests/strands/agent/test_summarizing_conversation_manager.py
+./src/strands/experimental/bidi/tools/stop_conversation.py
+./src/strands/agent/conversation_manager
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+./src/strands/agent/conversation_manager/summarizing_conversation_manager.py
+./src/strands/agent/conversation_manager/conversation_manager.py
+./src/strands/agent/conversation_manager/null_conversation_manager.py
+./tests_integ/test_summarizing_conversation_manager_integration.py
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 3, $0.00):
+```
+head -40 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+"""Sliding window conversation history management."""
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ...agent.agent import Agent
+
+from ...hooks import BeforeModelCallEvent, HookRegistry
+from ...types.content import ContentBlock, Messages
+from ...types.exceptions import ContextWindowOverflowException
+from ...types.tools import ToolResultContent
+from .conversation_manager import ConversationManager
+
+logger = logging.getLogger(__name__)
+
+_PRESERVE_CHARS = 200
+
+
+class SlidingWindowConversationManager(ConversationManager):
+    """Implements a sliding window strategy for managing conversation history.
+
+    This class handles the logic of maintaining a conversation window that 
+preserves tool usage pairs and avoids
+    invalid window states.
+
+    When truncation is enabled (the default), large tool results are partially 
+truncated, preserving the first
+    and last 200 characters, and image blocks inside tool results are replaced 
+with descriptive text placeholders.
+    Truncation targets the oldest tool results first so the most relevant recent
+context is preserved as long
+    as possible.
+
+    Supports proactive management during agent loop execution via the per_turn 
+parameter.
+    """
+
+    def __init__(
+        self,
+        window_size: int = 40,
+        should_truncate_results: bool = True,
+        *,
+        per_turn: bool | int = False,
+    ):
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 4, $0.00):
+```
+sed -n 35,80p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        self,
+        window_size: int = 40,
+        should_truncate_results: bool = True,
+        *,
+        per_turn: bool | int = False,
+    ):
+        """Initialize the sliding window conversation manager.
+
+        Args:
+            window_size: Maximum number of messages to keep in the agent's 
+history.
+                Defaults to 40 messages.
+            should_truncate_results: Truncate tool results when a message is too
+large for the model's context window
+            per_turn: Controls when to apply message management during agent 
+execution.
+                - False (default): Only apply management at the end (default 
+behavior)
+                - True: Apply management before every model call
+                - int (e.g., 3): Apply management before every N model calls
+
+                When to use per_turn: If your agent performs many tool 
+operations in loops
+                (e.g., web browsing with frequent screenshots), enable per_turn 
+to proactively
+                manage message history and prevent the agent loop from slowing 
+down. Start with
+                per_turn=True and adjust to a specific frequency (e.g., 
+per_turn=5) if needed
+                for performance tuning.
+
+        Raises:
+            ValueError: If per_turn is 0 or a negative integer.
+        """
+        if isinstance(per_turn, int) and not isinstance(per_turn, bool) and 
+per_turn <= 0:
+            raise ValueError(f"per_turn must be a positive integer, True, or 
+False, got {per_turn}")
+
+        super().__init__()
+
+        self.window_size = window_size
+        self.should_truncate_results = should_truncate_results
+        self.per_turn = per_turn
+        self._model_call_count = 0
+
+    def register_hooks(self, registry: "HookRegistry", **kwargs: Any) -> None:
+        """Register hook callbacks for per-turn conversation management.
+
+        Args:
+            registry: The hook registry to register callbacks with.
+            **kwargs: Additional keyword arguments for future extensibility.
+        """
+        super().register_hooks(registry, **kwargs)
+
+        # Always register the callback - per_turn check happens in the callback
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 5, $0.00):
+```
+sed -n 81,130p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        registry.add_callback(BeforeModelCallEvent, self._on_before_model_call)
+
+    def _on_before_model_call(self, event: BeforeModelCallEvent) -> None:
+        """Handle before model call event for per-turn management.
+
+        This callback is invoked before each model call. It tracks the model 
+call count and applies message management
+        based on the per_turn configuration.
+
+        Args:
+            event: The before model call event containing the agent and model 
+execution details.
+        """
+        # Check if per_turn is enabled
+        if self.per_turn is False:
+            return
+
+        self._model_call_count += 1
+
+        # Determine if we should apply management
+        should_apply = False
+        if self.per_turn is True:
+            should_apply = True
+        elif isinstance(self.per_turn, int) and self.per_turn > 0:
+            should_apply = self._model_call_count % self.per_turn == 0
+
+        if should_apply:
+            logger.debug(
+                "model_call_count=<%d>, per_turn=<%s> | applying per-turn 
+conversation management",
+                self._model_call_count,
+                self.per_turn,
+            )
+            self.apply_management(event.agent)
+
+    def get_state(self) -> dict[str, Any]:
+        """Get the current state of the conversation manager.
+
+        Returns:
+            Dictionary containing the manager's state, including model call 
+count for per-turn tracking.
+        """
+        state = super().get_state()
+        state["model_call_count"] = self._model_call_count
+        return state
+
+    def restore_from_session(self, state: dict[str, Any]) -> list | None:
+        """Restore the conversation manager's state from a session.
+
+        Args:
+            state: Previous state of the conversation manager
+
+        Returns:
+            Optional list of messages to prepend to the agent's messages.
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 6, $0.00):
+```
+sed -n 131,170p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        """
+        result = super().restore_from_session(state)
+        self._model_call_count = state.get("model_call_count", 0)
+        return result
+
+    def apply_management(self, agent: "Agent", **kwargs: Any) -> None:
+        """Apply the sliding window to the agent's messages array to maintain a 
+manageable history size.
+
+        This method is called after every event loop cycle to apply a sliding 
+window if the message count
+        exceeds the window size.
+
+        Args:
+            agent: The agent whose messages will be managed.
+                This list is modified in-place.
+            **kwargs: Additional keyword arguments for future extensibility.
+        """
+        messages = agent.messages
+
+        if len(messages) <= self.window_size:
+            logger.debug(
+                "message_count=<%s>, window_size=<%s> | skipping context 
+reduction", len(messages), self.window_size
+            )
+            return
+        self.reduce_context(agent)
+
+    def reduce_context(self, agent: "Agent", e: Exception | None = None, 
+**kwargs: Any) -> None:
+        """Trim the oldest messages to reduce the conversation context size.
+
+        The method handles special cases where trimming the messages leads to:
+         - toolResult with no corresponding toolUse
+         - toolUse with no corresponding toolResult
+
+        Args:
+            agent: The agent whose messages will be reduce.
+                This list is modified in-place.
+            e: The exception that triggered the context reduction, if any.
+            **kwargs: Additional keyword arguments for future extensibility.
+
+        Raises:
+            ContextWindowOverflowException: If the context cannot be reduced 
+further and a context overflow
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 7, $0.00):
+```
+sed -n 171,210p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                error was provided (e is not None). When called during routine 
+window management (e is None),
+                logs a warning and returns without modification.
+        """
+        messages = agent.messages
+
+        # Try to truncate the tool result first
+        oldest_message_idx_with_tool_results = 
+self._find_oldest_message_with_tool_results(messages)
+        if oldest_message_idx_with_tool_results is not None and 
+self.should_truncate_results:
+            logger.debug(
+                "message_index=<%s> | found message with tool results at index",
+oldest_message_idx_with_tool_results
+            )
+            results_truncated = self._truncate_tool_results(messages, 
+oldest_message_idx_with_tool_results)
+            if results_truncated:
+                logger.debug("message_index=<%s> | tool results truncated", 
+oldest_message_idx_with_tool_results)
+                return
+
+        # Try to trim index id when tool result cannot be truncated anymore
+        # If the number of messages is less than the window_size, then we 
+default to 2, otherwise, trim to window size
+        trim_index = 2 if len(messages) <= self.window_size else len(messages) -
+self.window_size
+
+        # Find the next valid trim point that:
+        # 1. Starts with a user message (required by most model providers)
+        # 2. Does not start with an orphaned toolResult
+        # 3. Does not start with a toolUse unless its toolResult immediately 
+follows
+        # Falls back to an assistant(toolUse) + user(toolResult) boundary if no 
+plain user message exists.
+        # This is acceptable because providers treat a complete 
+toolUse/toolResult pair as a valid
+        # conversation continuation, and without this fallback tool-heavy 
+conversations cannot be trimmed.
+        fallback_trim_index = None
+
+        while trim_index < len(messages):
+            # Prefer starting with a user message
+            if messages[trim_index]["role"] != "user":
+                # Track first valid assistant(toolUse) + user(toolResult) pair 
+as fallback
+                if (
+                    fallback_trim_index is None
+                    and any("toolUse" in content for content in 
+messages[trim_index]["content"])
+                    and trim_index + 1 < len(messages)
+                    and messages[trim_index + 1]["role"] == "user"
+                    and any("toolResult" in content for content in 
+messages[trim_index + 1]["content"])
+                ):
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 8, $0.00):
+```
+sed -n 211,250p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                    fallback_trim_index = trim_index
+
+                trim_index += 1
+                continue
+
+            if (
+                # Oldest message cannot be a toolResult because it needs a 
+toolUse preceding it
+                any("toolResult" in content for content in 
+messages[trim_index]["content"])
+                or (
+                    # Oldest message can be a toolUse only if a toolResult 
+immediately follows it.
+                    # Note: toolUse content normally appears only in assistant 
+messages, but this
+                    # check is kept as a defensive safeguard for non-standard 
+message formats.
+                    any("toolUse" in content for content in 
+messages[trim_index]["content"])
+                    and not (
+                        trim_index + 1 < len(messages)
+                        and any("toolResult" in content for content in 
+messages[trim_index + 1]["content"])
+                    )
+                )
+            ):
+                trim_index += 1
+            else:
+                break
+        else:
+            # No plain user message found — use assistant+toolResult fallback if
+available
+            if fallback_trim_index is not None:
+                logger.debug(
+                    "trim_index=<%s> | no plain user message trim point found, "
+                    "falling back to assistant(toolUse) + user(toolResult) 
+boundary",
+                    fallback_trim_index,
+                )
+                trim_index = fallback_trim_index
+            elif e is not None:
+                raise ContextWindowOverflowException("Unable to trim 
+conversation context!") from e
+            else:
+                logger.warning(
+                    "window_size=<%s>, message_count=<%s> | unable to trim 
+conversation context, "
+                    "no valid trim point found",
+                    self.window_size,
+                    len(messages),
+                )
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 9, $0.00):
+```
+sed -n 251,280p 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+                return
+
+        # trim_index represents the number of messages being removed from the 
+agents messages array
+        self.removed_message_count += trim_index
+
+        # Overwrite message history
+        messages[:] = messages[trim_index:]
+
+    def _truncate_tool_results(self, messages: Messages, msg_idx: int) -> bool:
+        """Truncate tool results and replace image blocks in a message to reduce
+context size.
+
+        For text blocks within tool results, all blocks are partially truncated 
+unless they
+        have already been truncated. The first and last _PRESERVE_CHARS 
+characters are kept,
+        and the removed middle is replaced with a notice indicating how many 
+characters were
+        removed. The tool result status is not changed.
+
+        Image blocks nested inside tool result content are replaced with a short
+descriptive placeholder.
+
+        Args:
+            messages: The conversation message history.
+            msg_idx: Index of the message containing tool results to truncate.
+
+        Returns:
+            True if any changes were made to the message, False otherwise.
+        """
+        if msg_idx >= len(messages) or msg_idx < 0:
+            return False
+
+        def _image_placeholder(image_block: Any) -> str:
+            source: Any = image_block.get("source", {})
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 10, $0.01):
+I have reviewed the SlidingWindowConversationManager implementation, 
+particularly the reduce_context method, which handles trimming messages to 
+maintain a sliding window of conversation history. The issue described happens 
+because when window_size=0, the trim_index calculation results in trim_index = 
+len(messages) - 0 = len(messages), causing the while loop condition trim_index <
+len(messages) to be false immediately, and the else clause fires. This results 
+in not trimming any messages when e is None (routine management).
+
+To fix this, we have two possible solutions as suggested:
+
+1. Add a special case for window_size=0 before the trim loop to clear all 
+messages.
+2. Validate window_size in __init__ to ensure window_size >= 1 and raise a 
+ValueError otherwise.
+
+Since the TypeScript SDK explicitly supports window_size=0 as meaning "remove 
+all messages," we should support that here by adding a special case in 
+reduce_context that removes all messages if window_size is 0.
+
+Next, I will check if there are existing tests that cover 
+SlidingWindowConversationManager or create a small test script to reproduce the 
+issue. Then I will implement the fix and test.
+
+I will now list tests related to sliding_window_conversation_manager.py by 
+searching for "sliding_window" in test files.
+
+```
+rg --files-with-matches sliding_window
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 11, $0.01):
+```
+grep -r sliding_window ./tests
+```
+
+Tool:
+<returncode>
+0
+<output>
+./tests/strands/session/test_repository_session_manager.py:from 
+strands.agent.conversation_manager.sliding_window_conversation_manager import 
+SlidingWindowConversationManager
+./tests/strands/agent/test_agent.py:from 
+strands.agent.conversation_manager.sliding_window_conversation_manager import 
+SlidingWindowConversationManager
+./tests/strands/agent/test_agent.py:def 
+test_agent__call__always_sliding_window_conversation_manager_doesnt_infinite_loo
+p(mock_model, agent, tool):
+./tests/strands/agent/test_conversation_manager.py:from 
+strands.agent.conversation_manager.sliding_window_conversation_manager import 
+SlidingWindowConversationManager
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_forces_user_message_start():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_happy_path_preserves_window_size():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_conversation_manager_with_untrimmable_history_raises_context
+_window_overflow_exception():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_no_valid_trim_point_without_error_does_not_raise():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_tool_heavy_conversation_falls_back_to_tool_pair_boundary():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_prefers_plain_user_message_over_tool_pair_fallback():
+./tests/strands/agent/test_conversation_manager.py:def 
+test_sliding_window_conversation_manager_with_tool_results_truncated():
+./tests/agentsmith_fail2pass_2205.py:from 
+strands.agent.conversation_manager.sliding_window_conversation_manager import 
+SlidingWindowConversationManager
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 12, $0.01):
+```
+head -40 ./tests/strands/agent/test_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from strands import tool
+from strands.agent.agent import Agent
+from strands.agent.conversation_manager.null_conversation_manager import 
+NullConversationManager
+from strands.agent.conversation_manager.sliding_window_conversation_manager 
+import SlidingWindowConversationManager
+from strands.hooks.events import BeforeModelCallEvent
+from strands.hooks.registry import HookProvider, HookRegistry
+from strands.types.exceptions import ContextWindowOverflowException
+from tests.fixtures.mocked_model_provider import MockedModelProvider
+
+
+@pytest.fixture
+def conversation_manager(request):
+    params = {
+        "window_size": 2,
+        "should_truncate_results": False,
+    }
+    if hasattr(request, "param"):
+        params.update(request.param)
+
+    return SlidingWindowConversationManager(**params)
+
+
+@pytest.mark.parametrize(
+    ("conversation_manager", "messages", "expected_messages"),
+    [
+        # 0 - Message count under max window size - Latest assistant
+        (
+            {"window_size": 3},
+            [
+                {"role": "user", "content": [{"text": "Hello"}]},
+                {"role": "assistant", "content": [{"text": "Hi there"}]},
+            ],
+            [
+                {"role": "user", "content": [{"text": "Hello"}]},
+                {"role": "assistant", "content": [{"text": "Hi there"}]},
+            ],
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 13, $0.01):
+```
+rg --json-path '{.data.lines[0].text}' -j 30 'window_size=0' 
+./tests/strands/agent/test_conversation_manager.py
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 14, $0.01):
+```
+grep -n 'window_size=0' ./tests/strands/agent/test_conversation_manager.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 15, $0.01):
+```
+grep -n 'window_size' ./tests/strands/agent/test_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+18:        "window_size": 2,
+32:            {"window_size": 3},
+44:            {"window_size": 2},
+54:            {"window_size": 2},
+62:            {"window_size": 3},
+70:            {"window_size": 3},
+83:            {"window_size": 3},
+97:            {"window_size": 2},
+112:            {"window_size": 2},
+127:            {"window_size": 3},
+142:            {"window_size": 4},
+168:    manager = SlidingWindowConversationManager(window_size=3, 
+should_truncate_results=False)
+184:def test_sliding_window_happy_path_preserves_window_size():
+185:    """In a typical user/assistant conversation, trimming preserves close to
+window_size messages."""
+186:    manager = SlidingWindowConversationManager(window_size=4, 
+should_truncate_results=False)
+235:    manager = SlidingWindowConversationManager(window_size=4, 
+should_truncate_results=False)
+260:    # With 8 messages and window_size=4, trim_index starts at 4. First 
+fallback at index 5 (toolUseId "3").
+270:    manager = SlidingWindowConversationManager(window_size=2, 
+should_truncate_results=False)
+420:    manager = SlidingWindowConversationManager(per_turn=False, 
+window_size=100)
+433:    manager = SlidingWindowConversationManager(per_turn=True, 
+window_size=100)
+447:    manager = SlidingWindowConversationManager(per_turn=2, window_size=100)
+491:    manager = SlidingWindowConversationManager(per_turn=1, window_size=4)
+506:    # Verify message count stayed around window_size
+507:    assert any(count <= manager.window_size for count in message_counts)
+525:    manager = SlidingWindowConversationManager(window_size=40)
+543:    manager = SlidingWindowConversationManager(window_size=10)
+578:    manager = SlidingWindowConversationManager(window_size=10)
+600:    manager = SlidingWindowConversationManager(window_size=10)
+615:    manager = SlidingWindowConversationManager(window_size=10)
+651:    manager = SlidingWindowConversationManager(window_size=10)
+676:    manager = SlidingWindowConversationManager(window_size=10)
+693:    manager = SlidingWindowConversationManager(window_size=10)
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 16, $0.01):
+```
+sed -n 180,210p ./tests/strands/agent/test_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == [{"text": "How are you?"}]
+
+
+def test_sliding_window_happy_path_preserves_window_size():
+    """In a typical user/assistant conversation, trimming preserves close to 
+window_size messages."""
+    manager = SlidingWindowConversationManager(window_size=4, 
+should_truncate_results=False)
+    messages = [
+        {"role": "user", "content": [{"text": "First"}]},
+        {"role": "assistant", "content": [{"text": "First response"}]},
+        {"role": "user", "content": [{"text": "Second"}]},
+        {"role": "assistant", "content": [{"text": "Second response"}]},
+        {"role": "user", "content": [{"text": "Third"}]},
+        {"role": "assistant", "content": [{"text": "Third response"}]},
+    ]
+    test_agent = Agent(messages=messages)
+    manager.apply_management(test_agent)
+
+    assert len(messages) == 4
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == [{"text": "Second"}]
+
+
+def 
+test_sliding_window_conversation_manager_with_untrimmable_history_raises_context
+_window_overflow_exception():
+    manager = SlidingWindowConversationManager(1, False)
+    messages = [
+        {"role": "assistant", "content": [{"toolUse": {"toolUseId": "456", 
+"name": "tool1", "input": {}}}]},
+        {"role": "user", "content": [{"toolResult": {"toolUseId": "789", 
+"content": [], "status": "success"}}]},
+    ]
+    original_messages = messages.copy()
+    test_agent = Agent(messages=messages)
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 17, $0.01):
+There don't seem to be tests explicitly for window_size = 0. I will create a 
+small test script to reproduce the issue with window_size=0. Then I will 
+implement the fix by adding a special case in the reduce_context method to clear
+all messages immediately if window_size == 0. After the fix, I will run the test
+script to verify the fix.
+
+I will now create the test script.
+
+```
+cat <<'EOF' > test_sliding_window_zero.py
+from strands.agent.agent import Agent
+from strands.agent.conversation_manager.sliding_window_conversation_manager 
+import SlidingWindowConversationManager
+
+def test_zero_window_size():
+    messages = [
+        {"role": "user", "content": [{"text": "Hello"}]},
+        {"role": "assistant", "content": [{"text": "Hi there"}]},
+    ]
+
+    agent = Agent(messages=messages)
+    manager = SlidingWindowConversationManager(window_size=0)
+
+    # Apply context reduction
+    manager.reduce_context(agent)
+
+    # With window_size=0, we expect all messages trimmed
+    assert len(agent.messages) == 0, f"Expected 0 messages, got 
+{len(agent.messages)}"
+    print("Test passed: All messages trimmed with window_size=0")
+
+if __name__ == '__main__':
+    test_zero_window_size()
+EOF
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 18, $0.01):
+```
+python3 test_sliding_window_zero.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+window_size=<0>, message_count=<2> | unable to trim conversation context, no 
+valid trim point found
+Traceback (most recent call last):
+  File "/app/test_sliding_window_zero.py", line 21, in <module>
+    test_zero_window_size()
+  File "/app/test_sliding_window_zero.py", line 17, in test_zero_window_size
+    assert len(agent.messages) == 0, f"Expected 0 messages, got 
+{len(agent.messages)}"
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Expected 0 messages, got 2
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 19, $0.01):
+The test script shows the current behavior where window_size=0 does not trim any
+messages and logs a warning indicating no valid trim point found. This confirms 
+the bug.
+
+I will now modify the reduce_context method to add a special case for 
+window_size=0 to clear all messages immediately. Then I will rerun the test.
+
+```
+sed -i '/def reduce_context(self, agent: ".*", e: Exception | None = None, 
+**kwargs: Any) -> None:/,/^$/ s/        messages = agent.messages/        
+messages = agent.messages\n        if self.window_size == 0:\n            
+messages.clear()\n            self.removed_message_count += len(messages)\n     
+return/' 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+1
+<output>
+sed: -e expression #1, char 91: Invalid preceding regular expression
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 20, $0.02):
+The sed command failed because of special characters in the function signature.
+
+I will instead do a two-step process: I will first extract the function header 
+line number and then insert the lines after it using line number.
+
+```
+grep -n 'def reduce_context' 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+156:    def reduce_context(self, agent: "Agent", e: Exception | None = None, 
+**kwargs: Any) -> None:
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 21, $0.02):
+```
+sed -i '157i\        if self.window_size == 0:\n            
+self.removed_message_count += len(agent.messages)\n            
+agent.messages.clear()\n            return' 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 22, $0.02):
+```
+head -30 
+./src/strands/agent/conversation_manager/sliding_window_conversation_manager.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+"""Sliding window conversation history management."""
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ...agent.agent import Agent
+
+from ...hooks import BeforeModelCallEvent, HookRegistry
+from ...types.content import ContentBlock, Messages
+from ...types.exceptions import ContextWindowOverflowException
+from ...types.tools import ToolResultContent
+from .conversation_manager import ConversationManager
+
+logger = logging.getLogger(__name__)
+
+_PRESERVE_CHARS = 200
+
+
+class SlidingWindowConversationManager(ConversationManager):
+    """Implements a sliding window strategy for managing conversation history.
+
+    This class handles the logic of maintaining a conversation window that 
+preserves tool usage pairs and avoids
+    invalid window states.
+
+    When truncation is enabled (the default), large tool results are partially 
+truncated, preserving the first
+    and last 200 characters, and image blocks inside tool results are replaced 
+with descriptive text placeholders.
+    Truncation targets the oldest tool results first so the most relevant recent
+context is preserved as long
+    as possible.
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 23, $0.02):
+```
+python3 test_sliding_window_zero.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+Test passed: All messages trimmed with window_size=0
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 24, $0.02):
+The fix works as expected and the test now passes. With window_size=0, all 
+messages get trimmed successfully.
+
+I will now clean up by removing the test script file.
+
+```
+rm test_sliding_window_zero.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+User:
+Tool call error:
+
+<error>
+No tool calls found in the response. Every response MUST include at least one 
+tool call.
+</error>
+
+Here is general guidance on how to submit correct toolcalls:
+
+Every response needs to use the 'bash' tool at least once to execute commands.
+
+Call the bash tool with your command as the argument:
+- Tool: bash
+- Arguments: {"command": "your_command_here"}
+
+If you want to end the task, please issue the following command: `echo 
+COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+without any other command.
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 26, $0.02):
+```
+echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+```
+
+Tool:
+<returncode>
+-1
+<output>
+
+<exception_info>
+action was not executed
+
+Exit:
+
+Saved trajectory to '/output/trajectory.json'

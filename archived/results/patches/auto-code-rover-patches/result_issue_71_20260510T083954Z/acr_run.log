@@ -1,0 +1,367 @@
+STDOUT:
+
+[2026-09-01 06:26:38] Total number of tasks: 1
+
+[2026-09-01 06:26:38] Total number of processes: 1
+
+[2026-09-01 06:26:38] Task group info: (number of groups: 1)
+
+[2026-09-01 06:26:38]   local: 1 tasks
+
+[2026-09-01 06:26:38] Running in single process mode.
+
+[2026-09-01 06:26:38] ============= Running task issue_71_20260510T083954Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Incorrectly throwing an exception when only a single message is passed to the OPENAI API model.                             │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ **Describe the bug**                                                                                                                            │
+│ The OPENAI API requires the content passed to the model to contain a "role" field. Therefore, there is a section in line 196 of                 │
+│ `src/agentscope/models/openai_model.py` that checks whether the incoming message includes the "role" field.                                     │
+│ ```                                                                                                                                             │
+│  # step2: checking messages                                                                                                                     │
+│         if not all("role" in msg and "content" in msg for msg in messages):                                                                     │
+│             raise ValueError(                                                                                                                   │
+│                 "Each message in the 'messages' list must contain a 'role' "                                                                    │
+│                 "and 'content' key for OpenAI API.",                                                                                            │
+│             )                                                                                                                                   │
+│ ```                                                                                                                                             │
+│ However, according to this code, it assumes that the messages passed to the model is a list and checks each dictionary within the list for the  │
+│ presence of the "role" key. But if the messages variable passed to the model is itself just a single dictionary, this logic will also throw an  │
+│ exception of "missing role field". There is no other code to ensure that the type of the messages variable is a list .                          │
+│                                                                                                                                                 │
+│ **To Reproduce**                                                                                                                                │
+│ 1. Define a customer agent:                                                                                                                     │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ class TestCustomerAgent(AgentBase):                                                                                                             │
+│                                                                                                                                                 │
+│     def reply(self, x: dict = None) -> dict:                                                                                                    │
+│         if x is not None:                                                                                                                       │
+│             self.memory.add(x)                                                                                                                  │
+│                                                                                                                                                 │
+│         # This is right, because memory.get_memory() will return a list of dict.                                                                │
+│         # prompt = self.engine.join(                                                                                                            │
+│         #     self.memory.get_memory(),                                                                                                         │
+│         # )                                                                                                                                     │
+│                                                                                                                                                 │
+│         # This will cause an Exception, which should not be happened. The msg contains the role and content keys.                               │
+│         prompt = Msg(name="user", role="user", content=str(x["content"]))                                                                       │
+│                                                                                                                                                 │
+│         response = self.model(prompt).text                                                                                                      │
+│         msg = Msg(self.name, response)                                                                                                          │
+│         self.speak(msg)                                                                                                                         │
+│                                                                                                                                                 │
+│         # Record the message to memory and return it                                                                                            │
+│         self.memory.add(msg)                                                                                                                    │
+│         return msg                                                                                                                              │
+│ ```                                                                                                                                             │
+│ 2. call this agent with a single message.                                                                                                       │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ test_agent = TestCustomerAgent(                                                                                                                 │
+│     name="Tester",                                                                                                                              │
+│     sys_prompt="You are a very helpful assistant.",                                                                                             │
+│     model_config_name="gpt-3.5-turbo",                                                                                                          │
+│ )                                                                                                                                               │
+│ if __name__ == "__main__":                                                                                                                      │
+│     init_msg = Msg(name="user", role="user", content="prints the current local time")                                                           │
+│     x = test_agent(init_msg)                                                                                                                    │
+│     print(x)                                                                                                                                    │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The built-in agent of the framework ensures that the type of the incoming message is a list through some functions. However, when developers    │
+│ define their own agents, you cannot guarantee this.                                                                                             │
+│                                                                                                                                                 │
+│ **Error messages**                                                                                                                              │
+│ This is the incorrectly throwing exception:                                                                                                     │
+│ ```                                                                                                                                             │
+│ 2024-03-15 09:24:03.880 | ERROR    | agentscope.utils.logging_utils:write:41 - Traceback (most recent call last):                               │
+│   File "C:\...\main.py", line 138, in <module>                                                                                                  │
+│     x = test_agent(init_msg)                                                                                                                    │
+│   File "C:\...\agentscope\src\agentscope\agents\agent.py", line 117, in __call__                                                                │
+│     res = self.reply(*args, **kwargs)                                                                                                           │
+│   File "C:\...\agents.py", line 251, in reply                                                                                                   │
+│     response = self.model(prompt).text                                                                                                          │
+│   File "C:\...\agentscope\src\agentscope\models\model.py", line 159, in checking_wrapper                                                        │
+│     return model_call(self, *args, **kwargs)                                                                                                    │
+│   File "C:\...\agentscope\src\agentscope\models\openai_model.py", line 197, in __call__                                                         │
+│     raise ValueError(                                                                                                                           │
+│ ValueError: Each message in the 'messages' list must contain a 'role' and 'content' key for OpenAI API.                                         │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Environment (please complete the following information):**                                                                                    │
+│  - AgentScope Version: 0.0.1                                                                                                                    │
+│  - Python Version: 3.10                                                                                                                         │
+│  - OS: windows                                                                                                                                  │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=912, output_tokens=13, cost=0.000145
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1090, output_tokens=637, cost=0.000546
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      import sys                                                    │
+│      try:                                                          │
+│          from agentscope.agents.agent import AgentBase             │
+│          from agentscope.models.openai_model import OpenAIModel    │
+│          from agentscope.utils.messages import Msg                 │
+│      except ImportError as ie:                                     │
+│          print(f"ImportError: Make sure you're running this scrip  │
+│  inside the project root where 'agentscope' is accessible.")       │
+│          print(str(ie))                                            │
+│          sys.exit(1)                                               │
+│                                                                    │
+│      class TestCustomerAgent(AgentBase):                           │
+│          def __init__(self, *args, **kwargs):                      │
+│              super().__init__(*args, **kwargs)                     │
+│                                                                    │
+│          def reply(self, x: dict = None) -> dict:                  │
+│              if x is not None:                                     │
+│                  self.memory.add(x)                                │
+│                                                                    │
+│              # Intentionally create a single Msg (not a list)      │
+│              # This is the problematic usage that triggers the bu  │
+│              prompt = Msg(name="user", role="user",                │
+│  content=str(x["content"]))                                        │
+│                                                                    │
+│              response = self.model(prompt).text                    │
+│              msg = Msg(self.name, response)                        │
+│              self.speak(msg)                                       │
+│                                                                    │
+│              self.memory.add(msg)                                  │
+│              return msg                                            │
+│                                                                    │
+│      # Instantiate the agent with minimal valid configuration.     │
+│      test_agent = TestCustomerAgent(                               │
+│          name="Tester",                                            │
+│          sys_prompt="You are a very helpful assistant.",           │
+│          model_config_name="gpt-3.5-turbo",                        │
+│      )                                                             │
+│                                                                    │
+│      # Create an initial Msg with required role and content        │
+│      init_msg = Msg(name="user", role="user", content="prints the  │
+│  current local time")                                              │
+│                                                                    │
+│      try:                                                          │
+│          # This call should raise ValueError if the bug is presen  │
+│          res = test_agent(init_msg)                                │
+│      except ValueError as e:                                       │
+│          # Check the error message to confirm it is the expected   │
+│  bug                                                               │
+│          expected_msg = (                                          │
+│              "Each message in the 'messages' list must contain a   │
+│  'role' "                                                          │
+│              "and 'content' key for OpenAI API."                   │
+│          )                                                         │
+│          if expected_msg in str(e):                                │
+│              # The bug is present, print stack trace and raise     │
+│  AssertionError                                                    │
+│              print_stacktrace(e)                                   │
+│              raise AssertionError(                                 │
+│                  "Bug detected: The OpenAIModel wrongly throws an  │
+│  exception when passed a single message dict instead of a list."   │
+│              ) from e                                              │
+│          else:                                                     │
+│              # Unexpected ValueError                               │
+│              print_stacktrace(e)                                   │
+│              raise                                                 │
+│      else:                                                         │
+│          # No exception raised — bug fixed                         │
+│          print("No exception raised. The bug is fixed.")           │
+│          sys.exit(0)                                               │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 06:26:49] Task issue_71_20260510T083954Z failed with exception: .
+
+[2026-09-01 06:26:49] No patch generated. You can try running ACR again.
+
+[2026-09-01 06:26:49] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 06:26:38.046 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_71_20260510T083954Z =============
+2026-09-01 06:26:38.137 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 06:26:40.665 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=912, output_tokens=13, cost=0.000145
+2026-09-01 06:26:49.653 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1090, output_tokens=637, cost=0.000546
+2026-09-01 06:26:49.764 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x73f218120d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x73f20dec8f50>]}
+    └ <function run_task_groups at 0x73f20df8a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x73f20dec8f50>]
+    └ <function run_tasks_serial at 0x73f20df8a480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x73f20dec8f50>
+    └ <function run_task_in_subprocess at 0x73f20df8a660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x73f20dec8f50>
+    │        │      └ <function run_raw_task at 0x73f20df8a700>
+    │        └ <function ProcessPoolExecutor.submit at 0x73f217d4cae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x73f20f55fda0>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x73f217d4c860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x73f20f55fda0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x73f217d4c9a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x73f20f55fda0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x73f217d4ca40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x73f20f55fda0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x73f217f242c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x73f217f88fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+    │    └ <function Popen._launch at 0x73f20dee8360>
+    └ <multiprocessing.popen_fork.Popen object at 0x73f20dec8f80>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x73f217f24cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x73f217f24220>
+    └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x73f20df371d0>, <multiprocessing.queues.SimpleQueue object at 0x73f20dec96...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+    │    └ <function _process_worker at 0x73f217d47c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2758790 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x73f20e3fd7f0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x73f20dec9f10>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x73f20e3fd7f0>
+        │         └ <function run_raw_task at 0x73f20df8a700>
+        └ <concurrent.futures.process._CallItem object at 0x73f20e3fd7f0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_71_20260510T083954Z/acr_output/issue_71_20260510T083954Z_2026-09-01_06-26-38'
+             │            │    └ <function RawLocalTask.to_task at 0x73f20df8a020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x73f20dec9f10>
+             └ <function do_inference at 0x73f20df8a8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x73f20dffc860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x73f20e88b880>
+       │                 │         │            └ PlainTask(commit_hash='046298720d12639ed54c9d643103b48c5aaaf169', local_path='/root/auto-code-rover/.acr_cache/acr_ws_71', pr...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x73f20e746000>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_71_20260510T083954Z/acr_output/issue_71_20260510T083954Z_2026-09-01_06-...
+       └ <function _run_one_task at 0x73f20dffdb20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x73f20e888220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x73f20ea65430>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x73f20e88bce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x73f20ea65430>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x73f20e88a480>
+                   │    └ PlainTask(commit_hash='046298720d12639ed54c9d643103b48c5aaaf169', local_path='/root/auto-code-rover/.acr_cache/acr_ws_71', pr...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x73f20ea65430>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 06:26:49.768 | INFO     | app.log:log_and_always_print:229 - Task issue_71_20260510T083954Z failed with exception: .
+2026-09-01 06:26:49.769 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

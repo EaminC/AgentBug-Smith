@@ -1,0 +1,345 @@
+STDOUT:
+
+[2026-09-01 03:33:03] Total number of tasks: 1
+
+[2026-09-01 03:33:03] Total number of processes: 1
+
+[2026-09-01 03:33:03] Task group info: (number of groups: 1)
+
+[2026-09-01 03:33:03]   local: 1 tasks
+
+[2026-09-01 03:33:03] Running in single process mode.
+
+[2026-09-01 03:33:03] ============= Running task issue_2635_20260823T201645Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] Heuristic count_tokens returns 0 for toolResult content with json blocks                                                     │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ # Overview                                                                                                                                      │
+│                                                                                                                                                 │
+│ The heuristic `count_tokens` estimator silently returns 0 for tool results that use `json` content blocks. This breaks the `ContextOffloader`   │
+│ plugin's threshold check whenever native token counting is unavailable (e.g., `bedrock:CountTokens` IAM denied, model not on the CountTokens    │
+│ allowlist, network failure → fallback path).                                                                                                    │
+│                                                                                                                                                 │
+│ **Root cause:** `_count_content_block_tokens` in `strands-py/src/strands/models/model.py` only counts `text` items inside `toolResult` content. │
+│ The `json` branch is missing, even though `count_json` is already passed into the function and used elsewhere (e.g., `toolUse.input`).          │
+│                                                                                                                                                 │
+│ ## Implementation Requirements                                                                                                                  │
+│                                                                                                                                                 │
+│ ### Technical Approach                                                                                                                          │
+│                                                                                                                                                 │
+│ **File to modify:** `strands-py/src/strands/models/model.py`                                                                                    │
+│                                                                                                                                                 │
+│ In `_count_content_block_tokens` (lines 60-64), the `toolResult` branch currently only handles `text` items:                                    │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ if "toolResult" in block:                                                                                                                       │
+│     tool_result = block["toolResult"]                                                                                                           │
+│     for item in tool_result.get("content", []):                                                                                                 │
+│         if "text" in item:                                                                                                                      │
+│             total += count_text(item["text"])                                                                                                   │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Add the missing `json` handling to mirror how `toolUse.input` is counted:                                                                       │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ if "toolResult" in block:                                                                                                                       │
+│     tool_result = block["toolResult"]                                                                                                           │
+│     for item in tool_result.get("content", []):                                                                                                 │
+│         if "text" in item:                                                                                                                      │
+│             total += count_text(item["text"])                                                                                                   │
+│         if "json" in item:                                                                                                                      │
+│             total += count_json(item["json"])                                                                                                   │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ The `count_json` callable is already a parameter of the function and uses `json.dumps(obj) / 2` for heuristic estimation (consistent with the   │
+│ function's own docstring).                                                                                                                      │
+│                                                                                                                                                 │
+│ ### Files to Modify                                                                                                                             │
+│                                                                                                                                                 │
+│ | File | Change |                                                                                                                               │
+│ |------|--------|                                                                                                                               │
+│ | `strands-py/src/strands/models/model.py` | Add `json` branch in `toolResult` loop inside `_count_content_block_tokens` |                      │
+│ | `strands-py/tests/strands/models/test_model.py` | Add regression test(s) for `toolResult` with `json` content |                               │
+│                                                                                                                                                 │
+│ ### Acceptance Criteria                                                                                                                         │
+│                                                                                                                                                 │
+│ - [ ] `_count_content_block_tokens` counts tokens for `json` items in `toolResult` content using the `count_json` callable                      │
+│ - [ ] `_estimate_tokens_with_heuristic` returns a non-zero value for messages containing `toolResult` with `json` content blocks                │
+│ - [ ] The fix uses the same heuristic pattern as `toolUse.input` (i.e., `json.dumps(obj) / 2`)                                                  │
+│ - [ ] A regression test verifies that `count_tokens` returns the expected non-zero value for a `toolResult` containing `json` content           │
+│ - [ ] A regression test verifies mixed `text` + `json` content in a single `toolResult`                                                         │
+│ - [ ] Existing tests continue to pass (no regressions)                                                                                          │
+│ - [ ] Code passes `hatch fmt --formatter` and `hatch fmt --linter`                                                                              │
+│                                                                                                                                                 │
+│ ### Reproduction Test Case                                                                                                                      │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ from strands.models.model import _estimate_tokens_with_heuristic                                                                                │
+│                                                                                                                                                 │
+│ messages = [{                                                                                                                                   │
+│     "role": "user",                                                                                                                             │
+│     "content": [{                                                                                                                               │
+│         "toolResult": {                                                                                                                         │
+│             "status": "success",                                                                                                                │
+│             "content": [{"json": {"x": "lorem ipsum " * 1000}}],                                                                                │
+│         }                                                                                                                                       │
+│     }]                                                                                                                                          │
+│ }]                                                                                                                                              │
+│                                                                                                                                                 │
+│ tokens = _estimate_tokens_with_heuristic(messages)                                                                                              │
+│ # Before fix: 0                                                                                                                                 │
+│ # After fix: ~6001 (ceil(len(json.dumps({"x": "lorem ipsum " * 1000})) / 2))                                                                    │
+│ assert tokens > 0                                                                                                                               │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Downstream Impact                                                                                                                           │
+│                                                                                                                                                 │
+│ The `ContextOffloader` plugin (`strands-py/src/strands/vended_plugins/context_offloader/plugin.py`) relies on `model.count_tokens` to determine │
+│ when to offload large tool results. When `count_tokens` returns 0 for `json` content, the offloader's threshold check (`token_count <=          │
+│ self._max_result_tokens`) always passes and offloading never triggers — silently making the plugin a no-op for JSON tool results.               │
+│                                                                                                                                                 │
+│ ### Notes                                                                                                                                       │
+│                                                                                                                                                 │
+│ - This is a 2-line production code change with regression tests                                                                                 │
+│ - No workflow changes needed                                                                                                                    │
+│ - No breaking changes — this only adds previously-missing functionality                                                                         │
+│ - The `ToolResultContent` TypedDict already defines `json: Any` as a valid content type                                                         │
+│ - For future maintainability: consider adding a code comment noting which `ToolResultContent` fields are handled vs. skipped (e.g., `image` and │
+│ `document` are binary and intentionally not counted by the heuristic)                                                                           │
+│                                                                                                                                                 │
+│ ---                                                                                                                                             │
+│                                                                                                                                                 │
+│ *Original report by @sonerkuyar*                                                                                                                │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1084, output_tokens=13, cost=0.000170
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1262, output_tokens=317, cost=0.000379
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  import sys                                                        │
+│                                                                    │
+│  try:                                                              │
+│      from strands.models.model import                              │
+│  _estimate_tokens_with_heuristic                                   │
+│  except ImportError as e:                                          │
+│      print("Failed to import _estimate_tokens_with_heuristic from  │
+│  strands.models.model:", file=sys.stderr)                          │
+│      print(e, file=sys.stderr)                                     │
+│      sys.exit(1)                                                   │
+│                                                                    │
+│  def main():                                                       │
+│      messages = [{                                                 │
+│          "role": "user",                                           │
+│          "content": [{                                             │
+│              "toolResult": {                                       │
+│                  "status": "success",                              │
+│                  "content": [{"json": {"x": "lorem ipsum " *       │
+│  1000}}],                                                          │
+│              }                                                     │
+│          }]                                                        │
+│      }]                                                            │
+│                                                                    │
+│      try:                                                          │
+│          tokens = _estimate_tokens_with_heuristic(messages)        │
+│          assert tokens > 0, "Token count is 0 - likely missing js  │
+│  counting in toolResult content"                                   │
+│      except AssertionError as e:                                   │
+│          print_stacktrace(e)                                       │
+│          raise                                                     │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 03:33:12] Task issue_2635_20260823T201645Z failed with exception: .
+
+[2026-09-01 03:33:12] No patch generated. You can try running ACR again.
+
+[2026-09-01 03:33:12] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 03:33:03.263 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_2635_20260823T201645Z =============
+2026-09-01 03:33:03.736 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 03:33:07.488 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1084, output_tokens=13, cost=0.000170
+2026-09-01 03:33:12.794 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1262, output_tokens=317, cost=0.000379
+2026-09-01 03:33:12.922 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x72b6d6524d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x72b6cbebcf50>]}
+    └ <function run_task_groups at 0x72b6cbf2a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x72b6cbebcf50>]
+    └ <function run_tasks_serial at 0x72b6cbf2a480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x72b6cbebcf50>
+    └ <function run_task_in_subprocess at 0x72b6cbf2a660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x72b6cbebcf50>
+    │        │      └ <function run_raw_task at 0x72b6cbf2a700>
+    │        └ <function ProcessPoolExecutor.submit at 0x72b6d5e18ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x72b6ccae3830>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x72b6d5e18860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x72b6ccae3830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x72b6d5e189a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x72b6ccae3830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x72b6d5e18a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x72b6ccae3830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x72b6d600c2c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x72b6d6070fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+    │    └ <function Popen._launch at 0x72b6cbedc360>
+    └ <multiprocessing.popen_fork.Popen object at 0x72b6cbf1e690>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x72b6d600ccc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x72b6d600c220>
+    └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x72b6cc6f01a0>, <multiprocessing.queues.SimpleQueue object at 0x72b6cbf1f3...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+    │    └ <function _process_worker at 0x72b6d5e13c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2741838 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x72b6cbebb7d0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x72b6cbebdd60>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x72b6cbebb7d0>
+        │         └ <function run_raw_task at 0x72b6cbf2a700>
+        └ <concurrent.futures.process._CallItem object at 0x72b6cbebb7d0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_2635_20260823T201645Z/acr_output/issue_2635_20260823T201645Z_2026-09-01_03-33-03'
+             │            │    └ <function RawLocalTask.to_task at 0x72b6cbf2a020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x72b6cbebdd60>
+             └ <function do_inference at 0x72b6cbf2a8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x72b6cbff0860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x72b6cc87f880>
+       │                 │         │            └ PlainTask(commit_hash='ff37eb0a07589279b7fa6a2706a05bd6ed26a9f5', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2635', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x72b6cc305b20>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_2635_20260823T201645Z/acr_output/issue_2635_20260823T201645Z_2026-09-01...
+       └ <function _run_one_task at 0x72b6cbff1b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x72b6cc87c220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x72b6cc56bec0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x72b6cc87fce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x72b6cc56bec0>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x72b6cc87e480>
+                   │    └ PlainTask(commit_hash='ff37eb0a07589279b7fa6a2706a05bd6ed26a9f5', local_path='/root/auto-code-rover/.acr_cache/acr_ws_2635', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x72b6cc56bec0>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 03:33:12.927 | INFO     | app.log:log_and_always_print:229 - Task issue_2635_20260823T201645Z failed with exception: .
+2026-09-01 03:33:12.928 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

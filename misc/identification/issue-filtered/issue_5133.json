@@ -1,0 +1,29 @@
+{
+  "number": 5133,
+  "title": "Tool result content is incorrectly serialized as a string when calling bedrock",
+  "url": "https://github.com/vercel/ai/issues/5133",
+  "state": "closed",
+  "created_at": "2025-03-11T12:36:36Z",
+  "closed_at": "2025-03-27T17:39:10Z",
+  "body": "### Description\n\nWhen converting messages to the bedrock API, tool responses appear to have their entire content serialized as a JSON string within a `text` content block, rather than handling each individual piece of content appropriately.\n\nThis breaks handling of image responses from tools, because the base64 of the image ends up just being sent to the model as text.\n\nThis seems very similar to https://github.com/vercel/ai/issues/3379, but with bedrock rather than anthropic. \n\nThe current behaviour produces requests like:\n\n```\n{\n  \"role\": \"user\",\n  \"content\": [\n    {\n      \"toolResult\": {\n        \"toolUseId\": \"tooluse_PBqR3AclQ2eObQsXbNzx5w\",\n        \"content\": [\n          {\n            \"text\": \"[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"Tool Response\\\"},{\\\"type\\\":\\\"image\\\",\\\"data\\\":\\\"MQ==\\\",\\\"mimeType\\\":\\\"image/png\\\"}]\"\n          }\n        ]\n      }\n    }\n  ]\n}\n```\n\n### Code example\n\n```js\nimport { bedrock } from '@ai-sdk/amazon-bedrock';\nimport { generateText, tool } from 'ai';\nimport { z } from 'zod';\n\n\nasync function main() {\n\n  const result = await generateText({\n    model: bedrock(\"us.anthropic.claude-3-7-sonnet-20250219-v1:0\"),\n    messages: [{\n      role: 'user',\n      content: [{ type: \"text\", text: \"Please download this image https://picsum.photos/200/300 and tell me what you see\" }]\n    }],\n    tools: {\n      submit: tool({\n        description: 'Download an image',\n        parameters: z.object({\n          url: z\n            .string()\n            .describe('The image URL'),\n        }),\n        execute: async ({ url }) => {\n          const bytes = await (await fetch(url)).bytes();\n          return { bytes }\n        },\n        experimental_toToolResultContent(result) {\n          return [{\n            type: \"image\",\n            data: Buffer.from(result.bytes).toString(\"base64\"),\n            mimeType: \"image/jpeg\",\n          }]\n        },\n      }),\n    },\n    maxSteps: 5,\n  });\n\n  console.log(result.text);\n}\n\nmain().catch(console.error);\n```\n\nThe model will completely hallucinate the contents of the image, because it only has access to the base64 data as a string.\n\n### AI provider\n\n@ai-sdk/amazon-bedrock v2.1.1\n\n### Additional context\n\nI think the issue is caused by this line https://github.com/vercel/ai/blame/9b081a7a2241e9796d8b8561e71fc5ba9dd2bdf6/packages/amazon-bedrock/src/convert-to-bedrock-chat-messages.ts#L138, which should probably be reusing the existing content serialisation logic rather than JSON.stringify.",
+  "labels": [
+    "bug",
+    "ai/provider",
+    "provider/amazon-bedrock"
+  ],
+  "linked_prs": [
+    {
+      "number": 5390,
+      "state": "closed",
+      "title": "feat (provider/amazon-bedrock): support tool results with image parts",
+      "url": "https://github.com/vercel/ai/pull/5390",
+      "merged": true,
+      "base_branch": "main",
+      "body": "Continues work from #5364 \r\n\r\nFixes #5133 "
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes.  \nThis is an agent issue because it involves tool invocation and serialization logic when integrating with an LLM provider (Bedrock). The problem affects how tool results are passed to the model, impacting agent-specific behaviors and tool-to-model communication. The issue matches the \"Misuse tool interfaces\" and \"Incompatible parameters to LLM providers\" categories."
+  }
+}

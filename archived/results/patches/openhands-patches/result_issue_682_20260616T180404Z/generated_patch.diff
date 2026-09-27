@@ -1,0 +1,55 @@
+diff --git a/gpt_engineer/core/steps.py b/gpt_engineer/core/steps.py
+index fe73e62..c8a012c 100644
+--- a/gpt_engineer/core/steps.py
++++ b/gpt_engineer/core/steps.py
+@@ -613,6 +613,42 @@ def human_review(ai: AI, dbs: DBs):
+         dbs.memory["review"] = review.to_json()  # type: ignore
+     return []
+ 
++from langchain.schema import SystemMessage, HumanMessage
++import json
++
++def automated_code_review(ai: AI, dbs: DBs):
++    """
++    Explicit automated code review step that queries the LLM for QA tasks,
++    inspects the generated code for issues, and optionally applies fixes.
++    """
++    # Step 1: Ask the LLM what a QA person would manually test based on the project specification
++    qa_tasks_msg = ai.start(
++        system="You are a QA engineer. Based on the project specification, list manual QA tests you would perform."
++    )
++    qa_tasks = qa_tasks_msg[-1].content.strip().split('\n')
++    
++    issues_found = False
++    for task in qa_tasks:
++        # Step 2: For each QA task, ask the LLM if the generated code is expected to pass or if something seems broken
++        prompt = f"Does the generated code pass this QA test? '{task.strip()}' Please answer with 'yes' or 'no', and if 'no', explain what is broken."
++        response = ai.next([
++            SystemMessage(content="You are a code reviewer."),
++            HumanMessage(content=prompt)
++        ], step_name=curr_fn())
++        answer = response[-1].content.lower()
++        if answer.startswith('no'):
++            issues_found = True
++            # Step 3: Ask the LLM to output code blocks that overwrite files to fix the issue
++            fix_prompt = f"The following QA check failed: {task.strip()}\nFix the code and respond with code blocks to overwrite the files as needed."
++            fix_response = ai.next([
++                SystemMessage(content="You are a senior developer tasked with fixing the code."),
++                HumanMessage(content=fix_prompt)
++            ], step_name=curr_fn())
++            # Apply the fix by overwriting files
++            overwrite_files_with_edits(fix_response[-1].content.strip(), dbs)
++    
++    return []
++
+ 
+ class Config(str, Enum):
+     """
+@@ -653,6 +689,7 @@ STEPS = {
+         gen_entrypoint,
+         execute_entrypoint,
+         human_review,
++        automated_code_review,
+     ],
+     Config.LITE: [
+         lite_gen,

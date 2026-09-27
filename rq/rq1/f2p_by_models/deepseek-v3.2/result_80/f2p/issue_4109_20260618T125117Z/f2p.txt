@@ -1,0 +1,436 @@
+
+========================================================================
+epoch=1 f2p_round=1 outcome=f2f
+--- Ensuring pristine buggy state ---
+--- Phase A: docker build (before patch) ---
+--- Phase B: run test in container (expect failure for fail2pass) ---
+test command exit code: 1
+--- Phase C: git apply patch ---
+--- Phase D: docker build (after patch) ---
+--- Phase E: run test in container (expect pass for fail2pass) ---
+test command exit code: 1
+
+outcome=f2f (rc1=1, rc2=1)
+
+--- first test run (tail) ---
+    # Since the patch only changes model-settings.yml, the bug in models.py remains.
+        # Wait, maybe the bug is that the model name in model-settings.yml is wrong,
+        # and correcting it there fixes the issue because the Model class uses that name.
+        # Actually, the Model class reads from MODEL_ALIASES which is built from model-settings.yml.
+        # So if model-settings.yml contains wrong names, the alias mapping fails.
+        # The issue says weak model becomes "vertex_ai-language-models/gemini-2.5-flash-preview-04-17"
+        # That weak model name likely comes from model-settings.yml? Not sure.
+        # Let's look at the issue: they show "Weak model: vertex_ai-language-models/..."
+        # That suggests the weak model name is being set incorrectly somewhere.
+        # The fix in models.py would normalize it, but the PR didn't include that.
+        # However, the PR's patch is what we must test against.
+        # Therefore, our test should verify that after the patch, the model names in
+        # model-settings.yml are correct (no "-anthropic_models/").
+        # But the bug is about "-language-models/" not "-anthropic_models/".
+        # Hmm.
+        # Let's read the patch: it removes "-anthropic_models/" from vertex_ai/claude-* entries.
+        # That's a different substring. The issue mentions "-language-models/".
+        # Possibly there are two different bugs: one for anthropic models, one for gemini.
+        # The PR fixes anthropic models, but gemini models remain broken?
+        # However, the issue reporter says the fix works for them (they applied the SEARCH/REPLACE).
+        # The PR maintainers might have decided to only fix the anthropic models.
+        # Our test must fail on buggy code and pass on fixed code.
+        # We need to choose a model that is affected by the patch.
+        # Let's pick "vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219"
+        # which is changed to "vertex_ai/claude-3-7-sonnet@20250219".
+        # In buggy code, if we create a Model with that name, it will be used as is.
+        # In fixed code, the name is different.
+        # However, the Model class might still have the buggy normalization missing,
+        # but the name in model-settings.yml is corrected, so the weak model etc will be correct.
+        # Therefore, we can test that loading model settings yields the corrected name.
+        # Let's write a test that loads model-settings.yml and checks the specific entry.
+        # But we need to ensure the test fails before patch (when name contains "-anthropic_models/").
+        # We'll import the model settings directly.
+        import yaml
+        import os
+        settings_path = os.path.join(os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml')
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        # Find the entry for vertex_ai/claude-3-7-sonnet@20250219
+        found = False
+        for entry in data:
+            if entry.get('name', '').startswith('vertex_ai'):
+                # In buggy code, name includes "-anthropic_models/"
+                if 'vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219' == entry.get('name'):
+                    found = True
+                    # This assertion will fail after patch because name changes.
+                    # So before patch, test passes (found=True) and we assert True? Wait.
+                    # We want test to fail before patch, pass after.
+                    # Let's assert that the name does NOT contain "-anthropic_models/".
+                    # That assertion will fail before patch (since it does contain), and pass after.
+>                   assert '-anthropic_models/' not in entry['name']
+E                   AssertionError: assert '-anthropic_models/' not in 'vertex_ai-a...net@20250219'
+E                     
+E                     '-anthropic_models/' is contained here:
+E                       vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E                     ?          ++++++++++++++++++
+
+tests/agentsmith_fail2pass_4109.py:97: AssertionError
+____________________ test_vertex_ai_model_names_in_settings ____________________
+
+    def test_vertex_ai_model_names_in_settings():
+        """Check that all vertex_ai model names in model-settings.yml do not contain -anthropic_models/."""
+        import yaml
+        import os
+        settings_path = os.path.join(os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml')
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        errors = []
+        for entry in data:
+            name = entry.get('name', '')
+            if 'vertex_ai' in name:
+                if '-anthropic_models/' in name:
+                    errors.append(f"Model name contains -anthropic_models/: {name}")
+            weak = entry.get('weak_model_name', '')
+            if 'vertex_ai' in weak and '-anthropic_models/' in weak:
+                errors.append(f"Weak model name contains -anthropic_models/: {weak}")
+            editor = entry.get('editor_model_name', '')
+            if 'vertex_ai' in editor and '-anthropic_models/' in editor:
+                errors.append(f"Editor model name contains -anthropic_models/: {editor}")
+        # Before patch, errors list will be non-empty.
+        # After patch, errors should be empty.
+        # Assert no errors.
+>       assert not errors, "\n".join(errors)
+E       AssertionError: Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-opus-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E       assert not ['Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219', 'Editor mo...50514', 'Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514']
+
+tests/agentsmith_fail2pass_4109.py:169: AssertionError
+_____________________ test_vertex_ai_weak_model_normalized _____________________
+
+    def test_vertex_ai_weak_model_normalized():
+        """Test that weak_model_name for vertex_ai models is normalized (no -anthropic_models/)."""
+        from aider.models import Model
+        # Use a model that has a weak_model_name defined in model-settings.yml.
+        # We'll pick vertex_ai/claude-3-7-sonnet@20250219 (after patch) or vertex_ai-anthropic_models/... (before patch).
+        # However, the Model class may not have that model loaded if not in MODEL_ALIASES.
+        # Let's load the model settings via model info manager.
+        from aider.models import ModelInfoManager
+        mim = ModelInfoManager()
+        # Get model info for vertex_ai/claude-3-7-sonnet@20250219.
+        # The name might differ before/after patch.
+        # We'll iterate over all model infos and find one with vertex_ai and weak_model_name.
+        model_info = None
+>       for info in mim.models.values():
+                    ^^^^^^^^^^
+E       AttributeError: 'ModelInfoManager' object has no attribute 'models'
+
+tests/agentsmith_fail2pass_4109.py:197: AttributeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_name_normalization
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_names_in_settings
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_weak_model_normalized
+3 failed, 1 passed in 2.06s
+
+
+--- second test run (tail) ---
+...F                                                                     [100%]
+=================================== FAILURES ===================================
+_____________________ test_vertex_ai_weak_model_normalized _____________________
+
+    def test_vertex_ai_weak_model_normalized():
+        """Test that weak_model_name for vertex_ai models is normalized (no -anthropic_models/)."""
+        from aider.models import Model
+        # Use a model that has a weak_model_name defined in model-settings.yml.
+        # We'll pick vertex_ai/claude-3-7-sonnet@20250219 (after patch) or vertex_ai-anthropic_models/... (before patch).
+        # However, the Model class may not have that model loaded if not in MODEL_ALIASES.
+        # Let's load the model settings via model info manager.
+        from aider.models import ModelInfoManager
+        mim = ModelInfoManager()
+        # Get model info for vertex_ai/claude-3-7-sonnet@20250219.
+        # The name might differ before/after patch.
+        # We'll iterate over all model infos and find one with vertex_ai and weak_model_name.
+        model_info = None
+>       for info in mim.models.values():
+                    ^^^^^^^^^^
+E       AttributeError: 'ModelInfoManager' object has no attribute 'models'
+
+tests/agentsmith_fail2pass_4109.py:197: AttributeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_weak_model_normalized
+1 failed, 3 passed in 2.07s
+========================================================================
+epoch=1 f2p_round=2 outcome=f2f
+--- Ensuring pristine buggy state ---
+--- Phase A: docker build (before patch) ---
+--- Phase B: run test in container (expect failure for fail2pass) ---
+test command exit code: 1
+--- Phase C: git apply patch ---
+--- Phase D: docker build (after patch) ---
+--- Phase E: run test in container (expect pass for fail2pass) ---
+test command exit code: 1
+
+outcome=f2f (rc1=1, rc2=1)
+
+--- first test run (tail) ---
+===============================
+___________________ test_vertex_ai_model_name_normalization ____________________
+
+    def test_vertex_ai_model_name_normalization():
+        """Test that vertex_ai model names are normalized correctly in the Model class."""
+        # This test is about the bug described in issue #4109.
+        # The bug is that vertex_ai model names containing "-language-models/" cause
+        # LiteLLM errors because the provider cannot be parsed.
+        # The fix in the issue body (not in the PR) would normalize such names in
+        # models.py, but the PR only fixes model-settings.yml entries for anthropic models.
+        # However, the PR's patch changes model-settings.yml to remove "-anthropic_models/"
+        # from certain vertex_ai model names. This is a different substring, but it's
+        # the actual fix applied in the repository.
+        # We need to ensure that after the patch, the model names in model-settings.yml
+        # do not contain "-anthropic_models/". Before the patch, they do.
+        # Therefore, we can test that loading a specific model from model-settings.yml
+        # yields the corrected name.
+        # We'll test the vertex_ai/claude-3-7-sonnet@20250219 entry.
+        import os
+        import yaml
+        settings_path = os.path.join(
+            os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml'
+        )
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        found = False
+        for entry in data:
+            name = entry.get('name', '')
+            if 'vertex_ai' in name and 'claude-3-7-sonnet@20250219' in name:
+                found = True
+                # Before patch, name contains "-anthropic_models/".
+                # After patch, it does not.
+                # Assert that "-anthropic_models/" is not present.
+>               assert '-anthropic_models/' not in name, f"Model name contains -anthropic_models/: {name}"
+E               AssertionError: Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E               assert '-anthropic_models/' not in 'vertex_ai-a...net@20250219'
+E                 
+E                 '-anthropic_models/' is contained here:
+E                   vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E                 ?          ++++++++++++++++++
+
+tests/agentsmith_fail2pass_4109.py:37: AssertionError
+____________________ test_vertex_ai_model_names_in_settings ____________________
+
+    def test_vertex_ai_model_names_in_settings():
+        """Check that all vertex_ai model names in model-settings.yml do not contain -anthropic_models/."""
+        import os
+        import yaml
+        settings_path = os.path.join(
+            os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml'
+        )
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        errors = []
+        for entry in data:
+            name = entry.get('name', '')
+            if 'vertex_ai' in name:
+                if '-anthropic_models/' in name:
+                    errors.append(f"Model name contains -anthropic_models/: {name}")
+            weak = entry.get('weak_model_name', '')
+            if 'vertex_ai' in weak and '-anthropic_models/' in weak:
+                errors.append(f"Weak model name contains -anthropic_models/: {weak}")
+            editor = entry.get('editor_model_name', '')
+            if 'vertex_ai' in editor and '-anthropic_models/' in editor:
+                errors.append(f"Editor model name contains -anthropic_models/: {editor}")
+        # Before patch, errors list will be non-empty.
+        # After patch, errors should be empty.
+>       assert not errors, "\n".join(errors)
+E       AssertionError: Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-opus-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E       assert not ['Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219', 'Editor mo...50514', 'Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514']
+
+tests/agentsmith_fail2pass_4109.py:69: AssertionError
+_____________________ test_vertex_ai_weak_model_normalized _____________________
+
+    def test_vertex_ai_weak_model_normalized():
+        """Test that weak_model_name for vertex_ai models is normalized (no -anthropic_models/)."""
+        # This test uses the ModelInfoManager to get model info and verify that
+        # weak_model_name and editor_model_name do not contain -anthropic_models/.
+        # The ModelInfoManager loads data from model-settings.yml, so after the patch,
+        # the weak_model_name should be correct.
+        mim = ModelInfoManager()
+        # The ModelInfoManager stores model info in a dictionary accessible via .model_info
+        # (based on existing tests). Let's inspect the actual attribute.
+        # Looking at aider/models.py, ModelInfoManager has an attribute `model_info` (a dict).
+        # We'll use that.
+>       assert hasattr(mim, 'model_info'), "ModelInfoManager has no attribute 'model_info'"
+E       AssertionError: ModelInfoManager has no attribute 'model_info'
+E       assert False
+E        +  where False = hasattr(<aider.models.ModelInfoManager object at 0x7f6ee3854650>, 'model_info')
+
+tests/agentsmith_fail2pass_4109.py:83: AssertionError
+______________________ test_vertex_ai_model_instantiation ______________________
+
+    def test_vertex_ai_model_instantiation():
+        """Test that a Model instance can be created with a vertex_ai model name after patch."""
+        # This test ensures that the Model class can handle the corrected model names.
+        # We'll create a Model with the name that appears in model-settings.yml after patch.
+        # The buggy code might still have the "-anthropic_models/" substring in the name,
+        # but the patch removes it from model-settings.yml, so the Model will receive the corrected name.
+        # We'll test with the specific model that was changed in the patch.
+        model = Model('vertex_ai/claude-3-7-sonnet@20250219')
+        # The Model constructor may apply aliases, but we just want to ensure no exception.
+        # Also verify that the name is stored correctly.
+        # The Model class might normalize the name further (e.g., via MODEL_ALIASES).
+        # We'll check that the stored name does not contain "-anthropic_models/".
+        assert '-anthropic_models/' not in model.name, f"Model.name contains -anthropic_models/: {model.name}"
+        # Additionally, we can check that the model's weak_model_name (if any) is also correct.
+        # However, we need to load the model info for that.
+        mim = ModelInfoManager()
+>       info = mim.model_info.get(model.name)
+               ^^^^^^^^^^^^^^
+E       AttributeError: 'ModelInfoManager' object has no attribute 'model_info'. Did you mean: 'get_model_info'?
+
+tests/agentsmith_fail2pass_4109.py:114: AttributeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_name_normalization
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_names_in_settings
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_weak_model_normalized
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_instantiation
+4 failed in 2.07s
+
+
+--- second test run (tail) ---
+..FF                                                                     [100%]
+=================================== FAILURES ===================================
+_____________________ test_vertex_ai_weak_model_normalized _____________________
+
+    def test_vertex_ai_weak_model_normalized():
+        """Test that weak_model_name for vertex_ai models is normalized (no -anthropic_models/)."""
+        # This test uses the ModelInfoManager to get model info and verify that
+        # weak_model_name and editor_model_name do not contain -anthropic_models/.
+        # The ModelInfoManager loads data from model-settings.yml, so after the patch,
+        # the weak_model_name should be correct.
+        mim = ModelInfoManager()
+        # The ModelInfoManager stores model info in a dictionary accessible via .model_info
+        # (based on existing tests). Let's inspect the actual attribute.
+        # Looking at aider/models.py, ModelInfoManager has an attribute `model_info` (a dict).
+        # We'll use that.
+>       assert hasattr(mim, 'model_info'), "ModelInfoManager has no attribute 'model_info'"
+E       AssertionError: ModelInfoManager has no attribute 'model_info'
+E       assert False
+E        +  where False = hasattr(<aider.models.ModelInfoManager object at 0x7fd2f1c8c3b0>, 'model_info')
+
+tests/agentsmith_fail2pass_4109.py:83: AssertionError
+______________________ test_vertex_ai_model_instantiation ______________________
+
+    def test_vertex_ai_model_instantiation():
+        """Test that a Model instance can be created with a vertex_ai model name after patch."""
+        # This test ensures that the Model class can handle the corrected model names.
+        # We'll create a Model with the name that appears in model-settings.yml after patch.
+        # The buggy code might still have the "-anthropic_models/" substring in the name,
+        # but the patch removes it from model-settings.yml, so the Model will receive the corrected name.
+        # We'll test with the specific model that was changed in the patch.
+        model = Model('vertex_ai/claude-3-7-sonnet@20250219')
+        # The Model constructor may apply aliases, but we just want to ensure no exception.
+        # Also verify that the name is stored correctly.
+        # The Model class might normalize the name further (e.g., via MODEL_ALIASES).
+        # We'll check that the stored name does not contain "-anthropic_models/".
+        assert '-anthropic_models/' not in model.name, f"Model.name contains -anthropic_models/: {model.name}"
+        # Additionally, we can check that the model's weak_model_name (if any) is also correct.
+        # However, we need to load the model info for that.
+        mim = ModelInfoManager()
+>       info = mim.model_info.get(model.name)
+               ^^^^^^^^^^^^^^
+E       AttributeError: 'ModelInfoManager' object has no attribute 'model_info'. Did you mean: 'get_model_info'?
+
+tests/agentsmith_fail2pass_4109.py:114: AttributeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_weak_model_normalized
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_instantiation
+2 failed, 2 passed in 2.07s
+========================================================================
+epoch=1 f2p_round=3 outcome=f2p
+--- Ensuring pristine buggy state ---
+--- Phase A: docker build (before patch) ---
+--- Phase B: run test in container (expect failure for fail2pass) ---
+test command exit code: 1
+--- Phase C: git apply patch ---
+--- Phase D: docker build (after patch) ---
+--- Phase E: run test in container (expect pass for fail2pass) ---
+test command exit code: 0
+
+outcome=f2p (rc1=1, rc2=0)
+
+--- first test run (tail) ---
+FF..                                                                     [100%]
+=================================== FAILURES ===================================
+___________________ test_vertex_ai_model_name_normalization ____________________
+
+    def test_vertex_ai_model_name_normalization():
+        """Test that vertex_ai model names in model-settings.yml are normalized (no -anthropic_models/)."""
+        # The patch removes "-anthropic_models/" from certain vertex_ai model names.
+        # Before patch, names contain "-anthropic_models/". After patch, they do not.
+        # This test reads the YAML file and checks the specific entry that is changed.
+        settings_path = os.path.join(
+            os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml'
+        )
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        found = False
+        for entry in data:
+            name = entry.get('name', '')
+            if 'vertex_ai' in name and 'claude-3-7-sonnet@20250219' in name:
+                found = True
+                # After patch, name should be "vertex_ai/claude-3-7-sonnet@20250219"
+                # Before patch, it is "vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219"
+>               assert '-anthropic_models/' not in name, f"Model name contains -anthropic_models/: {name}"
+E               AssertionError: Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E               assert '-anthropic_models/' not in 'vertex_ai-a...net@20250219'
+E                 
+E                 '-anthropic_models/' is contained here:
+E                   vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E                 ?          ++++++++++++++++++
+
+tests/agentsmith_fail2pass_4109.py:23: AssertionError
+____________________ test_vertex_ai_model_names_in_settings ____________________
+
+    def test_vertex_ai_model_names_in_settings():
+        """Check that all vertex_ai model names in model-settings.yml do not contain -anthropic_models/."""
+        settings_path = os.path.join(
+            os.path.dirname(__file__), '..', 'aider', 'resources', 'model-settings.yml'
+        )
+        with open(settings_path) as f:
+            data = yaml.safe_load(f)
+        errors = []
+        for entry in data:
+            name = entry.get('name', '')
+            if 'vertex_ai' in name:
+                if '-anthropic_models/' in name:
+                    errors.append(f"Model name contains -anthropic_models/: {name}")
+            weak = entry.get('weak_model_name', '')
+            if 'vertex_ai' in weak and '-anthropic_models/' in weak:
+                errors.append(f"Weak model name contains -anthropic_models/: {weak}")
+            editor = entry.get('editor_model_name', '')
+            if 'vertex_ai' in editor and '-anthropic_models/' in editor:
+                errors.append(f"Editor model name contains -anthropic_models/: {editor}")
+        # Before patch, errors list will be non-empty.
+        # After patch, errors should be empty.
+>       assert not errors, "\n".join(errors)
+E       AssertionError: Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E         Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-opus-4@20250514
+E         Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514
+E       assert not ['Model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-3-7-sonnet@20250219', 'Editor mo...50514', 'Editor model name contains -anthropic_models/: vertex_ai-anthropic_models/vertex_ai/claude-sonnet-4@20250514']
+
+tests/agentsmith_fail2pass_4109.py:47: AssertionError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_name_normalization
+FAILED tests/agentsmith_fail2pass_4109.py::test_vertex_ai_model_names_in_settings
+2 failed, 2 passed in 2.03s
+
+
+--- second test run (tail) ---
+....                                                                     [100%]
+4 passed in 2.01s

@@ -1,0 +1,139 @@
+# Issue #2204: fix(agent): Reasoning and Acting each consume one max_iters iteration since v2.0.5
+
+## Description
+
+Hello AgentScope maintainers, and thank you for your work on the project.
+
+I noticed a possible regression in the ReAct iteration accounting introduced in v2.0.5. In a tool-using workflow, the Reasoning pass and the subsequent Acting pass now each increment `state.cur_iter`. As a result, one complete Reasoning → Acting round consumes two iterations, although `ReActConfig.max_iters` is documented as the maximum number of "reasoning-acting iterations".
+
+This appears separate from #1805, which discusses how to exit gracefully after the limit is reached. This report concerns when the limit is reached.
+
+## Affected versions
+
+- v2.0.4.post1: not affected
+- v2.0.5: affected
+- current `main`: still affected as of commit `807390b`
+
+## Relevant control flow
+
+In v2.0.5, `_reply_impl` selects exactly one action on each pass through `while True`:
+
+```python
+next_action = self._next_action(final_msg)
+
+match next_action:
+    case Reasoning(...):
+        # perform one model call
+        ...
+    case Acting(...):
+        # execute the tool calls produced by the previous model call
+        ...
+
+self.state.cur_iter += 1
+```
+
+Because the increment is outside the `match`, the sequence is:
+
+```text
+pass 1: Reasoning (model produces a tool call) -> cur_iter += 1
+pass 2: Acting (execute that tool call)        -> cur_iter += 1
+```
+
+Relevant source:
+https://github.com/agentscope-ai/agentscope/blob/v2.0.5/src/agentscope/agent/_agent.py#L849-L973
+
+The comment immediately above the increment says "after each round of reasoning-acting", which does not seem to match the current state-machine control flow.
+
+In v2.0.4.post1, Reasoning and execution of the resulting tool calls happened within the same loop pass, followed by one increment:
+
+https://github.com/agentscope-ai/agentscope/blob/v2.0.4.post1/src/agentscope/agent/_agent.py#L741-L859
+
+## Minimal reproduction
+
+Configure an agent with `max_iters=2` and provide two model responses:
+
+1. The first response calls a simple allowed tool.
+2. The second response returns the final text answer after observing the tool result.
+
+Conceptually:
+
+```python
+model.set_responses([
+    ChatResponse(
+        content=[ToolCallBlock(
+            id="call_1",
+            name="mock_tool",
+            input='{"input": "x"}',
+        )],
+        is_last=True,
+    ),
+    ChatResponse(
+        content=[TextBlock(text="done")],
+        is_last=True,
+    ),
+])
+
+agent = Agent(
+    ...,
+    react_config=ReActConfig(max_iters=2),
+)
+result = await agent.reply(UserMsg(name="user", content="go"))
+```
+
+## Actual behavior
+
+The agent performs only one model call:
+
+```text
+Reasoning -> Acting -> EXCEED_MAX_ITERS
+```
+
+Observed state:
+
+```text
+finished_reason = exceed_max_iters
+model call count = 1
+cur_iter = 2
+```
+
+The second model response is never requested, so the agent cannot inspect the tool result and produce its final answer.
+
+## Expected behavior
+
+With `max_iters=2`, the agent should be able to perform two complete ReAct iterations, for example:
+
+```text
+Reasoning -> Acting -> Reasoning(final answer)
+```
+
+More generally, one Reasoning pass and its associated Acting pass should together consume one reasoning-acting iteration, consistent with the configuration name, documentation, and v2.0.4.post1 behavior.
+
+## Impact
+
+For workflows that repeatedly use tools, the effective number of complete ReAct rounds is approximately:
+
+```text
+ceil(max_iters / 2)
+```
+
+For example, the default `max_iters=20` allows only about 10 Reasoning → Acting rounds rather than 20. Short limits are especially visible: `max_iters=2` is insufficient for the common tool-call-then-final-answer flow shown above.
+
+The existing structured-output test also appears to encode the doubled count by expecting `cur_iter == 2` after one Reasoning → Acting sequence:
+
+https://github.com/agentscope-ai/agentscope/blob/v2.0.5/tests/agent_structured_output_test.py#L128-L143
+
+However, I could not find a regression test covering a normal tool call followed by another reasoning pass with a small `max_iters` value.
+
+## Possible fix and regression test
+
+One possible direction is to increment `cur_iter` once per logical Reasoning/Acting round rather than once per state-machine action. The exact placement may need to account for HITL parking/resumption and thinking-only responses.
+
+A regression test could configure `max_iters=2` and assert that this sequence completes successfully:
+
+```text
+model tool call -> tool result -> model final text
+```
+
+It would also be useful to assert the intended `cur_iter` value after a single completed Reasoning → Acting round.
+
+Please let me know if I have misunderstood the intended semantics of `max_iters`. I would be happy to provide any additional details. Thank you!

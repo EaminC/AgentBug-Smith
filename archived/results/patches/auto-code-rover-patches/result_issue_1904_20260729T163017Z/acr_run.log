@@ -1,0 +1,445 @@
+STDOUT:
+
+[2026-09-01 01:21:00] Total number of tasks: 1
+
+[2026-09-01 01:21:00] Total number of processes: 1
+
+[2026-09-01 01:21:00] Task group info: (number of groups: 1)
+
+[2026-09-01 01:21:00]   local: 1 tasks
+
+[2026-09-01 01:21:00] Running in single process mode.
+
+[2026-09-01 01:21:00] ============= Running task issue_1904_20260729T163017Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Mutable Default Config Objects in Agent.__init__ Cause Silent Cross-Instance State Sharing                                  │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Prerequisites                                                                                                                               │
+│                                                                                                                                                 │
+│ -  I have searched the existing (https://github.com/agentscope-ai/agentscope/issues) and                                                        │
+│ (https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.                                                         │
+│ -  This is a bug, not a usage question. (For questions, please use                                                                              │
+│ [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)                                           │
+│                                                                                                                                                 │
+│ ### Background / Description                                                                                                                    │
+│                                                                                                                                                 │
+│ ## Bug Description                                                                                                                              │
+│                                                                                                                                                 │
+│ `Agent.__init__` uses **mutable default arguments** for three configuration objects: `ModelConfig()`, `ContextConfig()`, and `ReActConfig()`.   │
+│ Python evaluates default parameter expressions **once at class-definition time**, not once per call. This means all `Agent` instances created   │
+│ without explicitly passing these config objects will **silently share the same singleton instances** of those configs.                          │
+│                                                                                                                                                 │
+│ **Affected file:** `src/agentscope/agent/_agent.py`, lines 102–115                                                                              │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # BUGGY — ModelConfig(), ContextConfig(), ReActConfig() are each instantiated ONCE                                                              │
+│ def __init__(                                                                                                                                   │
+│     self,                                                                                                                                       │
+│     name: str,                                                                                                                                  │
+│     system_prompt: str,                                                                                                                         │
+│     model: ChatModelBase,                                                                                                                       │
+│     ...                                                                                                                                         │
+│     model_config: ModelConfig = ModelConfig(),        # ← shared singleton!                                                                     │
+│     context_config: ContextConfig = ContextConfig(),  # ← shared singleton!                                                                     │
+│     react_config: ReActConfig = ReActConfig(),        # ← shared singleton!                                                                     │
+│ ) -> None:                                                                                                                                      │
+│     ...                                                                                                                                         │
+│     self.model_config = model_config      # agent1 and agent2 point to same object                                                              │
+│     self.context_config = context_config                                                                                                        │
+│     self.react_config = react_config                                                                                                            │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Impact:**                                                                                                                                     │
+│ - In multi-agent scenarios (AgentScope's primary use case), all agents that omit these arguments share the **same config instances by           │
+│ reference**.                                                                                                                                    │
+│ - Any code path that mutates a field on these objects (e.g., `agent.model_config.temperature = 0.5`) will **silently corrupt every other        │
+│ agent** sharing the same default.                                                                                                               │
+│ - The bug is completely silent — no error, no warning, and mutations are invisible to the developer.                                            │
+│ - Middleware hooks that modify config objects (a documented feature) will cause unintended cross-agent contamination with zero diagnostic       │
+│ signal.                                                                                                                                         │
+│ - The bug affects all three configs simultaneously: model behavior (`ModelConfig`), context window management (`ContextConfig`), and ReAct loop │
+│ control (`ReActConfig`).                                                                                                                        │
+│                                                                                                                                                 │
+│ **Expected behavior:** Each `Agent` instance must own an independent copy of the default configuration objects, so mutating one agent's config  │
+│ never affects another.                                                                                                                          │
+│                                                                                                                                                 │
+│ ### Error Messages                                                                                                                              │
+│                                                                                                                                                 │
+│ ```shell                                                                                                                                        │
+│ No exception is raised. The bug is completely silent — config mutations silently propagate across all Agent instances.                          │
+│                                                                                                                                                 │
+│ Behavioral symptom (verifiable with Python's `id()` or `is` operator):                                                                          │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ >>> agent1 = Agent("a1", "You are agent 1.", model)                                                                                             │
+│ >>> agent2 = Agent("a2", "You are agent 2.", model)                                                                                             │
+│                                                                                                                                                 │
+│ # All three configs are the SAME object in memory:                                                                                              │
+│ >>> agent1.model_config is agent2.model_config       # True  ← BUG                                                                              │
+│ >>> agent1.context_config is agent2.context_config   # True  ← BUG                                                                              │
+│ >>> agent1.react_config is agent2.react_config       # True  ← BUG                                                                              │
+│                                                                                                                                                 │
+│ # Mutate agent1 → agent2 is silently corrupted:                                                                                                 │
+│ >>> agent1.model_config.temperature = 0.9                                                                                                       │
+│ >>> agent2.model_config.temperature                  # 0.9  ← unexpected!                                                                       │
+│                                                                                                                                                 │
+│                                                                                                                                                 │
+│ No stack trace, no warning. The contamination is invisible to the developer.                                                                    │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Steps to Reproduce                                                                                                                          │
+│                                                                                                                                                 │
+│ **No LLM API key required** — this bug is fully reproducible without any model calls.                                                           │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # reproduce_bug.py                                                                                                                              │
+│ from unittest.mock import MagicMock                                                                                                             │
+│ from agentscope.agent import Agent                                                                                                              │
+│ from agentscope.agent._config import ModelConfig, ContextConfig, ReActConfig                                                                    │
+│                                                                                                                                                 │
+│ # Use a mock model — no API key needed                                                                                                          │
+│ mock_model = MagicMock()                                                                                                                        │
+│                                                                                                                                                 │
+│ # Step 1: Create two agents using DEFAULT configs (no explicit config passed)                                                                   │
+│ agent1 = Agent("assistant-1", "You are agent 1.", mock_model)                                                                                   │
+│ agent2 = Agent("assistant-2", "You are agent 2.", mock_model)                                                                                   │
+│                                                                                                                                                 │
+│ # Step 2: Check identity — are the config objects the same instance?                                                                            │
+│ print("=== Identity Checks ===")                                                                                                                │
+│ print(f"model_config shared:   {agent1.model_config is agent2.model_config}")     # True ← BUG                                                  │
+│ print(f"context_config shared: {agent1.context_config is agent2.context_config}") # True ← BUG                                                  │
+│ print(f"react_config shared:   {agent1.react_config is agent2.react_config}")     # True ← BUG                                                  │
+│                                                                                                                                                 │
+│ # Step 3: Mutate agent1's config — agent2 is silently corrupted                                                                                 │
+│ print("\n=== Cross-Contamination ===")                                                                                                          │
+│ agent1.model_config.temperature = 0.9                                                                                                           │
+│ print(f"agent1.model_config.temperature = 0.9")                                                                                                 │
+│ print(f"agent2.model_config.temperature = {agent2.model_config.temperature}")  # 0.9 ← unexpected!                                              │
+│                                                                                                                                                 │
+│ agent1.react_config.max_iters = 3                                                                                                               │
+│ print(f"agent1.react_config.max_iters = 3")                                                                                                     │
+│ print(f"agent2.react_config.max_iters = {agent2.react_config.max_iters}")  # 3 ← unexpected!                                                    │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Expected output:**                                                                                                                            │
+│ ```                                                                                                                                             │
+│ === Identity Checks ===                                                                                                                         │
+│ model_config shared:   False                                                                                                                    │
+│ context_config shared: False                                                                                                                    │
+│ react_config shared:   False                                                                                                                    │
+│                                                                                                                                                 │
+│ === Cross-Contamination ===                                                                                                                     │
+│ agent1.model_config.temperature = 0.9                                                                                                           │
+│ agent2.model_config.temperature = <default value>                                                                                               │
+│ agent1.react_config.max_iters = 3                                                                                                               │
+│ agent2.react_config.max_iters = <default value>                                                                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Actual output:**                                                                                                                              │
+│ ```                                                                                                                                             │
+│ === Identity Checks ===                                                                                                                         │
+│ model_config shared:   True                                                                                                                     │
+│ context_config shared: True                                                                                                                     │
+│ react_config shared:   True                                                                                                                     │
+│                                                                                                                                                 │
+│ === Cross-Contamination ===                                                                                                                     │
+│ agent1.model_config.temperature = 0.9                                                                                                           │
+│ agent2.model_config.temperature = 0.9    ← CONTAMINATED                                                                                         │
+│ agent1.react_config.max_iters = 3                                                                                                               │
+│ agent2.react_config.max_iters = 3        ← CONTAMINATED                                                                                         │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ---                                                                                                                                             │
+│                                                                                                                                                 │
+│ **Suggested Fix** (standard Python idiom for mutable defaults):                                                                                 │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ # In src/agentscope/agent/_agent.py                                                                                                             │
+│                                                                                                                                                 │
+│ def __init__(                                                                                                                                   │
+│     self,                                                                                                                                       │
+│     name: str,                                                                                                                                  │
+│     system_prompt: str,                                                                                                                         │
+│     model: ChatModelBase,                                                                                                                       │
+│     toolkit: Toolkit | None = None,                                                                                                             │
+│     middlewares: list[MiddlewareBase] | None = None,                                                                                            │
+│     state: AgentState | None = None,                                                                                                            │
+│     offloader: Offloader | None = None,                                                                                                         │
+│     model_config: ModelConfig | None = None,        # ← None sentinel                                                                           │
+│     context_config: ContextConfig | None = None,    # ← None sentinel                                                                           │
+│     react_config: ReActConfig | None = None,        # ← None sentinel                                                                           │
+│ ) -> None:                                                                                                                                      │
+│     ...                                                                                                                                         │
+│     self.model_config = model_config if model_config is not None else ModelConfig()                                                             │
+│     self.context_config = context_config if context_config is not None else ContextConfig()                                                     │
+│     self.react_config = react_config if react_config is not None else ReActConfig()                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ This ensures each `Agent` instance gets its own independent config object.                                                                      │
+│                                                                                                                                                 │
+│ ### Environment                                                                                                                                 │
+│                                                                                                                                                 │
+│ - AgentScope Version: v2.0.3 (latest as of 2026-06-20; bug exists in entire v2.x series — introduced when `ModelConfig`, `ContextConfig`,       │
+│ `ReActConfig` were added as typed default parameters)                                                                                           │
+│ - Python Version: 3.11+ (required by project; bug is a language-level anti-pattern affecting all Python versions)                               │
+│ - OS: All platforms (Linux / macOS / Windows — bug is platform-independent)                                                                     │
+│ - Affected file: `src/agentscope/agent/_agent.py`, lines 112–114                                                                                │
+│ - Severity: High — silent data corruption in AgentScope's primary multi-agent use case                                                          │
+│ - Related: This is distinct from #1508 (path traversal in file tools); this bug is in the core `Agent` class constructor and affects all users  │
+│ who create multiple agents in the same Python process.                                                                                          │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1796, output_tokens=13, cost=0.000277
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1974, output_tokens=553, cost=0.000628
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      import sys                                                    │
+│      import traceback                                              │
+│      try:                                                          │
+│          from unittest.mock import MagicMock                       │
+│          from agentscope.agent import Agent                        │
+│      except ImportError as e:                                      │
+│          print(f"ERROR: Could not import Agent class: {e}",        │
+│  file=sys.stderr)                                                  │
+│          sys.exit(1)                                               │
+│                                                                    │
+│      # Use a mock model — no API key needed                        │
+│      mock_model = MagicMock()                                      │
+│                                                                    │
+│      # Create two agents using DEFAULT configs (no explicit confi  │
+│  passed)                                                           │
+│      agent1 = Agent("assistant-1", "You are agent 1.", mock_model  │
+│      agent2 = Agent("assistant-2", "You are agent 2.", mock_model  │
+│                                                                    │
+│      try:                                                          │
+│          # Assert that configs are NOT shared instances            │
+│          assert agent1.model_config is not agent2.model_config, \  │
+│              "Bug detected: model_config is shared across Agent    │
+│  instances!"                                                       │
+│          assert agent1.context_config is not agent2.context_confi  │
+│  \                                                                 │
+│              "Bug detected: context_config is shared across Agent  │
+│  instances!"                                                       │
+│          assert agent1.react_config is not agent2.react_config, \  │
+│              "Bug detected: react_config is shared across Agent    │
+│  instances!"                                                       │
+│                                                                    │
+│          # Further, test mutation contamination: changes to one    │
+│  should not reflect on the other                                   │
+│          orig_temp = agent2.model_config.temperature               │
+│          agent1.model_config.temperature = orig_temp + 1.0  #      │
+│  mutate agent1                                                     │
+│          assert agent2.model_config.temperature == orig_temp, \    │
+│              "Bug detected: mutation to                            │
+│  agent1.model_config.temperature affects agent2!"                  │
+│                                                                    │
+│          orig_max_iters = agent2.react_config.max_iters            │
+│          agent1.react_config.max_iters = orig_max_iters + 5        │
+│          assert agent2.react_config.max_iters == orig_max_iters,   │
+│              "Bug detected: mutation to                            │
+│  agent1.react_config.max_iters affects agent2!"                    │
+│                                                                    │
+│      except AssertionError as e:                                   │
+│          print_stacktrace(e)                                       │
+│          sys.exit(1)                                               │
+│                                                                    │
+│      # If no assertion failed, print success and exit 0            │
+│      print("No shared default config objects detected. Bug appear  │
+│  fixed.")                                                          │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 01:21:12] Task issue_1904_20260729T163017Z failed with exception: .
+
+[2026-09-01 01:21:12] No patch generated. You can try running ACR again.
+
+[2026-09-01 01:21:12] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 01:21:00.487 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1904_20260729T163017Z =============
+2026-09-01 01:21:00.657 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 01:21:03.797 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1796, output_tokens=13, cost=0.000277
+2026-09-01 01:21:12.587 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1974, output_tokens=553, cost=0.000628
+2026-09-01 01:21:12.703 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x7cd47d720d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x7cd4734d1100>]}
+    └ <function run_task_groups at 0x7cd47350a3e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x7cd4734d1100>]
+    └ <function run_tasks_serial at 0x7cd47350a480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x7cd4734d1100>
+    └ <function run_task_in_subprocess at 0x7cd47350a660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x7cd4734d1100>
+    │        │      └ <function run_raw_task at 0x7cd47350a700>
+    │        └ <function ProcessPoolExecutor.submit at 0x7cd47d370ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7cd4743a5760>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x7cd47d370860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7cd4743a5760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x7cd47d3709a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7cd4743a5760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x7cd47d370a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x7cd4743a5760>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x7cd47d5542c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x7cd47d5b8fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+    │    └ <function Popen._launch at 0x7cd4734a8360>
+    └ <multiprocessing.popen_fork.Popen object at 0x7cd4734d1cd0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x7cd47d554cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x7cd47d554220>
+    └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x7cd4734d1ac0>, <multiprocessing.queues.SimpleQueue object at 0x7cd4734d18...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+    │    └ <function _process_worker at 0x7cd47d36bc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2705829 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x7cd473a0d7f0>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x7cd4734d20c0>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x7cd473a0d7f0>
+        │         └ <function run_raw_task at 0x7cd47350a700>
+        └ <concurrent.futures.process._CallItem object at 0x7cd473a0d7f0>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1904_20260729T163017Z/acr_output/issue_1904_20260729T163017Z_2026-09-01_01-21-00'
+             │            │    └ <function RawLocalTask.to_task at 0x7cd47350a020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x7cd4734d20c0>
+             └ <function do_inference at 0x7cd47350a8e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x7cd4735dc860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x7cd473e6b880>
+       │                 │         │            └ PlainTask(commit_hash='fd1c2cd2acbf261d55823bb636b5295507dfce0d', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1904', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x7cd4734d2e70>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1904_20260729T163017Z/acr_output/issue_1904_20260729T163017Z_2026-09-01...
+       └ <function _run_one_task at 0x7cd4735ddb20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x7cd473e68220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x7cd473834c20>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x7cd473e6bce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x7cd473834c20>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x7cd473e6a480>
+                   │    └ PlainTask(commit_hash='fd1c2cd2acbf261d55823bb636b5295507dfce0d', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1904', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x7cd473834c20>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 01:21:12.707 | INFO     | app.log:log_and_always_print:229 - Task issue_1904_20260729T163017Z failed with exception: .
+2026-09-01 01:21:12.708 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

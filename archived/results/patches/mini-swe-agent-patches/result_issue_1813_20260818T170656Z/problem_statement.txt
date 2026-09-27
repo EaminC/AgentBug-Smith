@@ -1,0 +1,60 @@
+# Issue #1813: [FEATURE]  Expose MCP Server `instructions` from `InitializeResult` on `MCPClient`
+
+### Problem Statement
+
+`MCPClient._start_session()` calls `session.initialize()` but discards the `InitializeResult`. This means Host applications have no
+ way to access the server's `instructions` field — a standard MCP feature for providing LLMs with contextual knowledge about tool interdependencies and operational constraints.
+
+```python
+# mcp_client.py line ~504
+await session.initialize()  # InitializeResult (including instructions) is discarded
+```
+
+MCP clients like Claude Code, VSCode, and Goose inject server instructions into the LLM's system prompt. Strands-based Host applications cannot do this because the data is inaccessible.
+
+### Proposed Solution
+Store `InitializeResult.instructions` on the `MCPClient` instance:
+
+```python
+# In MCPClient._start_session():
+result = await session.initialize()
+self.server_instructions = result.instructions or ""
+```
+
+Host applications can then access it:
+
+```python
+with mcp_client:
+    instructions = mcp_client.server_instructions
+    agent = Agent(
+        system_prompt=f"...\n{instructions}",
+        tools=mcp_client.list_tools_sync(),
+    )
+```
+
+### Use Case
+
+I'm building an Agent (Host) that connects to an MCP Server with detailed workflow instructions (multi-phase slide generation). The server returns these via the standard `instructions` field in `InitializeResult`, but my Agent cannot access them through `MCPClient`.
+
+Without this, I have to either:
+- Hardcode the MCP Server's instructions in the Agent's system prompt (breaks DRY, drifts)
+- Make a separate HTTP call to the MCP Server just to get instructions (wasteful)
+
+Per the MCP spec, the Host is responsible for deciding how to use instructions — but the Client (MCPClient) needs to make them accessible first.
+
+References:
+- MCP spec: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+- MCP blog on server instructions: https://blog.modelcontextprotocol.io/posts/2025-11-03-using-server-instructions/
+
+
+
+### Alternatives Solutions
+
+- Host could make a separate `initialize` HTTP request to get instructions, but this creates a redundant connection
+- Instructions could be duplicated in every tool description, but this wastes context window and violates MCP best practices
+
+
+
+### Additional Context
+
+The fix is ~3 lines: store the result of `session.initialize()` and expose `instructions` as a public attribute. The SDK's responsibility is only to　make the data accessible — how/whether to inject into the system prompt remains the Host's decision.

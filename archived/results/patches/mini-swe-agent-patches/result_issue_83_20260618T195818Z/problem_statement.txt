@@ -1,0 +1,43 @@
+# Issue #83: [Bug]: Content is always None when MCP server returns an 'error' to the client
+
+## The bug
+
+In [mcp client](https://github.com/dapr/dapr-agents/blob/main/dapr_agents/tool/mcp/client.py#L358-L366) the error handling from the `_process_tool_result()` always raises `ToolError` even though `content` _could_ hold a result output from the MCP server that we would like to re-iterate on:
+
+```python
+        # Handle error result
+        if hasattr(result, 'isError') and result.isError:
+            error_message = "Unknown error"
+            if hasattr(result, 'content') and result.content:
+                for content in result.content:
+                    if hasattr(content, 'text'):
+                        error_message = content.text
+                        break
+            raise ToolError(f"MCP tool error: {error_message}")
+```
+
+This means that the return of `content` in [toolcall response](https://github.com/dapr/dapr-agents/blob/main/dapr_agents/agent/patterns/toolcall/base.py#L106-L115) always yields `None` when `response.get_content()` is called and the mcp client threw a `ToolError`.
+
+The solution is to not raise the `ToolError` if `hasattr(result, 'content') && hasattr(content, 'text')` evaluates true as we need this `result.content.text`, even if it is an error from the MCP server, to feed it back to the model for next iteration:
+
+```python
+        # Extract text content from result
+        if hasattr(result, 'content') and result.content:
+            text_contents = []
+            for content in result.content:
+                if hasattr(content, 'text'):
+                    text_contents.append(content.text)
+            
+            # Return single string if only one content item
+            logger.info(f"Tool result content: {text_contents}")
+            if len(text_contents) == 1:
+                return text_contents[0]
+            elif text_contents:
+                return text_contents
+
+        if hasattr(result, 'isError') and result.isError:
+            # Only triggered if the above didn't return with text_contents
+            raise ToolError(f"MCP tool error: {result}")
+```
+
+If we don't return the errors that may be thrown from the MCP server into `result.content.text`, the model will not get to learn from the output of the MCP server and thus get stuck in a failure loop.

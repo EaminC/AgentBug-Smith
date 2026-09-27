@@ -1,0 +1,86 @@
+# Issue #1900: [Bug]: ToolResponse corrupts padded base64 chunks when merging streaming DataBlocks
+
+### Prerequisites
+
+- [x] I have searched the existing [issues](https://github.com/agentscope-ai/agentscope/issues) and [discussions](https://github.com/agentscope-ai/agentscope/discussions), and this is not a duplicate.
+- [x] This is a bug, not a usage question. (For questions, please use [Discussions](https://github.com/agentscope-ai/agentscope/discussions/new?category=general) instead.)
+
+### Background / Description
+
+`ToolResponse.append_chunk` corrupts streaming binary outputs when merging multiple `DataBlock` chunks with the same block id.
+
+Currently, when both blocks use `Base64Source`, AgentScope merges them by directly concatenating the base64 strings. This works only when the strings happen to have no padding. When each streamed chunk is independently base64-encoded and contains padding, the final merged payload becomes invalid or decodes to incomplete bytes.
+
+Expected behavior: when both chunks contain valid base64 data, AgentScope should decode each chunk, concatenate the bytes, and re-encode the merged bytes as one valid base64 string.
+
+I searched existing issues/discussions and did not find a duplicate report for this `ToolResponse` / `DataBlock` / base64 chunk merging issue.
+
+### Error Messages
+
+```shell
+The merged base64 string becomes:
+
+aGVsbG8=d29ybGQ=
+
+Decoding this value recovers only the first padded segment:
+
+b'hello'
+
+Expected decoded bytes:
+
+b'helloworld'
+```
+
+### Steps to Reproduce
+
+1. Run the following code:
+
+```python
+import base64
+
+from agentscope.message import Base64Source, DataBlock
+from agentscope.tool import ToolChunk, ToolResponse
+
+response = ToolResponse()
+
+response.append_chunk(
+    ToolChunk(
+        content=[
+            DataBlock(
+                id="image",
+                source=Base64Source(
+                    data=base64.b64encode(b"hello").decode("ascii"),
+                    media_type="image/png",
+                ),
+            ),
+        ],
+    ),
+)
+
+response.append_chunk(
+    ToolChunk(
+        content=[
+            DataBlock(
+                id="image",
+                source=Base64Source(
+                    data=base64.b64encode(b"world").decode("ascii"),
+                    media_type="image/png",
+                ),
+            ),
+        ],
+    ),
+)
+
+merged = response.content[0].source.data
+print(merged)
+print(base64.b64decode(merged))
+```
+
+2. Observe that the merged base64 string is produced by direct string concatenation.
+3. The decoded payload is incomplete and does not contain both chunks.
+
+### Environment
+
+- AgentScope Version: 2.0.3 / current main branch
+- Python Version: 3.13.3
+- OS: macOS

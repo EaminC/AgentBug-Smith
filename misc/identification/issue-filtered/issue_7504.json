@@ -1,0 +1,27 @@
+{
+  "number": 7504,
+  "title": "qwen2.5-Omni support",
+  "url": "https://github.com/hiyouga/LLaMA-Factory/issues/7504",
+  "state": "closed",
+  "created_at": "2025-03-27T06:29:29Z",
+  "closed_at": "2025-03-31T12:39:36Z",
+  "body": "### Reminder\n\n- [x] I have read the above rules and searched the existing issues.\n\n### Description\n\nany plan of qwen2.5-Omni support\n\n### Pull Request\n\n_No response_",
+  "labels": [
+    "solved"
+  ],
+  "linked_prs": [
+    {
+      "number": 7537,
+      "state": "closed",
+      "title": "[model] Add Qwen2.5-Omni",
+      "url": "https://github.com/hiyouga/LLaMA-Factory/pull/7537",
+      "merged": true,
+      "base_branch": "main",
+      "body": "# What does this PR do?\r\nThis PR aims to support the fine-tuning/post-training of the `Thinker` part of the latest Qwen2.5-Omni model.\r\n\r\n### Env Info\r\n\r\n``` shell\r\n# prepare transformers with the following cmd\r\npip install -U transformers\r\n```\r\n\r\n### TODO List\r\n\r\n- [x] support audio-text2text\r\n- [x] support video-text2text\r\n- [x] support image-text2text\r\n- [x] support audio-video-text2text\r\n- [ ] more tests are needed.\r\n\r\nThese tests were done with `lora` and `demo` data setups with freezing `audio tower` & `vision tower`.\r\n\r\n### Test recipes\r\n\r\n```yaml\r\n### model\r\nmodel_name_or_path: Qwen/Qwen2.5-Omni-7B\r\nimage_max_pixels: 262144\r\nvideo_max_pixels: 16384\r\ntrust_remote_code: true\r\n\r\n### method\r\nstage: sft\r\ndo_train: true\r\nfinetuning_type: lora\r\nlora_rank: 8\r\nlora_target: all\r\n\r\n### dataset\r\ndataset: identity, mllm_audio_demo, mllm_demo \r\ntemplate: qwen2_omni\r\ncutoff_len: 3072\r\nmax_samples: 1000\r\noverwrite_cache: true\r\npreprocessing_num_workers: 1\r\ndataloader_num_workers: 1\r\n\r\n### output\r\noutput_dir: saves/qwen2_omni-7b/lora/sft\r\nlogging_steps: 1\r\nsave_steps: 500\r\nplot_loss: true\r\noverwrite_output_dir: true\r\nsave_only_model: false\r\n\r\n### train\r\nper_device_train_batch_size: 1\r\ngradient_accumulation_steps: 4\r\nfreeze_vision_tower: true\r\nlearning_rate: 1.0e-4\r\nnum_train_epochs: 5.0\r\nlr_scheduler_type: cosine\r\nwarmup_ratio: 0.1\r\nfp16: true\r\nddp_timeout: 180000000\r\nresume_from_checkpoint: null\r\n```\r\n\r\n### Checkpoint Merging\r\nCurrently, we have updated the scripts for merging lora weights of `thinker` model or merging full weights of `thinker` model.\r\nUsage below:\r\n``` shell\r\n# for lora\r\npython3 ./scripts/qwen_omni_merge.py merge_lora \\\r\n  --base_model_path=\"./Qwen2_5Omni\" \\\r\n  --lora_checkpoint_path=\"./lora_checkpoint\" \\\r\n  --save_path=\"./target_dir\"\r\n\r\n# for full ft\r\npython3 ./scripts/qwen_omni_merge.py save_full \\\r\n  --base_model_path=\"./Qwen2_5Omni\" \\\r\n  --saved_thinker_path=\"./saved_thinker\" \\\r\n  --save_path=\"./target_dir\"\r\n```\r\n\r\n\r\nThen try the official inference pipeline:\r\n``` python\r\nimport soundfile as sf\r\nfrom io import BytesIO\r\nfrom urllib.request import urlopen\r\nfrom qwen_vl_utils import process_vision_info\r\nfrom transformers import Qwen2_5OmniProcessor, Qwen2_5OmniModel\r\n\r\nmodel_path = \"./merged_model_checkpoint\"\r\n\r\nmodel = Qwen2_5OmniModel.from_pretrained(model_path, torch_dtype=\"auto\", device_map=\"auto\") \r\nprocessor = Qwen2_5OmniProcessor.from_pretrained(model_path)\r\nfrom qwen_omni_utils import process_mm_info\r\n\r\nconversation1 = [\r\n        {'role': 'system', 'content': 'You are Qwen, a virtual human developed by the Qwen Team, Alibaba Group, capable of perceiving auditory and visual inputs, as well as generating text and speech.'},\r\n        {\"role\": \"user\", \"content\": [\r\n            {\"type\": \"text\", \"text\": \"Who are you?\"},\r\n        ]},\r\n]\r\nconversations = [conversation1]\r\n\r\ntext = processor.apply_chat_template(conversations, add_generation_prompt=True, tokenize=False)\r\naudios, images, videos = process_mm_info(conversations, use_audio_in_video=False)\r\ninputs = processor(text=text, audios=audios, images=images, videos=videos, return_tensors=\"pt\", padding=True, use_audio_in_video=False)\r\ninputs = inputs.to(model.device).to(model.dtype)\r\ntext_ids, audio = model.generate(**inputs, use_audio_in_video=False)\r\ntext = processor.batch_decode(text_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)\r\nprint(text)\r\nsf.write(\r\n    \"output.wav\",\r\n    audio.reshape(-1).detach().cpu().numpy(),\r\n    samplerate=24000,\r\n)\r\n```\r\nFixes #7504 (issue)\r\n### For Finetuning with data `video + audio`\r\nRefer to #7638 for data preparation and turn `use_audio_in_video` to `true`\r\n\r\n## For vllm serve\r\n> [!Warning]  \r\n> After loading the merged model using vllm, you need to manually change the architectures field in the model's config file from `Qwen2_5OmniForConditionalGeneration` to `Qwen2_5OmniModel`. After this change, vllm can load it automatically.\r\n\r\n\r\n## Before submitting\r\n\r\n- [x] Did you read the [contributor guideline](https://github.com/hiyouga/LLaMA-Factory/blob/main/.github/CONTRIBUTING.md)?\r\n- [ ] Did you write any new necessary tests?\r\n"
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes, this is an agent issue.  \nExplanation: The issue explicitly references support for a specific LLM model (\"qwen2.5-Omni\"), which falls under the \"Unsupported models\" sub-category of \"Incompatibility with LLM providers.\""
+  }
+}

@@ -1,0 +1,294 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0, xdist-3.8.0, timeout-2.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/agentsmith_fail2pass_1702.py::TestFunctionToolPlainStringReturn::test_sync_function_returning_plain_string FAILED [100%]
+
+=================================== FAILURES ===================================
+_ TestFunctionToolPlainStringReturn.test_sync_function_returning_plain_string __
+
+self = <agentscope.tool._toolkit.Toolkit object at 0x7029b6c1ed50>
+tool_call = ToolCallBlock(type='tool_call', id='test_weather', name='get_weather', input='{"location": "Chengdu"}', state=<ToolCallState.PENDING: 'pending'>, suggested_rules=[])
+state = AgentState(session_id='88822311c4e94bc9931dc691c5b39eb7', summary='', context=[], reply_id='0fcd428100234ad8a812fe60b1..._cache_files=100, max_cache_bytes=25000, read_file_cache=[], activated_groups=[]), tasks_context=TaskContext(tasks=[]))
+
+    async def call_tool(
+        self,
+        tool_call: ToolCallBlock,
+        state: AgentState,
+    ) -> AsyncGenerator[ToolChunk | ToolResponse, None]:
+        """Call the tool function, return the incremental tool result in
+        a ToolChunk stream, and finally return the complete tool result in a
+        ToolResponse object. **Note the accumulation process occurs within this
+        function, so the tool functions only need to return/yield the
+        ToolChunk objects in an incremental manner.**
+    
+        Args:
+            tool_call (`ToolCallBlock`):
+                A tool call block.
+            state (`AgentState`):
+                The current agent state, used to state injection.
+    
+        Yields:
+            `ToolChunk | ToolResponse`:
+                The incremental tool result in a ToolChunk stream, and finally
+                the complete tool result in a ToolResponse object.
+        """
+        tool_response = ToolResponse(id=tool_call.id)
+    
+        # Check
+        available_tools = await self._get_available_tools(
+            state.tool_context.activated_groups,
+        )
+    
+        if tool_call.name not in available_tools:
+            all_tools = await self._get_available_tools(
+                groups=[_.name for _ in self.tool_groups],
+            )
+            # Not activate
+            if tool_call.name in all_tools:
+                group_name = all_tools[tool_call.name].group
+                chunk = ToolChunk(
+                    content=[
+                        TextBlock(
+                            text=(
+                                "ToolGroupInactiveError: The tool "
+                                f"'{tool_call.name}' in group '{group_name}' "
+                                "is currently inactive. You should first "
+                                "activate the group by calling the "
+                                f"'{self.builtin_meta_tool.tool.name}' tool."
+                            ),
+                        ),
+                    ],
+                    state=ToolResultState.ERROR,
+                )
+                yield chunk
+                yield tool_response.append_chunk(chunk)
+                return
+    
+            # Not exist
+            chunk = ToolChunk(
+                content=[
+                    TextBlock(
+                        text=f"ToolNotFoundError: The tool named "
+                        f"'{tool_call.name}' doesn't exist.",
+                    ),
+                ],
+                state=ToolResultState.ERROR,
+            )
+            yield chunk
+            yield tool_response.append_chunk(chunk)
+            return
+    
+        # Obtain the tool function
+        tool_func = available_tools[tool_call.name].tool
+    
+        # Async function
+        try:
+            # Prepare keyword arguments
+            kwargs = _json_loads_with_repair(tool_call.input)
+    
+            # State injection
+            if (
+                tool_func.is_state_injected
+                and not tool_func.is_mcp
+                and not tool_func.is_external_tool
+            ):
+                kwargs["_agent_state"] = state
+    
+            if inspect.iscoroutinefunction(tool_func.__call__):
+                res = await tool_func(**kwargs)
+            else:
+                # When `tool_func.original_func` is Async generator function or
+                # Sync function
+                res = tool_func(**kwargs)
+    
+            if isinstance(res, ToolChunk):
+                yield res
+                tool_response.append_chunk(res)
+    
+            # If return an async generator
+            elif isinstance(res, AsyncGenerator):
+                async for chunk in res:
+                    yield chunk
+                    tool_response.append_chunk(chunk)
+    
+            # If return a sync generator
+            elif isinstance(res, Generator):
+                for chunk in res:
+                    yield chunk
+                    tool_response.append_chunk(chunk)
+    
+            else:
+>               raise DeveloperOrientedException(
+                    "The tool function must return a ToolChunk object, or an "
+                    "AsyncGenerator/Generator of ToolChunk objects, "
+                    f"but got {type(res)}.",
+                )
+E               agentscope.exception._base.DeveloperOrientedException: The tool function must return a ToolChunk object, or an AsyncGenerator/Generator of ToolChunk objects, but got <class 'str'>.
+
+src/agentscope/tool/_toolkit.py:333: DeveloperOrientedException
+
+During handling of the above exception, another exception occurred:
+
+self = <tests.agentsmith_fail2pass_1702.TestFunctionToolPlainStringReturn testMethod=test_sync_function_returning_plain_string>
+
+    async def test_sync_function_returning_plain_string(self) -> None:
+        """Test wrapping a sync function that returns a plain string."""
+    
+        def get_weather(location: str) -> str:
+            """Get weather information.
+    
+            Args:
+                location: The location to get weather for
+            """
+            return f"The weather in {location} is sunny."
+    
+        toolkit = Toolkit(
+            tools=[FunctionTool(get_weather)],
+        )
+    
+        state = AgentState()
+        tool_call = ToolCallBlock(
+            id="test_weather",
+            name="get_weather",
+            input=json.dumps({"location": "Chengdu"}),
+        )
+    
+        chunks = []
+        response = None
+>       async for result in toolkit.call_tool(tool_call, state):
+
+tests/agentsmith_fail2pass_1702.py:38: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <agentscope.tool._toolkit.Toolkit object at 0x7029b6c1ed50>
+tool_call = ToolCallBlock(type='tool_call', id='test_weather', name='get_weather', input='{"location": "Chengdu"}', state=<ToolCallState.PENDING: 'pending'>, suggested_rules=[])
+state = AgentState(session_id='88822311c4e94bc9931dc691c5b39eb7', summary='', context=[], reply_id='0fcd428100234ad8a812fe60b1..._cache_files=100, max_cache_bytes=25000, read_file_cache=[], activated_groups=[]), tasks_context=TaskContext(tasks=[]))
+
+    async def call_tool(
+        self,
+        tool_call: ToolCallBlock,
+        state: AgentState,
+    ) -> AsyncGenerator[ToolChunk | ToolResponse, None]:
+        """Call the tool function, return the incremental tool result in
+        a ToolChunk stream, and finally return the complete tool result in a
+        ToolResponse object. **Note the accumulation process occurs within this
+        function, so the tool functions only need to return/yield the
+        ToolChunk objects in an incremental manner.**
+    
+        Args:
+            tool_call (`ToolCallBlock`):
+                A tool call block.
+            state (`AgentState`):
+                The current agent state, used to state injection.
+    
+        Yields:
+            `ToolChunk | ToolResponse`:
+                The incremental tool result in a ToolChunk stream, and finally
+                the complete tool result in a ToolResponse object.
+        """
+        tool_response = ToolResponse(id=tool_call.id)
+    
+        # Check
+        available_tools = await self._get_available_tools(
+            state.tool_context.activated_groups,
+        )
+    
+        if tool_call.name not in available_tools:
+            all_tools = await self._get_available_tools(
+                groups=[_.name for _ in self.tool_groups],
+            )
+            # Not activate
+            if tool_call.name in all_tools:
+                group_name = all_tools[tool_call.name].group
+                chunk = ToolChunk(
+                    content=[
+                        TextBlock(
+                            text=(
+                                "ToolGroupInactiveError: The tool "
+                                f"'{tool_call.name}' in group '{group_name}' "
+                                "is currently inactive. You should first "
+                                "activate the group by calling the "
+                                f"'{self.builtin_meta_tool.tool.name}' tool."
+                            ),
+                        ),
+                    ],
+                    state=ToolResultState.ERROR,
+                )
+                yield chunk
+                yield tool_response.append_chunk(chunk)
+                return
+    
+            # Not exist
+            chunk = ToolChunk(
+                content=[
+                    TextBlock(
+                        text=f"ToolNotFoundError: The tool named "
+                        f"'{tool_call.name}' doesn't exist.",
+                    ),
+                ],
+                state=ToolResultState.ERROR,
+            )
+            yield chunk
+            yield tool_response.append_chunk(chunk)
+            return
+    
+        # Obtain the tool function
+        tool_func = available_tools[tool_call.name].tool
+    
+        # Async function
+        try:
+            # Prepare keyword arguments
+            kwargs = _json_loads_with_repair(tool_call.input)
+    
+            # State injection
+            if (
+                tool_func.is_state_injected
+                and not tool_func.is_mcp
+                and not tool_func.is_external_tool
+            ):
+                kwargs["_agent_state"] = state
+    
+            if inspect.iscoroutinefunction(tool_func.__call__):
+                res = await tool_func(**kwargs)
+            else:
+                # When `tool_func.original_func` is Async generator function or
+                # Sync function
+                res = tool_func(**kwargs)
+    
+            if isinstance(res, ToolChunk):
+                yield res
+                tool_response.append_chunk(res)
+    
+            # If return an async generator
+            elif isinstance(res, AsyncGenerator):
+                async for chunk in res:
+                    yield chunk
+                    tool_response.append_chunk(chunk)
+    
+            # If return a sync generator
+            elif isinstance(res, Generator):
+                for chunk in res:
+                    yield chunk
+                    tool_response.append_chunk(chunk)
+    
+            else:
+                raise DeveloperOrientedException(
+                    "The tool function must return a ToolChunk object, or an "
+                    "AsyncGenerator/Generator of ToolChunk objects, "
+                    f"but got {type(res)}.",
+                )
+    
+>       except mcp.shared.exceptions.McpError as e:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: module 'mcp.shared.exceptions' has no attribute 'McpError'. Did you mean: 'MCPError'?
+
+src/agentscope/tool/_toolkit.py:339: AttributeError
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_1702.py::TestFunctionToolPlainStringReturn::test_sync_function_returning_plain_string
+============================== 1 failed in 1.32s ===============================

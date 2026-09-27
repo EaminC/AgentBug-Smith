@@ -1,0 +1,154 @@
+# Issue #3266: [BUG] KeyError in Mem0Storage when using local_mem0_config (OSS Memory) and missing params
+
+### Description
+
+When using Mem0 with CrewAI via the local_mem0_config (OSS Memory) pathway, a KeyError is thrown in Mem0Storage's search method if the params dictionary does not contain certain keys (e.g. metadata, output_format, version). This is caused by the following code block:
+
+```
+if isinstance(self.memory, Memory):
+    del params["metadata"], params["version"], params['output_format']
+    if params.get("run_id"):
+        del params["run_id"]
+If any of those fields are missing from params, Python raises a KeyError. This is a bug because the code should check existence before deletion to be robust.
+```
+
+My Crew Code:
+
+```
+@crew
+def crew(self) -> Crew:
+    return Crew(
+        agents=self.agents,
+        tasks=self.tasks,
+        llm=get_llm_model("llama4-scout-17b"),
+        process=Process.sequential,  # Purely sequential for now
+        verbose=True,
+        memory=True,
+        memory_config={
+            "provider": "mem0",
+            "config": {
+                "user_id": "john",
+                "local_mem0_config": {
+                    "vector_store": {
+                        "provider": "pgvector",
+                        "config": {"dbname":"memory","host": "localhost","user":"memory","password":"memory", "port": 5432}
+                    },
+                    "llm": {
+                        "provider": "vllm",
+                        "config": {"vllm_base_url": "http://localhost/v1","temperature":0.1,"api_key":"EMPTY", "model": "llama4-scout-17b"}
+                    },
+                    "embedder": {
+                        "provider": "huggingface",
+                        "config": { "model": "sentence-transformers/all-MiniLM-L6-v2"}
+                    }
+                },
+                "infer": True
+            },
+            "user_memory": {}
+        }
+    )
+```
+
+
+### Steps to Reproduce
+
+- Run your workflow, e.g. with Research().crew().kickoff(inputs={"topic": data,"user_id":"test"}).
+- Observe the error.
+
+### Expected behavior
+
+The workflow should run without errors, even if some parameters (such as "metadata", "output_format", "version") are missing from the params dictionary.
+Memory operations should proceed without raising a KeyError.
+
+### Screenshots/Code snippets
+
+```
+@crew
+def crew(self) -> Crew:
+    return Crew(
+        agents=self.agents,
+        tasks=self.tasks,
+        llm=get_llm_model("llama4-scout-17b"),
+        process=Process.sequential,  # Purely sequential for now
+        verbose=True,
+        memory=True,
+        memory_config={
+            "provider": "mem0",
+            "config": {
+                "user_id": "john",
+                "local_mem0_config": {
+                    "vector_store": {
+                        "provider": "pgvector",
+                        "config": {"dbname":"memory","host": "localhost","user":"memory","password":"memory", "port": 5432}
+                    },
+                    "llm": {
+                        "provider": "vllm",
+                        "config": {"vllm_base_url": "http://localhost/v1","temperature":0.1,"api_key":"EMPTY", "model": "llama4-scout-17b"}
+                    },
+                    "embedder": {
+                        "provider": "huggingface",
+                        "config": { "model": "sentence-transformers/all-MiniLM-L6-v2"}
+                    }
+                },
+                "infer": True
+            },
+            "user_memory": {}
+        }
+    )
+```
+
+Run Code
+`Research().crew().kickoff(inputs={"topic": data,"user_id":"test"})`
+
+Error traceback
+```
+KeyError: 'metadata'
+  File .../crewai/memory/storage/mem0_storage.py, line 125, in search
+    del params["metadata"], params["output_format"]
+```
+
+### Operating System
+
+Ubuntu 20.04
+
+### Python Version
+
+3.10
+
+### crewAI Version
+
+0.152.0
+
+### crewAI Tools Version
+
+-
+
+### Virtual Environment
+
+Venv
+
+### Evidence
+
+Error output above.
+Code samples provided.
+[mem0_storage.py source code](https://github.com/crewAIInc/crewAI/blob/main/src/crewai/memory/storage/mem0_storage.py)
+Related tests: [tests/storage/test_mem0_storage.py](https://github.com/crewAIInc/crewAI/blob/main/tests/storage/test_mem0_storage.py)
+
+
+### Possible Solution
+
+Replace the block with:
+
+Python
+if isinstance(self.memory, Memory):
+    for key in ["metadata", "version", "output_format"]:
+        if key in params:
+            del params[key]
+    if "run_id" in params:
+        del params["run_id"]
+This will prevent KeyError and make the code more robust.
+
+### Additional context
+
+The config structure follows the docs and examples; this is not a user error.
+Anyone using local_mem0_config with the OSS Memory backend can encounter this issue if those keys are missing from params.

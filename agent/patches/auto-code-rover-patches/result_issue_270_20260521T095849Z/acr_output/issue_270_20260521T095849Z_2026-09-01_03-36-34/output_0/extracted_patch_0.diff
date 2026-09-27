@@ -1,0 +1,146 @@
+diff --git a/mle/cli.py b/mle/cli.py
+index 7855938..639cc0d 100644
+--- a/mle/cli.py
++++ b/mle/cli.py
+@@ -25,6 +25,141 @@ from mle.utils import LanceDBMemory, list_files, read_file
+ console = Console()
+ 
+ 
++@click.group()
++@click.version_option(version=mle.__version__)
++def cli():
++    """
++    MLE-Agent: The CLI tool to build machine learning projects.
++    """
++    pass
++
++
++@cli.group()
++def memory():
++    """
++    memory: CRUD operations on local memory chunks.
++    """
++    pass
++
++
++@memory.command('add')
++@click.argument('file_or_dir', nargs=1)
++def memory_add(file_or_dir):
++    """
++    Add file or directory content to memory, chunking source code files.
++    """
++    working_dir = os.getcwd()
++    mem = LanceDBMemory(working_dir)
++    chunker = CodeChunker(os.path.join(working_dir, '.mle', 'cache'), 'py')  # default 'py' chunking
++
++    paths = []
++    if os.path.isdir(file_or_dir):
++        # Recursively list files
++        paths = list_files(file_or_dir)
++    elif os.path.isfile(file_or_dir):
++        paths = [file_or_dir]
++    else:
++        console.print(f"[red]File or directory '{file_or_dir}' not found.[/red]")
++        return
++
++    total_files = len(paths)
++    with Progress(
++            SpinnerColumn(),
++            TextColumn("[progress.description]{task.description}"),
++            BarColumn(),
++            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
++            TimeElapsedColumn(),
++            console=console,
++    ) as progress:
++        task = progress.add_task(f"Adding memory chunks from {file_or_dir}", total=total_files)
++        for file_path in paths:
++            try:
++                raw_code = read_file(file_path)
++                chunks = chunker.chunk(raw_code, token_limit=100)
++                mem.add(
++                    texts=list(chunks.values()),
++                    metadata=[{'file': os.path.basename(file_path), 'chunk_key': k} for k in chunks.keys()]
++                )
++                progress.update(task, advance=1, description=f"Added {os.path.basename(file_path)}")
++            except Exception as e:
++                console.print(f"[red]Failed to add {file_path}: {e}[/red]")
++
++
++@memory.command('rm')
++@click.argument('file_key', nargs=1)
++def memory_rm(file_key):
++    """
++    Remove all memory chunks with matching file name.
++    """
++    working_dir = os.getcwd()
++    mem = LanceDBMemory(working_dir)
++
++    # Get all items with metadata.file == file_key, fetch their ids and delete
++    items = mem.get_by_metadata('file', file_key, n_results=1000000)  # large number to get all
++    if not items:
++        console.print(f"[yellow]No chunks found with file name '{file_key}'[/yellow]")
++        return
++
++    deleted_count = 0
++    for item in items:
++        if mem.delete(item['id']):
++            deleted_count += 1
++
++    console.print(f"[green]Removed {deleted_count} chunks with file name '{file_key}'[/green]")
++
++
++@memory.command('update')
++@click.argument('file_key', nargs=1)
++def memory_update(file_key):
++    """
++    Update memory chunks for file_key by removing all existing and adding again.
++    """
++    working_dir = os.getcwd()
++    mem = LanceDBMemory(working_dir)
++    chunker = CodeChunker(os.path.join(working_dir, '.mle', 'cache'), 'py')
++
++    # Remove existing chunks
++    items = mem.get_by_metadata('file', file_key, n_results=1000000)
++    if items:
++        for item in items:
++            mem.delete(item['id'])
++        console.print(f"[green]Removed existing chunks for '{file_key}'[/green]")
++    else:
++        console.print(f"[yellow]No existing chunks found for '{file_key}'[/yellow]")
++
++    # Add the file again
++    # We assume file_key is the filename, so search for full path of this file within current cwd
++    matched_paths = []
++    for dirpath, _, filenames in os.walk(working_dir):
++        if file_key in filenames:
++            matched_paths.append(os.path.join(dirpath, file_key))
++
++    if not matched_paths:
++        console.print(f"[red]File '{file_key}' not found in working directory tree.[/red]")
++        return
++
++    with Progress(
++            SpinnerColumn(),
++            TextColumn("[progress.description]{task.description}"),
++            BarColumn(),
++            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
++            TimeElapsedColumn(),
++            console=console,
++    ) as progress:
++        task = progress.add_task(f"Updating memory chunks for {file_key}", total=len(matched_paths))
++        for file_path in matched_paths:
++            try:
++                raw_code = read_file(file_path)
++                chunks = chunker.chunk(raw_code, token_limit=100)
++                mem.add(
++                    texts=list(chunks.values()),
++                    metadata=[{'file': os.path.basename(file_path), 'chunk_key': k} for k in chunks.keys()]
++                )
++                progress.update(task, advance=1, description=f"Updated {os.path.basename(file_path)}")
++            except Exception as e:
++                console.print(f"[red]Failed to update {file_path}: {e}[/red]")
++
++
+ @click.group()
+ @click.version_option(version=mle.__version__)
+ def cli():

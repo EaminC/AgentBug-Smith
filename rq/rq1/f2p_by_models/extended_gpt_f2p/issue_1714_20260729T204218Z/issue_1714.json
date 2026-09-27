@@ -1,0 +1,31 @@
+{
+  "number": 1714,
+  "title": "[Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点",
+  "url": "https://github.com/agentscope-ai/agentscope/issues/1714",
+  "state": "closed",
+  "created_at": "2026-05-28T16:22:06Z",
+  "closed_at": "2026-05-29T04:16:18Z",
+  "body": "## [Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点\n\n### 环境信息\n\n- **QwenPaw Desktop 版本**: 1.1.9\n- **操作系统**: Windows 11 家庭版 25H2 (AMD64)\n- **框架**: Tauri\n\n### Bug 描述\n\n每次 Agent 通过 `execute_shell_command` 工具执行命令时，都会弹出一个 cmd 窗口（或 PowerShell 窗口），并且该窗口会抢占前台焦点，打断用户正在进行的操作。\n\n### 复现步骤\n\n1. 打开 QwenPaw Desktop\n2. 向 Agent 发送需要执行 shell 命令的任务（如文件操作、运行脚本等）\n3. 观察执行过程\n4. **预期行为**: 命令在后台静默执行，不弹出任何窗口，不抢占焦点\n5. **实际行为**: 每次执行命令时弹出 cmd/PowerShell 窗口，并自动获取前台焦点\n\n### 影响\n\n- **严重干扰工作流**: 用户在等待 Agent 完成任务时切换到其他窗口工作，但每次命令执行都会被强制切回 QwenPaw 的终端窗口\n- **频繁打断**: 一个任务可能涉及多次命令执行，导致窗口不断弹出，严重影响用户体验\n- **误操作风险**: 焦点被抢占后，用户的键盘输入可能误操作到弹出的终端窗口\n\n### 根因分析\n\n在 Windows 上，当一个进程使用 `CreateProcess` API 创建子进程时，如果未设置 `CREATE_NO_WINDOW` 标志，子进程会创建一个新的控制台窗口并获取焦点。\n\nQwenPaw Desktop 的后端（qwenpaw-backend.exe）在执行 `execute_shell_command` 工具时，调用子进程的方式可能未使用 `CREATE_NO_WINDOW` 标志，导致每次命令执行都弹出控制台窗口。\n\n### 期望修复\n\n在调用 `CreateProcess` 创建子进程时，添加 `CREATE_NO_WINDOW` 标志：\n\n```cpp\n// Windows API 调用示例\nSTARTUPINFO si = { sizeof(si) };\nPROCESS_INFORMATION pi;\nCreateProcess(\n    NULL, commandLine, NULL, NULL, FALSE,\n    CREATE_NO_WINDOW,  // ← 添加此标志\n    NULL, NULL, &si, &pi\n);\n或者在使用 Rust 的 std::process::Command 时：\n\nuse std::os::windows::process::CommandExt;\nCommand::new(\"cmd\")\n    .args(&[\"/c\", \"your_command\"])\n    .creation_flags(0x08000000)  // CREATE_NO_WINDOW\n    .output()?;\n临时变通方法\n用户可以在 config.json 中将 shell_command_executable 改为 pwsh.exe（PowerShell Core），但此方法不能完全解决问题，因为 PowerShell 窗口仍可能弹出。\n\n补充信息\n此问题在 Windows 平台上普遍存在，影响所有使用 execute_shell_command 工具的场景。建议在修复时同时考虑提供配置选项，让用户可以选择是否显示终端窗口（用于调试场景）。",
+  "labels": [],
+  "linked_prs": [
+    {
+      "number": 1717,
+      "state": "closed",
+      "title": "fix(tool): hide bash subprocess windows on Windows",
+      "url": "https://github.com/agentscope-ai/agentscope/pull/1717",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "b9e363416acfb6af896f2e42c50dcd4782f9d2b8",
+      "head_sha": "e7b5d971a752cc248f825930f88d42a727a77afa",
+      "patch": "diff --git a/src/agentscope/tool/_builtin/_bash.py b/src/agentscope/tool/_builtin/_bash.py\nindex 0c129d28e1..fc058a20fa 100644\n--- a/src/agentscope/tool/_builtin/_bash.py\n+++ b/src/agentscope/tool/_builtin/_bash.py\n@@ -22,6 +22,22 @@\n from .._response import ToolChunk\n \n \n+def _subprocess_creation_kwargs() -> dict[str, Any]:\n+    \"\"\"Return platform-specific subprocess creation options.\"\"\"\n+    if os.name != \"nt\":\n+        return {}\n+\n+    import subprocess\n+\n+    return {\n+        \"creationflags\": getattr(\n+            subprocess,\n+            \"CREATE_NO_WINDOW\",\n+            0x08000000,\n+        ),\n+    }\n+\n+\n class Bash(ToolBase):\n     \"\"\"The bash tool.\"\"\"\n \n@@ -604,6 +620,7 @@ async def __call__(  # type: ignore[override]\n                 command,\n                 stdout=asyncio.subprocess.PIPE,\n                 stderr=asyncio.subprocess.PIPE,\n+                **_subprocess_creation_kwargs(),\n             )\n \n             # Wait for completion with timeout\ndiff --git a/tests/builtin_bash_test.py b/tests/builtin_bash_test.py\nindex 4091252c5c..fd8b2110dc 100644\n--- a/tests/builtin_bash_test.py\n+++ b/tests/builtin_bash_test.py\n@@ -3,8 +3,10 @@\n import sys\n import unittest\n from unittest.async_case import IsolatedAsyncioTestCase\n+from unittest.mock import patch\n \n from agentscope.tool import ToolChunk, Bash\n+from agentscope.tool._builtin._bash import _subprocess_creation_kwargs\n from agentscope.permission import (\n     PermissionContext,\n     PermissionBehavior,\n@@ -13,6 +15,23 @@\n from agentscope.message import TextBlock\n \n \n+class BashSubprocessKwargsTest(unittest.TestCase):\n+    \"\"\"Test platform-specific subprocess kwargs.\"\"\"\n+\n+    def test_non_windows_subprocess_kwargs_are_empty(self) -> None:\n+        \"\"\"On non-Windows the helper returns no extra subprocess kwargs.\"\"\"\n+        with patch(\"agentscope.tool._builtin._bash.os.name\", \"posix\"):\n+            self.assertEqual(_subprocess_creation_kwargs(), {})\n+\n+    def test_windows_subprocess_kwargs_hide_console(self) -> None:\n+        \"\"\"On Windows the helper sets ``creationflags`` to hide the console.\"\"\"\n+        with patch(\"agentscope.tool._builtin._bash.os.name\", \"nt\"):\n+            self.assertEqual(\n+                _subprocess_creation_kwargs(),\n+                {\"creationflags\": 0x08000000},\n+            )\n+\n+\n @unittest.skipIf(\n     sys.platform == \"win32\",\n     \"Bash tool is not supported on Windows\",\n",
+      "test_paths_in_patch": [
+        "tests/builtin_bash_test.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

@@ -1,0 +1,158 @@
+diff --git a/mle/agents/coder.py b/mle/agents/coder.py
+index b3b75e4..6da1740 100644
+--- a/mle/agents/coder.py
++++ b/mle/agents/coder.py
+@@ -23,6 +23,19 @@ Whether the code is required to execute and debug: {summary_dict.get('debug')}""
+ 
+ 
+ class CodeAgent:
++    def save_state(self, filepath: str):
++        import json
++        state = {"chat_history": self.chat_history, "code_summary": self.code_summary}
++        with open(filepath, "w") as f:
++            json.dump(state, f)
++
++    def load_state(self, filepath: str):
++        import json
++        with open(filepath, "r") as f:
++            state = json.load(f)
++        self.chat_history = state.get("chat_history", [])
++        self.code_summary = state.get("code_summary", None)
++
+ 
+     def __init__(self, model, working_dir='.', console=None):
+         """
+diff --git a/mle/agents/planner.py b/mle/agents/planner.py
+index 283d3f3..9cacb8c 100644
+--- a/mle/agents/planner.py
++++ b/mle/agents/planner.py
+@@ -15,6 +15,19 @@ def process_plan(plan_dict: dict):
+ 
+ 
+ class PlanAgent:
++    def save_state(self, filepath: str):
++        import json
++        state = {"chat_history": self.chat_history, "plan_dict": self.plan_dict}
++        with open(filepath, "w") as f:
++            json.dump(state, f)
++
++    def load_state(self, filepath: str):
++        import json
++        with open(filepath, "r") as f:
++            state = json.load(f)
++        self.chat_history = state.get("chat_history", [])
++        self.plan_dict = state.get("plan_dict", None)
++
+ 
+     def __init__(self, model, console=None):
+         """
+diff --git a/mle/workflow/baseline.py b/mle/workflow/baseline.py
+index 2e61ece..4e3c08c 100644
+--- a/mle/workflow/baseline.py
++++ b/mle/workflow/baseline.py
+@@ -2,6 +2,7 @@
+ Baseline Mode: the mode to quickly generate the AI baseline based on the user's requirements.
+ """
+ import os
++import json
+ import questionary
+ from rich.console import Console
+ from mle.model import load_model
+@@ -16,7 +17,7 @@ def ask_data(data_str: str):
+      the path to the local CSV file.
+     :return: the formated data information.
+     """
+-    if os.path.isfile(data_str) and data_str.lower().endswith('.csv'):
++    if os.path.isfile(data_str) and data_str.lower().endswith('csv'):
+         return f"[green]CSV Dataset Location:[/green] {data_str}"
+     else:
+         return f"[green]Dataset:[/green] {data_str}"
+@@ -29,41 +30,60 @@ def baseline(work_dir: str, model='gpt-4o'):
+     """
+ 
+     console = Console()
+-    model = load_model(work_dir, model)
+ 
+-    # ask for the data information
+-    dataset = ask_text("Please provide your dataset information (a public dataset name or a local file path)")
+-    if not dataset:
+-        print_in_box("The dataset is empty. Aborted", console, title="Error", color="red")
+-        return
++    SESSION_PLAN_FILE = os.path.join(work_dir, 'session_plan.json')
++    SESSION_CODE_FILE = os.path.join(work_dir, 'session_code.json')
+ 
+-    # ask for the user requirement
+-    ml_requirement = ask_text("Please provide the user requirement")
+-    if not ml_requirement:
+-        print_in_box("The user's requirement is empty. Aborted", console, title="Error", color="red")
+-        return
++    console.print('Checking for saved session...')
++    resume_session = False
++    if os.path.exists(SESSION_PLAN_FILE) and os.path.exists(SESSION_CODE_FILE):
++        resume_session = questionary.confirm('Previous session found. Do you want to resume it?').ask()
+ 
+-    # advisor agent gives suggestions in a report
+-    advisor = AdviseAgent(model, console)
+-    advisor_report = advisor.interact("[green]User Requirement:[/green] " + ml_requirement + "\n" + ask_data(dataset))
++    model = load_model(work_dir, model)
+ 
+-    # plan agent generates the coding plan
++    advisor = AdviseAgent(model, console)
+     planner = PlanAgent(model, console)
+-    coding_plan = planner.interact(advisor_report)
+-
+-    # code agent codes the tasks and debug with the debug agent
+     coder = CodeAgent(model, work_dir, console)
+-    coder.read_requirement(advisor_report)
+     debugger = DebugAgent(model, console)
+ 
++    if resume_session:
++        planner.load_state(SESSION_PLAN_FILE)
++        coder.load_state(SESSION_CODE_FILE)
++        console.print('Session loaded. Resuming the previous plan...')
++        coding_plan = planner.plan_dict
++    else:
++        dataset = ask_text("Please provide your dataset information (a public dataset name or a local file path)")
++        if not dataset:
++            print_in_box("The dataset is empty. Aborted", console, title="Error", color="red")
++            return
++
++        ml_requirement = ask_text("Please provide the user requirement")
++        if not ml_requirement:
++            print_in_box("The user's requirement is empty. Aborted", console, title="Error", color="red")
++            return
++
++        advisor_report = advisor.interact("[green]User Requirement:[/green] " + ml_requirement + "\n" + ask_data(dataset))
++        coding_plan = planner.interact(advisor_report)
++        planner.save_state(SESSION_PLAN_FILE)
++
+     is_auto_mode = questionary.confirm(
+         "MLE developer is about to start to code.\n"
+-        "Choose to debug or not (If no, MLE agent will only focus on coding tasks,"
+-        " and you have to run and debug the code yourself)?"
++        "Choose to debug or not? (If no, MLE agent will only focus on coding tasks, and you have to run and debug the code yourself)?"
+     ).ask()
+ 
+-    for current_task in coding_plan.get('tasks'):
++    start_index = 0
++    if resume_session and planner.plan_dict:
++        tasks = planner.plan_dict.get('tasks', [])
++        if tasks and coder.code_summary:
++            last_task = coder.code_summary.get('task')
++            for i, task in enumerate(tasks):
++                if task.get('task') == last_task:
++                    start_index = i + 1
++                    break
++
++    for current_task in coding_plan.get('tasks', [])[start_index:]:
+         code_report = coder.interact(current_task)
++        coder.save_state(SESSION_CODE_FILE)
+         is_debugging = code_report.get('debug')
+ 
+         if is_auto_mode:
+@@ -77,3 +97,5 @@ def baseline(work_dir: str, model='gpt-4o'):
+                         code_report = coder.debug(current_task, debug_report)
+                 else:
+                     break
++
++    return coding_plan

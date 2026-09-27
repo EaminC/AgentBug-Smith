@@ -1,0 +1,53 @@
+# Issue #1294: [CONTEXT] [FEATURE] Token Estimation API
+
+## Problem Statement
+
+The SDK only reports token usage after model calls complete via `accumulated_usage` in `EventLoopMetrics`. There is no way to estimate token counts before sending messages to the model.
+
+This forces a reactive pattern where applications must wait for `ContextWindowOverflowException` to be raised, then handle reduction. For long-running agents with many tool calls, this causes unnecessary API failures, output token starvation, and degraded user experience.
+
+This is a prerequisite for implementing proactive context compression (see #555) - calculating a percentage threshold requires knowing current token usage.
+
+## Proposed Solution
+
+Add an `estimate_tokens()` method to the `Model` interface:
+
+```python
+class Model(ABC):
+    @abstractmethod
+    def estimate_tokens(
+        self, 
+        messages: Messages, 
+        tool_specs: Optional[list[ToolSpec]] = None,
+        system_prompt: Optional[str] = None
+    ) -> int:
+        """Estimate token count for the given input before sending to model."""
+        pass
+```
+
+Model providers can implement using native APIs:
+- Anthropic: `anthropic.count_tokens()`
+- OpenAI: `tiktoken` library
+- Gemini: `model.count_tokens()`
+- LiteLLM: `litellm.token_counter()`
+
+## Use Case
+
+1. Proactive context management - check usage before model call, trigger compression if over threshold
+2. Budget tracking - display real-time context consumption in UIs
+3. Cost estimation - calculate expected costs before operations
+4. Intelligent pruning - identify which messages consume most tokens
+
+```python
+current_tokens = agent.model.estimate_tokens(agent.messages)
+if current_tokens > threshold:
+    agent.conversation_manager.reduce_context(agent)
+```
+
+## Alternative Solutions
+
+Applications can implement estimation using third-party tokenizers, but this requires maintaining model-specific mappings and does not integrate with the SDK's context management.
+
+## Additional Context
+
+This feature enables implementation of #555 (Proactive Context Compression). Related: #460 (token counting inconsistency).

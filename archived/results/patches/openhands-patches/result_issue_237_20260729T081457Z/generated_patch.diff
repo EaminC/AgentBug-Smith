@@ -1,0 +1,73 @@
+diff --git a/examples/game_werewolf/werewolf.py b/examples/game_werewolf/werewolf.py
+index 10c55956..e2ceb208 100644
+--- a/examples/game_werewolf/werewolf.py
++++ b/examples/game_werewolf/werewolf.py
+@@ -18,6 +18,10 @@ import agentscope
+ 
+ 
+ # pylint: disable=too-many-statements
++from typing import cast
++from examples.game_werewolf.typed_metadata import WitchPoisonMetadata, WitchResurrectMetadata
++
++
+ def main() -> None:
+     """werewolf game"""
+     # default settings
+@@ -70,7 +74,10 @@ def main() -> None:
+                     ),
+                 )
+                 set_parsers(witch, Prompts.witch_resurrect_parser)
+-                if witch(hint).metadata.get("resurrect", False):
++                response = witch(hint)
++                # Cast metadata with TypedDict for better type hints
++                metadata = cast(WitchResurrectMetadata, response.metadata or {})
++                if metadata.get("resurrect", False):
+                     healing_used_tonight = True
+                     dead_player.pop()
+                     healing = False
+@@ -81,7 +88,8 @@ def main() -> None:
+             if poison and not healing_used_tonight:
+                 set_parsers(witch, Prompts.witch_poison_parser)
+                 x = witch(HostMsg(content=Prompts.to_witch_poison))
+-                if x.metadata.get("eliminate", False):
++                metadata = cast(WitchPoisonMetadata, x.metadata or {})
++                if metadata.get("eliminate", False):
+                     dead_player.append(extract_name_and_id(x.content)[0])
+                     poison = False
+ 
+diff --git a/src/agentscope/parsers/json_object_parser.py b/src/agentscope/parsers/json_object_parser.py
+index 74b82b51..f452ea79 100644
+--- a/src/agentscope/parsers/json_object_parser.py
++++ b/src/agentscope/parsers/json_object_parser.py
+@@ -211,7 +211,7 @@ class MarkdownJsonDictParser(MarkdownJsonObjectParser, DictFilterMixin):
+     def parse(self, response: ModelResponse) -> ModelResponse:
+         """Parse the text field of the response to a JSON dictionary object,
+         store it in the parsed field of the response object, and check if the
+-        required keys exists.
++        required keys exists. Normalize boolean-like string values to bool.
+         """
+         # Parse the JSON object
+         response = super().parse(response)
+@@ -239,4 +239,22 @@ class MarkdownJsonDictParser(MarkdownJsonObjectParser, DictFilterMixin):
+                 response.text,
+             )
+ 
++        # Normalize boolean-like string values to bool in keys_to_metadata
++        if hasattr(self, 'keys_to_metadata') and self.keys_to_metadata:
++            keys = self.keys_to_metadata
++            keys_to_check = []
++            if isinstance(keys, str):
++                keys_to_check = [keys]
++            elif isinstance(keys, (list, tuple)):
++                keys_to_check = keys
++            for key in keys_to_check:
++                if key in response.parsed:
++                    val = response.parsed[key]
++                    if isinstance(val, str):
++                        val_low = val.lower()
++                        if val_low == 'true':
++                            response.parsed[key] = True
++                        elif val_low == 'false':
++                            response.parsed[key] = False
++
+         return response

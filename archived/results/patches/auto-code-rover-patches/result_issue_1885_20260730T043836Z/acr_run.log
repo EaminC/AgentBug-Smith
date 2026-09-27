@@ -1,0 +1,372 @@
+STDOUT:
+
+[2026-09-01 01:14:53] Total number of tasks: 1
+
+[2026-09-01 01:14:53] Total number of processes: 1
+
+[2026-09-01 01:14:53] Task group info: (number of groups: 1)
+
+[2026-09-01 01:14:53]   local: 1 tasks
+
+[2026-09-01 01:14:53] Running in single process mode.
+
+[2026-09-01 01:14:53] ============= Running task issue_1885_20260730T043836Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [Bug]: Streaming events out of order — TextBlockDelta emitted before ThinkingBlockEnd at the reasoning→answer boundary             │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ### Description                                                                                                                                 │
+│                                                                                                                                                 │
+│ In `Agent._convert_chat_response_to_event` (`src/agentscope/agent/_agent.py`), **text blocks are processed before thinking blocks** within each │
+│ streamed chunk. As a result, at the reasoning→answer boundary the first answer `TextBlockDeltaEvent` is emitted **before** the                  │
+│ `ThinkingBlockEndEvent`.                                                                                                                        │
+│                                                                                                                                                 │
+│ Any downstream consumer that renders reasoning as `<think>{thinking}</think>{answer}` (a very common pattern) therefore gets the **first answer │
+│ token(s) trapped inside the `<think>…</think>` block**. With a collapsible "thinking" panel, the visible answer silently loses its first token. │
+│                                                                                                                                                 │
+│ This is **not** model-specific — it reproduces with any well-behaved reasoning model that streams reasoning fully before content in *separate*  │
+│ chunks (DeepSeek `deepseek-reasoner` / `deepseek-v4`, Qwen3 thinking, etc.). The model behaves correctly; the event ordering is wrong.          │
+│                                                                                                                                                 │
+│ ### Version                                                                                                                                     │
+│                                                                                                                                                 │
+│ - `agentscope==2.0.1` (confirmed). Same code is present in **v2.0.2** and `main` (`_agent.py`: text handled ~L2433, thinking ~L2458).           │
+│                                                                                                                                                 │
+│ ### Minimal reproduction                                                                                                                        │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import asyncio                                                                                                                                  │
+│ from agentscope.message import TextBlock, ThinkingBlock                                                                                         │
+│ from agentscope.model import ChatResponse                                                                                                       │
+│ from agentscope.agent import Agent                                                                                                              │
+│                                                                                                                                                 │
+│ class _Stub:                      # minimal stub for the bound method                                                                           │
+│     class state:                                                                                                                                │
+│         reply_id = "r"                                                                                                                          │
+│ convert = Agent._convert_chat_response_to_event.__get__(_Stub())                                                                                │
+│                                                                                                                                                 │
+│ # A well-behaved reasoning stream: reasoning fully precedes the answer,                                                                         │
+│ # delivered in SEPARATE chunks (how DeepSeek / Qwen reasoning models stream).                                                                   │
+│ chunks = [                                                                                                                                      │
+│     ChatResponse(content=[ThinkingBlock(thinking="reason")], is_last=False),                                                                    │
+│     ChatResponse(content=[TextBlock(text="Hello")], is_last=False),  # boundary: reasoning done, answer begins                                  │
+│ ]                                                                                                                                               │
+│                                                                                                                                                 │
+│ async def main():                                                                                                                               │
+│     block_ids = {"text": None, "thinking": None, "tools": []}                                                                                   │
+│     seq = []                                                                                                                                    │
+│     for ch in chunks:                                                                                                                           │
+│         async for ev in convert(block_ids, ch):                                                                                                 │
+│             seq.append(type(ev).__name__)                                                                                                       │
+│     print(" -> ".join(seq))                                                                                                                     │
+│                                                                                                                                                 │
+│ asyncio.run(main())                                                                                                                             │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Actual output                                                                                                                               │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ ThinkingBlockStartEvent -> ThinkingBlockDeltaEvent -> TextBlockStartEvent -> TextBlockDeltaEvent -> ThinkingBlockEndEvent                       │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ `ThinkingBlockEndEvent` is emitted **after** `TextBlockDeltaEvent("Hello")`.                                                                    │
+│                                                                                                                                                 │
+│ ### Expected output                                                                                                                             │
+│                                                                                                                                                 │
+│ The thinking block should close **before** any answer text is emitted:                                                                          │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ ThinkingBlockStartEvent -> ThinkingBlockDeltaEvent -> ThinkingBlockEndEvent -> TextBlockStartEvent -> TextBlockDeltaEvent                       │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ ### Root cause                                                                                                                                  │
+│                                                                                                                                                 │
+│ Within `_convert_chat_response_to_event`, the per-chunk handling order is **text first, then thinking**, and each modality is closed in its own │
+│ `elif` branch. The boundary chunk carries text only (thinking already finished), so it emits `TextBlockStart`/`TextBlockDelta` first and only   │
+│ afterwards, in the thinking branch, emits `ThinkingBlockEnd`.                                                                                   │
+│                                                                                                                                                 │
+│ The same ordering also mis-sequences a single chunk that carries **both** a `ThinkingBlock` and a `TextBlock` (e.g. a gateway that merges the   │
+│ last reasoning delta and the first content delta): the text is emitted before the thinking start/delta, producing answer text *before*          │
+│ `<think>`.                                                                                                                                      │
+│                                                                                                                                                 │
+│ ### Suggested fix                                                                                                                               │
+│                                                                                                                                                 │
+│ Within a chunk, emit modality **close/transition** events before opening/continuing another modality, and handle **thinking before text**:      │
+│                                                                                                                                                 │
+│ 1. close any open block whose modality is **absent** in this chunk (`TextBlockEnd` / `ThinkingBlockEnd`),                                       │
+│ 2. then open/continue **thinking**,                                                                                                             │
+│ 3. then open/continue **text**,                                                                                                                 │
+│ 4. then tool calls.                                                                                                                             │
+│                                                                                                                                                 │
+│ (keeping the existing `data_blocks` keep-alive guard). This yields `… ThinkingBlockEnd -> TextBlockStart -> TextBlockDelta` at the boundary,    │
+│ and `ThinkingBlock* -> TextBlock*` for a both-in-one chunk.                                                                                     │
+│                                                                                                                                                 │
+│ ### Downstream workaround                                                                                                                       │
+│                                                                                                                                                 │
+│ Consumers can defensively close the `<think>` wrapper on the first `TextBlockDeltaEvent` instead of waiting for `ThinkingBlockEndEvent`.        │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1005, output_tokens=13, cost=0.000159
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1183, output_tokens=592, cost=0.000533
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│  import asyncio                                                    │
+│  import sys                                                        │
+│                                                                    │
+│  from agentscope.message import TextBlock, ThinkingBlock           │
+│  from agentscope.model import ChatResponse                         │
+│  from agentscope.agent import Agent                                │
+│                                                                    │
+│  class _Stub:                                                      │
+│      class state:                                                  │
+│          reply_id = "r"                                            │
+│                                                                    │
+│  convert = Agent._convert_chat_response_to_event.__get__(_Stub())  │
+│                                                                    │
+│  # A well-behaved reasoning stream: reasoning fully precedes the   │
+│  answer,                                                           │
+│  # delivered in SEPARATE chunks (how DeepSeek / Qwen reasoning     │
+│  models stream).                                                   │
+│  chunks = [                                                        │
+│      ChatResponse(content=[ThinkingBlock(thinking="reason")],      │
+│  is_last=False),                                                   │
+│      ChatResponse(content=[TextBlock(text="Hello")],               │
+│  is_last=False),  # boundary: reasoning done, answer begins        │
+│  ]                                                                 │
+│                                                                    │
+│  async def main():                                                 │
+│      block_ids = {"text": None, "thinking": None, "tools": []}     │
+│      seq = []                                                      │
+│      for ch in chunks:                                             │
+│          async for ev in convert(block_ids, ch):                   │
+│              seq.append(type(ev).__name__)                         │
+│      # Expected output order at reasoning->answer boundary:        │
+│      expected = [                                                  │
+│          "ThinkingBlockStartEvent",                                │
+│          "ThinkingBlockDeltaEvent",                                │
+│          "ThinkingBlockEndEvent",                                  │
+│          "TextBlockStartEvent",                                    │
+│          "TextBlockDeltaEvent",                                    │
+│      ]                                                             │
+│      # Actually got seq:                                           │
+│      # ThinkingBlockEndEvent should appear before the first        │
+│  TextBlockDeltaEvent                                               │
+│      # Otherwise first answer token trapped inside <think> block.  │
+│                                                                    │
+│      # Let's check order by index positions:                       │
+│      try:                                                          │
+│          idx_think_end = seq.index("ThinkingBlockEndEvent")        │
+│          idx_text_delta = seq.index("TextBlockDeltaEvent")         │
+│          # Assert thinking end BEFORE text delta                   │
+│          assert idx_think_end < idx_text_delta, (                  │
+│              f"ThinkingBlockEndEvent occurs at position            │
+│  {idx_think_end}, "                                                │
+│              f"but TextBlockDeltaEvent occurs earlier at position  │
+│  {idx_text_delta} - out of order"                                  │
+│          )                                                         │
+│      except Exception as e:                                        │
+│          print_stacktrace(e)                                       │
+│          raise                                                     │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      try:                                                          │
+│          asyncio.run(main())                                       │
+│      except AssertionError:                                        │
+│          # Presence of assertion failure means the bug is present  │
+│  -> exit 1                                                         │
+│          sys.exit(1)                                               │
+│      # No assertion failure means bug fixed -> exit 0              │
+│      sys.exit(0)                                                   │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 01:15:04] Task issue_1885_20260730T043836Z failed with exception: .
+
+[2026-09-01 01:15:04] No patch generated. You can try running ACR again.
+
+[2026-09-01 01:15:04] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 01:14:53.761 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_1885_20260730T043836Z =============
+2026-09-01 01:14:53.921 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 01:14:56.446 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1005, output_tokens=13, cost=0.000159
+2026-09-01 01:15:04.144 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1183, output_tokens=592, cost=0.000533
+2026-09-01 01:15:04.262 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x783ff6300d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x783fec0f4e90>]}
+    └ <function run_task_groups at 0x783fec1463e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x783fec0f4e90>]
+    └ <function run_tasks_serial at 0x783fec146480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x783fec0f4e90>
+    └ <function run_task_in_subprocess at 0x783fec146660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x783fec0f4e90>
+    │        │      └ <function run_raw_task at 0x783fec146700>
+    │        └ <function ProcessPoolExecutor.submit at 0x783ff5eecae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x783fec6aa270>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x783ff5eec860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x783fec6aa270>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x783ff5eec9a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x783fec6aa270>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x783ff5eeca40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x783fec6aa270>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x783ff60c42c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x783ff6128fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+    │    └ <function Popen._launch at 0x783fec0d8360>
+    └ <multiprocessing.popen_fork.Popen object at 0x783fec0f4ec0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x783ff60c4cc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x783ff60c4220>
+    └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x783fec42d8e0>, <multiprocessing.queues.SimpleQueue object at 0x783fec19ac...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+    │    └ <function _process_worker at 0x783ff5ee7c40>
+    └ <ForkProcess name='ForkProcess-1' parent=2703303 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x783fed773230>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x783fec0f5d60>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x783fed773230>
+        │         └ <function run_raw_task at 0x783fec146700>
+        └ <concurrent.futures.process._CallItem object at 0x783fed773230>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_1885_20260730T043836Z/acr_output/issue_1885_20260730T043836Z_2026-09-01_01-14-53'
+             │            │    └ <function RawLocalTask.to_task at 0x783fec146020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x783fec0f5d60>
+             └ <function do_inference at 0x783fec1468e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x783fec20c860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x783feca9b880>
+       │                 │         │            └ PlainTask(commit_hash='e28707373d7149115dfea247ab8ceccb75e3aaef', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1885', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x783fec0f6900>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_1885_20260730T043836Z/acr_output/issue_1885_20260730T043836Z_2026-09-01...
+       └ <function _run_one_task at 0x783fec20db20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x783feca98220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x783fec19b620>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x783feca9bce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x783fec19b620>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x783feca9a480>
+                   │    └ PlainTask(commit_hash='e28707373d7149115dfea247ab8ceccb75e3aaef', local_path='/root/auto-code-rover/.acr_cache/acr_ws_1885', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x783fec19b620>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 01:15:04.266 | INFO     | app.log:log_and_always_print:229 - Task issue_1885_20260730T043836Z failed with exception: .
+2026-09-01 01:15:04.268 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

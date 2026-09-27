@@ -1,0 +1,86 @@
+# Issue #1297: fix(hooks): studio_pre_print_hook crashes Agent when Studio disconnects
+
+### Problem Description
+
+The `as_studio_forward_message_pre_print_hook` function raises an exception `raise e from None` after 3 retry attempts when the Studio session is disconnected or unreachable, causing the Agent process to crash.
+
+### Steps to Reproduce
+
+1. Start an Agent with Studio hook enabled
+2. Simulate Studio disconnection (e.g., stop Studio service or connect to a non-existent address)
+3. Agent sends a message triggering the `pre_print` hook
+4. Hook retries 3 times then throws an exception, causing Agent to crash
+
+Minimal reproduction code:
+
+```python
+import asyncio
+from agentscope.agent import AgentBase
+from agentscope.message import Msg, TextBlock
+from agentscope.hooks._studio_hooks import as_studio_forward_message_pre_print_hook
+
+class TestAgent(AgentBase):
+    def __init__(self, name: str):
+        super().__init__()
+        self.name = name
+        self._disable_console_output = False
+    
+    async def reply(self, msg: Msg) -> Msg:
+        await self.print(msg)
+        return msg
+    
+    async def observe(self, msg: Msg) -> None:
+        pass
+    
+    async def handle_interrupt(self, *args, **kwargs) -> Msg:
+        return Msg("test", "Interrupt handled", "assistant")
+
+# Register hook with non-existent Studio URL
+TestAgent.register_class_hook(
+    "pre_print",
+    "studio_forward",
+    lambda self, kwargs: as_studio_forward_message_pre_print_hook(
+        self, kwargs, studio_url="http://127.0.0.1:9999", run_id="test"
+    ),
+)
+
+agent = TestAgent(name="TestAgent")
+
+async def main():
+    msg = Msg("user", [TextBlock(type="text", text="Hello")], "user")
+    await agent.reply(msg)  # Raises ConnectionError exception
+
+asyncio.run(main())
+```
+
+### Expected Behavior
+
+When Studio is disconnected, the Agent should continue running normally instead of crashing.
+
+### Actual Behavior
+
+Raises `ConnectionError` exception, causing Agent operation to fail.
+
+### Proposed Fix
+
+Replace `raise e from None` with graceful degradation (log warning and return):
+
+```python
+# Before fix
+raise e from None
+
+# After fix
+logger.warning(
+    "Failed to forward message to Studio after %d retries: %s. "
+    "Agent will continue running without Studio forwarding.",
+    n_retry,
+    e,
+)
+return
+```
+
+### Environment
+
+- AgentScope version: 1.0.16
+- Python version: 3.13.2
+- OS: Linux/macOS/Windows

@@ -1,0 +1,139 @@
+diff --git a/gpt_engineer/steps.py b/gpt_engineer/steps.py
+index 7a012f4..cb1c361 100644
+--- a/gpt_engineer/steps.py
++++ b/gpt_engineer/steps.py
+@@ -35,9 +35,6 @@ def get_prompt(dbs: DBs) -> str:
+     return dbs.input["prompt"]
+ 
+ 
+-# All steps below have the signature Step
+-
+-
+ def simple_gen(ai: AI, dbs: DBs) -> List[dict]:
+     """Run the AI on the main prompt and save the results"""
+     messages = ai.start(setup_sys_prompt(dbs), get_prompt(dbs))
+@@ -62,7 +59,7 @@ def clarify(ai: AI, dbs: DBs) -> List[dict]:
+             break
+ 
+         print()
+-        user_input = input('(answer in text, or "c" to move on)\n')
++        user_input = input('''(answer in text, or "c" to move on)\n''')
+         print()
+ 
+         if not user_input or user_input == "c":
+@@ -164,10 +161,12 @@ def gen_code(ai: AI, dbs: DBs) -> List[dict]:
+         ai.fsystem(setup_sys_prompt(dbs)),
+         ai.fuser(f"Instructions: {dbs.input['prompt']}"),
+         ai.fuser(f"Specification:\n\n{dbs.memory['specification']}"),
+-        ai.fuser(f"Unit tests:\n\n{dbs.memory['unit_tests']}"),
++        ai.fuser(f"Unit tests:\n\n{dbs.memory['unit_tests']}")
+     ]
++
+     messages = ai.next(messages, dbs.preprompts["use_qa"])
+     to_files(messages[-1]["content"], dbs.workspace)
++
+     return messages
+ 
+ 
+@@ -185,13 +184,7 @@ def execute_entrypoint(ai: AI, dbs: DBs) -> List[dict]:
+         return []
+     print("Executing the code...")
+     print()
+-    print(
+-        colored(
+-            "Note: If it does not work as expected, consider running the code"
+-            + " in another way than above.",
+-            "green",
+-        )
+-    )
++    print(colored("Note: If it does not work as expected, consider running the code" + " in another way than above.", "green"))
+     print()
+     print("You can press ctrl+c *once* to stop the execution.")
+     print()
+@@ -264,7 +257,16 @@ def human_review(ai: AI, dbs: DBs):
+     return []
+ 
+ 
+-class Config(str, Enum):
++def ask_feedback(ai: AI, dbs: DBs):
++    """
++    Ask the user if the generated code run/work/perfect and store result to memory.
++    """
++    review = human_input()
++    dbs.memory["feedback_review"] = review.to_json()  # type: ignore
++    return []
++
++
++class Config(Enum):
+     DEFAULT = "default"
+     BENCHMARK = "benchmark"
+     SIMPLE = "simple"
+@@ -286,7 +288,7 @@ STEPS = {
+         execute_entrypoint,
+         human_review,
+     ],
+-    Config.BENCHMARK: [simple_gen, gen_entrypoint],
++    Config.BENCHMARK: [simple_gen, gen_entrypoint, ask_feedback],
+     Config.SIMPLE: [simple_gen, gen_entrypoint, execute_entrypoint],
+     Config.TDD: [
+         gen_spec,
+diff --git a/scripts/benchmark.py b/scripts/benchmark.py
+index 366ab31..5b3cbba 100644
+--- a/scripts/benchmark.py
++++ b/scripts/benchmark.py
+@@ -59,18 +59,44 @@ def main(
+             print(f.read())
+         print()
+ 
+-        with contextlib.suppress(KeyboardInterrupt):
+-            subprocess.run(
+-                [
+-                    "python",
+-                    "-m",
+-                    "gpt_engineer.main",
+-                    bench_folder,
+-                    "--steps",
+-                    "evaluate",
+-                ],
+-            )
++    with contextlib.suppress(KeyboardInterrupt):
++        subprocess.run(
++            [
++                "python",
++                "-m",
++                "gpt_engineer.main",
++                bench_folder,
++                "--steps",
++                "evaluate",
++            ],
++        )
+ 
+ 
+ if __name__ == "__main__":
+     run(main)
++    # After running evaluation, check for feedback_review in memory and append results to RESULTS.md
++    feedback_path = bench_folder / "memory" / "feedback_review"
++    if feedback_path.exists():
++        import json
++        review_data = json.loads(feedback_path.read_text())
++        # Map feedback to symbols
++        def sym(val):
++            return "[32m\u2714[0m" if val else "[31m7[0m" if val == False else "?"
++
++        ran = "[32m\u2714[0m" if review_data.get('ran') else "[31m7[0m"
++        works = "[32m\u2714[0m" if review_data.get('works') else "[31m7[0m"
++        perfect = "[32m\u2714[0m" if review_data.get('perfect') else "[31m7[0m"
++
++        line = f"| {bench_folder.name:<18} | {ran} | {works} | {perfect} |" + "\n"
++
++        results_md = Path("benchmark/RESULTS.md")
++        from datetime import datetime
++        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
++        header = f"\n## Feedback on {bench_folder.name} - {timestamp}\n"
++
++        with results_md.open("a") as f:
++            f.write(header)
++            f.write("| Benchmark          | Ran | Works | Perfect |\n")
++            f.write("|--------------------|-----|-------|---------|\n")
++            f.write(line)
++

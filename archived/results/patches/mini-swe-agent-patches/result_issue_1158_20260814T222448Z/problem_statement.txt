@@ -1,0 +1,133 @@
+# Issue #1158: [BUG] MetadataEvent falsely claims that metrics is optional (via total=False)
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.15.0
+
+### Python Version
+
+3.12.11
+
+### Operating System
+
+macOS 26.1
+
+### Installation Method
+
+other
+
+### Steps to Reproduce
+
+Because the `TypedDict` defining `MetadataEvent` specifies `total=False`, all fields are implicitly `Optional`.
+
+However, neither `metadata` nor `usage` is actually allowed to not be present.
+
+---
+
+1. Install strands using `uv add strands-agents==1.15.0`
+2. Implement a `Model` which does not pass `metrics` (in my use case, I don't have latency information available due to the nature of the backend in use, and don't want to falsely pass an incorrect value of 0).
+
+See the following reproducer:
+
+```python
+import asyncio
+from typing import AsyncGenerator, Optional
+from strands import Agent
+from strands.models import Model
+from strands.types.content import Messages
+from strands.types.streaming import MessageStartEvent, MessageStopEvent, MetadataEvent, StreamEvent
+from strands.types.tools import ToolChoice, ToolSpec
+
+class MinimalModel(Model):
+    async def stream(self, messages: Messages, tool_specs: Optional[list[ToolSpec]] = None,
+                     system_prompt: Optional[str] = None, *, tool_choice: ToolChoice | None = None,
+                     **kwargs) -> AsyncGenerator[StreamEvent, None]:
+        yield StreamEvent(messageStart=MessageStartEvent(role="assistant"))
+        yield StreamEvent(contentBlockStart={"contentBlockIndex": 0, "start": {}})
+        yield StreamEvent(contentBlockDelta={"delta": {"text": "Hi"}, "contentBlockIndex": 0})
+        yield StreamEvent(contentBlockStop={"contentBlockIndex": 0})
+        yield StreamEvent(messageStop=MessageStopEvent(stopReason="end_turn"))
+        # MetadataEvent has total=False, so metrics should be optional, but this raises KeyError:
+        yield StreamEvent(metadata=MetadataEvent(usage={"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}))
+
+    async def structured_output(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def get_config(self) -> dict:
+        return {}
+
+    def update_config(self, **kwargs) -> None:
+        pass
+
+asyncio.run(Agent(model=MinimalModel()).invoke_async("test"))
+```
+
+### Expected Behavior
+
+The type hints should accurately describe actual requirements.
+
+### Actual Behavior
+
+A `KeyError` is thrown from `strands.event_loop.streaming` when it runs `usage, metrics = extract_usage_metrics(chunk["metadata"], time_to_first_byte_ms)`:
+
+```
+/lib/python3.12/site-packages/strands/agent/agent.py:473: in invoke_async
+    async for event in events:
+/lib/python3.12/site-packages/strands/agent/agent.py:669: in stream_async
+    async for event in events:
+/lib/python3.12/site-packages/strands/agent/agent.py:749: in _run_loop
+    async for event in events:
+/lib/python3.12/site-packages/strands/agent/agent.py:797: in _execute_event_loop_cycle
+    async for event in events:
+/lib/python3.12/site-packages/strands/event_loop/event_loop.py:152: in event_loop_cycle
+    async for model_event in model_events:
+/lib/python3.12/site-packages/strands/event_loop/event_loop.py:396: in _handle_model_execution
+    raise e
+/lib/python3.12/site-packages/strands/event_loop/event_loop.py:337: in _handle_model_execution
+    async for event in stream_messages(
+/lib/python3.12/site-packages/strands/event_loop/streaming.py:454: in stream_messages
+    async for event in process_stream(chunks, start_time):
+/lib/python3.12/site-packages/strands/event_loop/streaming.py:409: in process_stream
+    usage, metrics = extract_usage_metrics(chunk["metadata"], time_to_first_byte_ms)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+event = {'usage': {'cacheReadInputTokens': 0, 'cacheWriteInputTokens': 0, 'inputTokens': 20, 'outputTokens': 5, ...}}, time_to_first_byte_ms = 14
+
+    def extract_usage_metrics(event: MetadataEvent, time_to_first_byte_ms: int | None = None) -> tuple[Usage, Metrics]:
+        """Extracts usage metrics from the metadata chunk.
+
+        Args:
+            event: metadata.
+            time_to_first_byte_ms: time to get the first byte from the model in milliseconds
+
+        Returns:
+            The extracted usage metrics and latency.
+        """
+        usage = Usage(**event["usage"])
+>       metrics = Metrics(**event["metrics"])
+                            ^^^^^^^^^^^^^^^^
+E       KeyError: 'metrics'
+
+/lib/python3.12/site-packages/strands/event_loop/streaming.py:354: KeyError
+```
+
+### Additional Context
+
+_No response_
+
+### Possible Solution
+
+The simplest solution would be to change `total` to `True`. More helpfully for my use case, latency metrics could be made optional.
+
+`Required` can be use to contravene the default set by `total=False`, if one wishes to keep that default.
+
+### Related Issues
+
+_No response_

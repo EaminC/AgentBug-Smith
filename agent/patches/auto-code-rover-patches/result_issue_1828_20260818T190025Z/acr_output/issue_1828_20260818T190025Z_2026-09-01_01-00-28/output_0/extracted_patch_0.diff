@@ -1,0 +1,206 @@
+diff --git a/src/strands/session/repository_session_manager.py b/src/strands/session/repository_session_manager.py
+index dd3562289..27e08a123 100644
+--- a/src/strands/session/repository_session_manager.py
++++ b/src/strands/session/repository_session_manager.py
+@@ -170,54 +170,65 @@ class RepositorySessionManager(SessionManager):
+             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+         self._latest_agent_message[agent.agent_id] = None
+ 
+-        session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+-
+-        if session_agent is None:
++        if self._is_new_session:
+             logger.debug(
+-                "agent_id=<%s> | session_id=<%s> | creating agent",
++                "agent_id=<%s> | session_id=<%s> | creating agent (new session optimization)",
+                 agent.agent_id,
+                 self.session_id,
+             )
+-
+             session_agent = SessionAgent.from_agent(agent)
+             self.session_repository.create_agent(self.session_id, session_agent)
+-            # Initialize messages with sequential indices
+             session_message = None
+             for i, message in enumerate(agent.messages):
+                 session_message = SessionMessage.from_message(message, i)
+                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+             self._latest_agent_message[agent.agent_id] = session_message
+         else:
+-            logger.debug(
+-                "agent_id=<%s> | session_id=<%s> | restoring agent",
+-                agent.agent_id,
+-                self.session_id,
+-            )
+-            agent.state = AgentState(session_agent.state)
++            session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
++            if session_agent is None:
++                logger.debug(
++                    "agent_id=<%s> | session_id=<%s> | creating agent",
++                    agent.agent_id,
++                    self.session_id,
++                )
++                session_agent = SessionAgent.from_agent(agent)
++                self.session_repository.create_agent(self.session_id, session_agent)
++                session_message = None
++                for i, message in enumerate(agent.messages):
++                    session_message = SessionMessage.from_message(message, i)
++                    self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
++                self._latest_agent_message[agent.agent_id] = session_message
++            else:
++                logger.debug(
++                    "agent_id=<%s> | session_id=<%s> | restoring agent",
++                    agent.agent_id,
++                    self.session_id,
++                )
++                agent.state = AgentState(session_agent.state)
+ 
+-            session_agent.initialize_internal_state(agent)
++                session_agent.initialize_internal_state(agent)
+ 
+-            # Restore the conversation manager to its previous state, and get the optional prepend messages
+-            prepend_messages = agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state)
++                # Restore the conversation manager to its previous state, and get the optional prepend messages
++                prepend_messages = agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state)
+ 
+-            if prepend_messages is None:
+-                prepend_messages = []
++                if prepend_messages is None:
++                    prepend_messages = []
+ 
+-            # List the messages currently in the session, using an offset of the messages previously removed
+-            # by the conversation manager.
+-            session_messages = self.session_repository.list_messages(
+-                session_id=self.session_id,
+-                agent_id=agent.agent_id,
+-                offset=agent.conversation_manager.removed_message_count,
+-            )
+-            if len(session_messages) > 0:
+-                self._latest_agent_message[agent.agent_id] = session_messages[-1]
++                # List the messages currently in the session, using an offset of the messages previously removed
++                # by the conversation manager.
++                session_messages = self.session_repository.list_messages(
++                    session_id=self.session_id,
++                    agent_id=agent.agent_id,
++                    offset=agent.conversation_manager.removed_message_count,
++                )
++                if len(session_messages) > 0:
++                    self._latest_agent_message[agent.agent_id] = session_messages[-1]
+ 
+-            # Restore the agents messages array including the optional prepend messages
+-            agent.messages = prepend_messages + [session_message.to_message() for session_message in session_messages]
++                # Restore the agents messages array including the optional prepend messages
++                agent.messages = prepend_messages + [session_message.to_message() for session_message in session_messages]
+ 
+-            # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
+-            agent.messages = self._fix_broken_tool_use(agent.messages)
++                # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
++                agent.messages = self._fix_broken_tool_use(agent.messages)
+ 
+     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+         """Fix broken tool use/result pairs in message history.
+@@ -299,12 +310,16 @@ class RepositorySessionManager(SessionManager):
+             source: Multi-agent source object to restore state into
+             **kwargs: Additional keyword arguments for future extensibility.
+         """
+-        state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
+-        if state is None:
++        if self._is_new_session:
++            # For new sessions, no need to read multi-agent state, just create it
+             self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
+         else:
+-            logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
+-            source.deserialize_state(state)
++            state = self.session_repository.read_multi_agent(self.session_id, source.id, **kwargs)
++            if state is None:
++                self.session_repository.create_multi_agent(self.session_id, source, **kwargs)
++            else:
++                logger.debug("session_id=<%s> | restoring multi-agent state", self.session_id)
++                source.deserialize_state(state)
+ 
+     def initialize_bidi_agent(self, agent: "BidiAgent", **kwargs: Any) -> None:
+         """Initialize a bidirectional agent with a session.
+@@ -317,47 +332,59 @@ class RepositorySessionManager(SessionManager):
+             raise SessionException("The `agent_id` of an agent must be unique in a session.")
+         self._latest_agent_message[agent.agent_id] = None
+ 
+-        session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
+-
+-        if session_agent is None:
++        if self._is_new_session:
+             logger.debug(
+-                "agent_id=<%s> | session_id=<%s> | creating bidi agent",
++                "agent_id=<%s> | session_id=<%s> | creating bidi agent (new session optimization)",
+                 agent.agent_id,
+                 self.session_id,
+             )
+-
+             session_agent = SessionAgent.from_bidi_agent(agent)
+             self.session_repository.create_agent(self.session_id, session_agent)
+-            # Initialize messages with sequential indices
+             session_message = None
+             for i, message in enumerate(agent.messages):
+                 session_message = SessionMessage.from_message(message, i)
+                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
+             self._latest_agent_message[agent.agent_id] = session_message
+         else:
+-            logger.debug(
+-                "agent_id=<%s> | session_id=<%s> | restoring bidi agent",
+-                agent.agent_id,
+-                self.session_id,
+-            )
+-            agent.state = AgentState(session_agent.state)
++            session_agent = self.session_repository.read_agent(self.session_id, agent.agent_id)
++            if session_agent is None:
++                logger.debug(
++                    "agent_id=<%s> | session_id=<%s> | creating bidi agent",
++                    agent.agent_id,
++                    self.session_id,
++                )
+ 
+-            session_agent.initialize_bidi_internal_state(agent)
++                session_agent = SessionAgent.from_bidi_agent(agent)
++                self.session_repository.create_agent(self.session_id, session_agent)
++                session_message = None
++                for i, message in enumerate(agent.messages):
++                    session_message = SessionMessage.from_message(message, i)
++                    self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
++                self._latest_agent_message[agent.agent_id] = session_message
++            else:
++                logger.debug(
++                    "agent_id=<%s> | session_id=<%s> | restoring bidi agent",
++                    agent.agent_id,
++                    self.session_id,
++                )
++                agent.state = AgentState(session_agent.state)
+ 
+-            # BidiAgent has no conversation_manager, so no prepend_messages or removed_message_count
+-            session_messages = self.session_repository.list_messages(
+-                session_id=self.session_id,
+-                agent_id=agent.agent_id,
+-                offset=0,
+-            )
+-            if len(session_messages) > 0:
+-                self._latest_agent_message[agent.agent_id] = session_messages[-1]
++                session_agent.initialize_bidi_internal_state(agent)
++
++                # BidiAgent has no conversation_manager, so no prepend_messages or removed_message_count
++                session_messages = self.session_repository.list_messages(
++                    session_id=self.session_id,
++                    agent_id=agent.agent_id,
++                    offset=0,
++                )
++                if len(session_messages) > 0:
++                    self._latest_agent_message[agent.agent_id] = session_messages[-1]
+ 
+-            # Restore the agents messages array
+-            agent.messages = [session_message.to_message() for session_message in session_messages]
++                # Restore the agents messages array
++                agent.messages = [session_message.to_message() for session_message in session_messages]
+ 
+-            # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
+-            agent.messages = self._fix_broken_tool_use(agent.messages)
++                # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
++                agent.messages = self._fix_broken_tool_use(agent.messages)
+ 
+     def append_bidi_message(self, message: Message, agent: "BidiAgent", **kwargs: Any) -> None:
+         """Append a message to the bidirectional agent's session.

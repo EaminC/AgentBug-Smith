@@ -1,0 +1,77 @@
+diff --git a/gpt_engineer/core/steps.py b/gpt_engineer/core/steps.py
+index fe73e62..4334f44 100644
+--- a/gpt_engineer/core/steps.py
++++ b/gpt_engineer/core/steps.py
+@@ -613,6 +613,72 @@ def human_review(ai: AI, dbs: DBs):
+         dbs.memory["review"] = review.to_json()  # type: ignore
+     return []
+ 
++def auto_code_review_and_fix(ai: AI, dbs: DBs):
++    """
++    Automated code QA review and self-healing step.
++
++    This step uses the AI to generate QA tasks from the project spec,
++    inspects the generated code against these QA tasks, identifies issues,
++    and attempts to generate fixes which overwrite files to self-heal the code.
++
++    Parameters:
++    - ai (AI): The AI instance to interact with LLM.
++    - dbs (DBs): The database containing project spec, current files, and memory.
++
++    Returns:
++    - list: An empty list (no further messages to process).
++    """
++
++    project_spec = dbs.project_spec.get("spec", "")
++    if not project_spec:
++        # Cannot proceed without project spec, skip auto review
++        return []
++
++    # Gather current files' content
++    code_files = {}
++    for filename in dbs.files:
++        content = dbs.files[filename]
++        code_files[filename] = content
++
++    # 1. Generate QA tasks from project spec
++    qa_tasks = ai.generate_qa_tasks(project_spec)
++
++    if not qa_tasks:
++        # No QA tasks inferred, skip further checks
++        return []
++
++    # 2. Inspect code for pass/fail results on QA tasks
++    qa_results = ai.check_qa_tasks(qa_tasks, code_files)
++
++    # Identify failed tasks
++    failed_tasks = [r["task"] for r in qa_results if r.get("result", "").lower() == "fail"]
++
++    # Store human-readable QA results in memory for reference
++    dbs.memory["automated_review_results"] = str(qa_results)
++
++    if not failed_tasks:
++        # All QA tasks pass - nothing to fix
++        return []
++
++    # 3. Attempt self-healing to fix failed tasks
++    fixes = ai.attempt_self_healing(failed_tasks, code_files)
++
++    # If fixes suggested, overwrite files accordingly
++    if fixes:
++        for fname, new_content in fixes.items():
++            if fname in dbs.files:
++                dbs.files[fname] = new_content
++            else:
++                # New file suggested, add it
++                dbs.files[fname] = new_content
++
++        # Optionally, you could rerun the QA check again here once or not, but to avoid complexity, skip.
++
++        # Store fixes info in memory
++        dbs.memory["self_healing_fixes"] = fixes
++
++    return []
++
+ 
+ class Config(str, Enum):
+     """

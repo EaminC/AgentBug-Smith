@@ -1,0 +1,28 @@
+{
+  "number": 6295,
+  "title": "Thought content is lost when model returns a handoff tool call",
+  "url": "https://github.com/microsoft/autogen/issues/6295",
+  "state": "closed",
+  "created_at": "2025-04-14T18:41:35Z",
+  "closed_at": "2025-04-17T03:22:50Z",
+  "body": "### What happened?\n\n### Describe the bug\nWhen using `AzureOpenAIChatCompletionClient`, the model sometimes returns both a meaningful message and a tool call simultaneously. If the tool call is a `handoff`, the content of the response becomes the `thought` in the result, but it is not included in the `HandoffMessage` context that is sent to the target agent. As a result, the receiving agent loses access to the original thought.\n\nThis behavior occurs because `_check_and_handle_handoff(...)` in `AssistantAgent` only includes the thought when there's at least one tool call in addition to the handoff tool call.\n\n### To Reproduce\n\nUse `AzureOpenAIChatCompletionClient` with a model that returns both a message content and a single handoff tool call.\n\nObserve how the thought is not passed along in the `HandoffMessage` context.\n\nRelevant snippet from `BaseOpenAIChatCompletionClient.create(...)`:\n\n```\n...\nelif choice.message.tool_calls is not None and len(choice.message.tool_calls) > 0:\n    ...\n    if choice.message.content is not None and choice.message.content != \"\":\n        # Put the content in the thought field.\n        thought = choice.message.content\n...\nresponse = CreateResult(\n    finish_reason=normalize_stop_reason(finish_reason),\n    content=content,\n    usage=usage,\n    cached=False,\n    logprobs=logprobs,\n    thought=thought,\n)\n```\nAnd from `AssistantAgent._check_and_handle_handoff(...)`:\n\n```\n...\nif len(tool_calls) > 0: \n    # Only includes the thought if there are other tool calls besides the handoff\n    handoff_context.append(\n        AssistantMessage(\n            content=tool_calls,\n            source=agent_name,\n            thought=getattr(model_result, \"thought\", None),\n        )\n    )\n```\nIf there's only a single handoff tool call, and no other calls, the thought is not included.\n\n### Expected behavior\nEven if the only tool call present is a handoff, the model's thought (i.e., the message content) should still be passed in the `HandoffMessage` context, so the receiving agent has full context.\n\n### Quick Fix / Workaround\nAs a workaround, I subclassed `AssistantAgent` and patched `_check_and_handle_handoff(...)` to also include the thought as a `UserMessage` if no other tool calls are present:\n\n```\n...\nif len(tool_calls) > 0:\n    handoff_context.append(\n        AssistantMessage(\n            content=tool_calls,\n            source=agent_name,\n            thought=getattr(model_result, \"thought\", None),\n        )\n    )\n    handoff_context.append(FunctionExecutionResultMessage(content=tool_call_results))\n\n# MANUAL QUICK FIX\nelif has_thought:\n    handoff_context.append(\n        UserMessage(\n            content=model_result.thought,\n            source=agent_name,\n        )\n    )\n\nreturn Response(\n    chat_message=HandoffMessage(\n        content=selected_handoff_message,\n        target=selected_handoff.target,\n        source=agent_name,\n        context=handoff_context,\n    ),\n    inner_messages=inner_messages,\n)\n```\n### Additional context\n\n- I initially attempted to prompt the model to emit a regular message before making a tool call, but this approach did only work out okayish\n- The manual fix works more robust and should not introduce any side-effects, thought it most likely is not the proper solution\n\n### Which packages was the bug in?\n\nPython AgentChat (autogen-agentchat>=0.4.0)\n\n### AutoGen library version.\n\nPython 0.5.1\n\n### Other library version.\n\n_No response_\n\n### Model used\n\ngpt4o\n\n### Model provider\n\nAzure OpenAI\n\n### Other model provider\n\n_No response_\n\n### Python version\n\n3.11\n\n### .NET version\n\nNone\n\n### Operating system\n\nNone",
+  "labels": [
+    "help wanted",
+    "proj-agentchat"
+  ],
+  "linked_prs": [
+    {
+      "number": 6319,
+      "state": "closed",
+      "title": "Make sure thought content is included in handoff context",
+      "url": "https://github.com/microsoft/autogen/pull/6319",
+      "merged": true,
+      "base_branch": "main",
+      "body": "Resolves #6295\n\nEnsure the thought content gets included in handoff message conetxt, when the only tool call was handoff tool call. "
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes. This is an agent issue because it involves a problem with memory content errors and tool invocation behavior. Specifically, the issue pertains to the loss of the model's \"thought\" content during a handoff tool call, which is a workflow anomaly and impacts the agent's memory representation and tool handling logic."
+  }
+}

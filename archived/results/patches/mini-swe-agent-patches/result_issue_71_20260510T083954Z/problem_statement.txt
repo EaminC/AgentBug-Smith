@@ -1,0 +1,77 @@
+# Issue #71: [Bug]: Incorrectly throwing an exception when only a single message is passed to the OPENAI API model.
+
+**Describe the bug**
+The OPENAI API requires the content passed to the model to contain a "role" field. Therefore, there is a section in line 196 of `src/agentscope/models/openai_model.py` that checks whether the incoming message includes the "role" field.
+```
+ # step2: checking messages
+        if not all("role" in msg and "content" in msg for msg in messages):
+            raise ValueError(
+                "Each message in the 'messages' list must contain a 'role' "
+                "and 'content' key for OpenAI API.",
+            )
+```
+However, according to this code, it assumes that the messages passed to the model is a list and checks each dictionary within the list for the presence of the "role" key. But if the messages variable passed to the model is itself just a single dictionary, this logic will also throw an exception of "missing role field". There is no other code to ensure that the type of the messages variable is a list .
+
+**To Reproduce**
+1. Define a customer agent:
+[agents.py]
+```python
+class TestCustomerAgent(AgentBase):
+
+    def reply(self, x: dict = None) -> dict:
+        if x is not None:
+            self.memory.add(x)
+
+        # This is right, because memory.get_memory() will return a list of dict.
+        # prompt = self.engine.join(
+        #     self.memory.get_memory(),
+        # )
+
+        # This will cause an Exception, which should not be happened. The msg contains the role and content keys.
+        prompt = Msg(name="user", role="user", content=str(x["content"]))
+
+        response = self.model(prompt).text
+        msg = Msg(self.name, response)
+        self.speak(msg)
+
+        # Record the message to memory and return it
+        self.memory.add(msg)
+        return msg
+```
+2. call this agent with a single message.
+[main,py]
+```python
+test_agent = TestCustomerAgent(
+    name="Tester",
+    sys_prompt="You are a very helpful assistant.",
+    model_config_name="gpt-3.5-turbo",
+)
+if __name__ == "__main__":
+    init_msg = Msg(name="user", role="user", content="prints the current local time")
+    x = test_agent(init_msg)
+    print(x)
+```
+
+The built-in agent of the framework ensures that the type of the incoming message is a list through some functions. However, when developers define their own agents, you cannot guarantee this.
+
+**Error messages**
+This is the incorrectly throwing exception:
+```
+2024-03-15 09:24:03.880 | ERROR    | agentscope.utils.logging_utils:write:41 - Traceback (most recent call last):
+  File "C:\...\main.py", line 138, in <module>
+    x = test_agent(init_msg)
+  File "C:\...\agentscope\src\agentscope\agents\agent.py", line 117, in __call__
+    res = self.reply(*args, **kwargs)
+  File "C:\...\agents.py", line 251, in reply
+    response = self.model(prompt).text
+  File "C:\...\agentscope\src\agentscope\models\model.py", line 159, in checking_wrapper
+    return model_call(self, *args, **kwargs)
+  File "C:\...\agentscope\src\agentscope\models\openai_model.py", line 197, in __call__
+    raise ValueError(
+ValueError: Each message in the 'messages' list must contain a 'role' and 'content' key for OpenAI API.
+```
+
+**Environment (please complete the following information):**
+ - AgentScope Version: 0.0.1 
+ - Python Version: 3.10
+ - OS: windows

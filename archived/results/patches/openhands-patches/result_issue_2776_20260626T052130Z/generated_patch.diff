@@ -1,0 +1,113 @@
+diff --git a/src/crewai/memory/storage/mem0_storage.py b/src/crewai/memory/storage/mem0_storage.py
+index bf1b5ef1e..71c10b43e 100644
+--- a/src/crewai/memory/storage/mem0_storage.py
++++ b/src/crewai/memory/storage/mem0_storage.py
+@@ -62,16 +62,32 @@ class Mem0Storage(Storage):
+         return role.replace("\n", "").replace(" ", "_").replace("/", "_")
+ 
+     def save(self, value: Any, metadata: Dict[str, Any]) -> None:
++        # New optional config flags for Mem0 V2
++        self.use_run_id = self.config.get("use_run_id", False)
++        self.disable_agent_memory = self.config.get("disable_agent_memory", False)
++        self.memory_inclusion = self.config.get("memory_inclusion", None)
++        self.custom_categories = self.config.get("custom_categories", None)
++
+         user_id = self._get_user_id()
+         agent_name = self._get_agent_name()
+         assistant_message = [{"role" : "assistant","content" : value}] 
+         params = None
+         if self.memory_type == "short_term":
+             params = {
+-                "agent_id": agent_name,
++                # Only include agent_id if agent memory is not disabled
++                **({"agent_id": agent_name} if not self.disable_agent_memory else {}),
+                 "infer": False,
+                 "metadata": {"type": "short_term", **metadata},
+             }
++            if self.use_run_id:
++                run_id = self.config.get("run_id")
++                if run_id:
++                    params["run_id"] = run_id
++                    # Include memory inclusion and custom categories if provided
++                    if self.memory_inclusion:
++                        params["memory_inclusion"] = self.memory_inclusion
++                    if self.custom_categories:
++                        params["custom_categories"] = self.custom_categories
+         elif self.memory_type == "long_term":
+             params = {
+                 "agent_id": agent_name,
+@@ -103,31 +119,52 @@ class Mem0Storage(Storage):
+         limit: int = 3,
+         score_threshold: float = 0.35,
+     ) -> List[Any]:
+-        params = {"query": query, "limit": limit, "output_format": "v1.1"}
+-        if user_id := self._get_user_id():
+-            params["user_id"] = user_id
+-
++        user_id = self._get_user_id()
+         agent_name = self._get_agent_name()
+-        if self.memory_type == "short_term":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "short_term"}
+-        elif self.memory_type == "long_term":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "long_term"}
+-        elif self.memory_type == "entities":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "entity"}
+-        elif self.memory_type == "external":
+-            params["agent_id"] = agent_name
+-            params["metadata"] = {"type": "external"}
+ 
+-        # Discard the filters for now since we create the filters
+-        # automatically when the crew is created.
+-        if isinstance(self.memory, Memory):
+-            del params["metadata"], params["output_format"]
++        if isinstance(self.memory, MemoryClient):
++            # Use Mem0 v2 search API
++            params = {
++                "query": query,
++                "limit": limit,
++                "user_id": user_id,
++                "agent_id": agent_name,
++                "memory_type": self.memory_type,
++            }
++
++            # If agent memory disabled, omit agent_id
++            if self.disable_agent_memory:
++                params.pop("agent_id", None)
++
++            response = self.memory.v2_search_memories(**params)
++            results = response.get("results", [])
++            return [r for r in results if r.get("score", 0) >= score_threshold]
++        else:
++            # Fall back to old search API
++            params = {"query": query, "limit": limit, "output_format": "v1.1"}
++            if user_id:
++                params["user_id"] = user_id
+             
+-        results = self.memory.search(**params)
+-        return [r for r in results["results"] if r["score"] >= score_threshold]
++            if self.memory_type == "short_term":
++                params["agent_id"] = agent_name
++                params["metadata"] = {"type": "short_term"}
++            elif self.memory_type == "long_term":
++                params["agent_id"] = agent_name
++                params["metadata"] = {"type": "long_term"}
++            elif self.memory_type == "entities":
++                params["agent_id"] = agent_name
++                params["metadata"] = {"type": "entity"}
++            elif self.memory_type == "external":
++                params["agent_id"] = agent_name
++                params["metadata"] = {"type": "external"}
++
++            # Discard the filters for now since we create the filters
++            # automatically when the crew is created.
++            if isinstance(self.memory, Memory):
++                del params["metadata"], params["output_format"]
++                
++            results = self.memory.search(**params)
++            return [r for r in results["results"] if r["score"] >= score_threshold]
+ 
+     def _get_user_id(self) -> str:
+         return self._get_config().get("user_id", "")

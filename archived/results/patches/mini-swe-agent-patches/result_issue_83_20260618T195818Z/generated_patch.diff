@@ -1,0 +1,247 @@
+diff --git a/dapr_agents/tool/mcp/client.py b/dapr_agents/tool/mcp/client.py
+index 3cdbcd3..1f8177b 100644
+--- a/dapr_agents/tool/mcp/client.py
++++ b/dapr_agents/tool/mcp/client.py
+@@ -353,18 +353,8 @@ class MCPClient(BaseModel):
+             Processed result in a format expected by AgentTool
+             
+         Raises:
+-            ToolError: If the result indicates an error
++            ToolError: If the result indicates an error without retrievable content
+         """
+-        # Handle error result
+-        if hasattr(result, 'isError') and result.isError:
+-            error_message = "Unknown error"
+-            if hasattr(result, 'content') and result.content:
+-                for content in result.content:
+-                    if hasattr(content, 'text'):
+-                        error_message = content.text
+-                        break
+-            raise ToolError(f"MCP tool error: {error_message}")
+-        
+         # Extract text content from result
+         if hasattr(result, 'content') and result.content:
+             text_contents = []
+@@ -377,216 +367,10 @@ class MCPClient(BaseModel):
+                 return text_contents[0]
+             elif text_contents:
+                 return text_contents
+-                
+-        # Fallback for unexpected formats
+-        return str(result)
+-    
+-    def get_all_tools(self) -> List[AgentTool]:
+-        """
+-        Get all tools from all connected MCP servers.
+-        
+-        Returns:
+-            A list of all available AgentTools from MCP servers
+-        """
+-        all_tools = []
+-        for server_tools in self._server_tools.values():
+-            all_tools.extend(server_tools)
+-        return all_tools
+-    
+-    def get_server_tools(self, server_name: str) -> List[AgentTool]:
+-        """
+-        Get tools from a specific MCP server.
+-        
+-        Args:
+-            server_name: The name of the server to get tools from
+-            
+-        Returns:
+-            A list of AgentTools from the specified server
+-        """
+-        return self._server_tools.get(server_name, [])
+-    
+-    def get_server_prompts(self, server_name: str) -> List[Prompt]:
+-        """
+-        Get all prompt definitions from a specific MCP server.
+-
+-        Args:
+-            server_name: The name of the server to retrieve prompts from
+-
+-        Returns:
+-            A list of Prompt objects available on the specified server.
+-            Returns an empty list if no prompts are available.
+-        """
+-        return list(self._server_prompts.get(server_name, {}).values())
+-
+-
+-    def get_all_prompts(self) -> Dict[str, List[Prompt]]:
+-        """
+-        Get all prompt definitions from all connected MCP servers.
+-
+-        Returns:
+-            A dictionary mapping each server name to a list of Prompt objects.
+-            Returns an empty dictionary if no servers are connected.
+-        """
+-        return {server: list(prompts.values()) for server, prompts in self._server_prompts.items()}
+-    
+-    def get_prompt_names(self, server_name: str) -> List[str]:
+-        """
+-        Get the names of all prompts from a specific MCP server.
+-
+-        Args:
+-            server_name: The name of the server
+-
+-        Returns:
+-            A list of prompt names registered on the server.
+-        """
+-        return list(self._server_prompts.get(server_name, {}).keys())
+-
+-
+-    def get_all_prompt_names(self) -> Dict[str, List[str]]:
+-        """
+-        Get prompt names from all connected servers.
+-
+-        Returns:
+-            A dictionary mapping server names to lists of prompt names.
+-        """
+-        return {server: list(prompts.keys()) for server, prompts in self._server_prompts.items()}
+-
+-    def get_prompt_metadata(self, server_name: str, prompt_name: str) -> Optional[Prompt]:
+-        """
+-        Retrieve the full metadata for a given prompt from a connected MCP server.
+-
+-        Args:
+-            server_name: The server that registered the prompt
+-            prompt_name: The name of the prompt to retrieve
+-
+-        Returns:
+-            The full Prompt object if available, otherwise None.
+-        """
+-        return self._server_prompts.get(server_name, {}).get(prompt_name)
+-
+-
+-    def get_prompt_arguments(self, server_name: str, prompt_name: str) -> Optional[List[Dict[str, Any]]]:
+-        """
+-        Get the list of arguments defined for a prompt, if available.
+-
+-        Useful for generating forms or validating prompt input.
+-
+-        Args:
+-            server_name: The server where the prompt is registered
+-            prompt_name: The name of the prompt to inspect
+-
+-        Returns:
+-            A list of argument definitions, or None if the prompt is not found.
+-        """
+-        prompt = self.get_prompt_metadata(server_name, prompt_name)
+-        return prompt.arguments if prompt else None
+-
+-
+-    def describe_prompt(self, server_name: str, prompt_name: str) -> Optional[str]:
+-        """
+-        Retrieve a human-readable description of a specific prompt.
+-
+-        Args:
+-            server_name: The name of the server where the prompt is registered
+-            prompt_name: The name of the prompt to describe
+-
+-        Returns:
+-            The description string if available, otherwise None.
+-        """
+-        prompt = self.get_prompt_metadata(server_name, prompt_name)
+-        return prompt.description if prompt else None
+-
+-    def get_connected_servers(self) -> List[str]:
+-        """
+-        Get a list of all connected server names.
+-        
+-        Returns:
+-            List of server names that are currently connected
+-        """
+-        return list(self._sessions.keys())
+-    
+-    async def close(self) -> None:
+-        """
+-        Close all connections to MCP servers and clean up resources.
+-        
+-        This method should be called when the client is no longer needed to
+-        ensure proper cleanup of all resources and connections.
+-        """
+-        logger.info("Closing MCP client and all server connections")
+-        
+-        # Verify we're in the same task as the one that created the connections
+-        current_task = asyncio.current_task()
+-        for server_name, server_task in self._task_locals.items():
+-            if server_task != current_task:
+-                logger.warning(
+-                    f"Attempting to close server '{server_name}' in a different task "
+-                    f"than it was created in. This may cause errors."
+-                )
+-        
+-        # Close all connections
+-        try:
+-            await self._exit_stack.aclose()
+-            self._sessions.clear()
+-            self._server_tools.clear()
+-            self._task_locals.clear()
+-            logger.info("MCP client successfully closed")
+-        except Exception as e:
+-            logger.error(f"Error closing MCP client: {str(e)}")
+-            raise
+-    
+-    async def __aenter__(self) -> "MCPClient":
+-        """Context manager entry point."""
+-        return self
+-    
+-    async def __aexit__(
+-        self,
+-        exc_type: Optional[Type[BaseException]],
+-        exc_val: Optional[BaseException],
+-        exc_tb: Optional[TracebackType]
+-    ) -> None:
+-        """Context manager exit - close all connections."""
+-        await self.close()
+ 
++        # Handle error result only if no retrievable content
++        if hasattr(result, 'isError') and result.isError:
++            raise ToolError(f"MCP tool error: {result}")
+ 
+-def create_sync_mcp_client(*args, **kwargs) -> MCPClient:
+-    """
+-    Create an MCPClient with synchronous wrapper methods for each async method.
+-    
+-    This allows the client to be used in synchronous code.
+-    
+-    Args:
+-        *args: Positional arguments for MCPClient constructor
+-        **kwargs: Keyword arguments for MCPClient constructor
+-    
+-    Returns:
+-        An MCPClient with additional sync_* methods
+-    """
+-    client = MCPClient(*args, **kwargs)
+-    
+-    # Add sync versions of async methods
+-    def create_sync_wrapper(async_func):
+-        def sync_wrapper(*args, **kwargs):
+-            try:
+-                loop = asyncio.get_event_loop()
+-                if loop.is_running():
+-                    raise RuntimeError(
+-                        f"Cannot call {async_func.__name__} synchronously in an async context. "
+-                        f"Use {async_func.__name__} directly instead."
+-                    )
+-            except RuntimeError:
+-                pass  # No event loop, which is fine for sync operation
+-                
+-            return asyncio.run(async_func(*args, **kwargs))
+-        
+-        # Copy metadata
+-        sync_wrapper.__name__ = f"sync_{async_func.__name__}"
+-        sync_wrapper.__doc__ = f"Synchronous version of {async_func.__name__}.\n\n{async_func.__doc__}"
+-        
+-        return sync_wrapper
+-    
+-    # Add sync wrappers for all async methods
+-    client.sync_connect_stdio = create_sync_wrapper(client.connect_stdio)
+-    client.sync_connect_sse = create_sync_wrapper(client.connect_sse)
+-    client.sync_close = create_sync_wrapper(client.close)
+-    
+-    return client
+\ No newline at end of file
++        # Fallback for unexpected formats
++        return str(result)

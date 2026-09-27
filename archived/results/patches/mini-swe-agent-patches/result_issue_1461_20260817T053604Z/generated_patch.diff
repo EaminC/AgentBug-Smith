@@ -1,0 +1,234 @@
+diff --git a/src/strands/multiagent/graph.py b/src/strands/multiagent/graph.py
+index d296753c0..bc883476a 100644
+--- a/src/strands/multiagent/graph.py
++++ b/src/strands/multiagent/graph.py
+@@ -997,118 +997,6 @@ class Graph(MultiAgentBase):
+             self.state.failed_nodes.add(node)
+             self.state.results[node.node_id] = node_result
+ 
+-            # Emit stop event even for failures
+-            complete_event = MultiAgentNodeStopEvent(
+-                node_id=node.node_id,
+-                node_result=node_result,
+-            )
+-            yield complete_event
+-
+-            # Re-raise to stop graph execution (fail-fast behavior)
+-            raise
+-
+-        finally:
+-            if node.execution_status != Status.INTERRUPTED:
+-                await self.hooks.invoke_callbacks_async(AfterNodeCallEvent(self, node.node_id, invocation_state))
+-
+-    def _accumulate_metrics(self, node_result: NodeResult) -> None:
+-        """Accumulate metrics from a node result."""
+-        self.state.accumulated_usage["inputTokens"] += node_result.accumulated_usage.get("inputTokens", 0)
+-        self.state.accumulated_usage["outputTokens"] += node_result.accumulated_usage.get("outputTokens", 0)
+-        self.state.accumulated_usage["totalTokens"] += node_result.accumulated_usage.get("totalTokens", 0)
+-        self.state.accumulated_metrics["latencyMs"] += node_result.accumulated_metrics.get("latencyMs", 0)
+-        self.state.execution_count += node_result.execution_count
+-
+-    def _build_node_input(self, node: GraphNode) -> list[ContentBlock]:
+-        """Build input text for a node based on dependency outputs.
+-
+-        If resuming from an interrupt, return user responses.
+-
+-        Example formatted output:
+-        ```
+-        Original Task: Analyze the quarterly sales data and create a summary report
+-
+-        Inputs from previous nodes:
+-
+-        From data_processor:
+-          - Agent: Sales data processed successfully. Found 1,247 transactions totaling $89,432.
+-          - Agent: Key trends: 15% increase in Q3, top product category is Electronics.
+-
+-        From validator:
+-          - Agent: Data validation complete. All records verified, no anomalies detected.
+-        ```
+-        """
+-        if self._interrupt_state.activated:
+-            context = self._interrupt_state.context
+-            if node.node_id in context and context[node.node_id]["activated"]:
+-                agent_context = context[node.node_id]
+-                agent = cast(Agent, node.executor)
+-                agent.messages = agent_context["messages"]
+-                agent.state = AgentState(agent_context["state"])
+-                agent._interrupt_state = _InterruptState.from_dict(agent_context["interrupt_state"])
+-
+-                responses = context["responses"]
+-                interrupts = agent._interrupt_state.interrupts
+-                return [
+-                    response for response in responses if response["interruptResponse"]["interruptId"] in interrupts
+-                ]
+-
+-        # Get satisfied dependencies
+-        dependency_results = {}
+-        for edge in self.edges:
+-            if (
+-                edge.to_node == node
+-                and edge.from_node in self.state.completed_nodes
+-                and edge.from_node.node_id in self.state.results
+-            ):
+-                if edge.should_traverse(self.state):
+-                    dependency_results[edge.from_node.node_id] = self.state.results[edge.from_node.node_id]
+-
+-        if not dependency_results:
+-            # No dependencies - return task as ContentBlocks
+-            if isinstance(self.state.task, str):
+-                return [ContentBlock(text=self.state.task)]
+-            else:
+-                return cast(list[ContentBlock], self.state.task)
+-
+-        # Combine task with dependency outputs
+-        node_input = []
+-
+-        # Add original task
+-        if isinstance(self.state.task, str):
+-            node_input.append(ContentBlock(text=f"Original Task: {self.state.task}"))
+-        else:
+-            # Add task content blocks with a prefix
+-            node_input.append(ContentBlock(text="Original Task:"))
+-            node_input.extend(cast(list[ContentBlock], self.state.task))
+-
+-        # Add dependency outputs
+-        node_input.append(ContentBlock(text="\nInputs from previous nodes:"))
+-
+-        for dep_id, node_result in dependency_results.items():
+-            node_input.append(ContentBlock(text=f"\nFrom {dep_id}:"))
+-            # Get all agent results from this node (flattened if nested)
+-            agent_results = node_result.get_agent_results()
+-            for result in agent_results:
+-                agent_name = getattr(result, "agent_name", "Agent")
+-                result_text = str(result)
+-                node_input.append(ContentBlock(text=f"  - {agent_name}: {result_text}"))
+-
+-        return node_input
+-
+-    def _build_result(self, interrupts: list[Interrupt]) -> GraphResult:
+-        """Build graph result from current state.
+-
+-        Args:
+-            interrupts: List of interrupts collected during execution.
+-
+-        Returns:
+-            GraphResult with current state.
+-        """
+-        return GraphResult(
+-            status=self.state.status,
+-            results=self.state.results,
+-            accumulated_usage=self.state.accumulated_usage,
+             accumulated_metrics=self.state.accumulated_metrics,
+             execution_count=self.state.execution_count,
+             execution_time=self.state.execution_time,
+@@ -1119,8 +1007,6 @@ class Graph(MultiAgentBase):
+             execution_order=self.state.execution_order,
+             edges=self.state.edges,
+             entry_points=self.state.entry_points,
+-            interrupts=interrupts,
+-        )
+ 
+     def serialize_state(self) -> dict[str, Any]:
+         """Serialize the current graph state to a dictionary."""
+@@ -1230,3 +1116,101 @@ class Graph(MultiAgentBase):
+         # next nodes to execute
+         next_nodes = [self.nodes[nid] for nid in (payload.get("next_nodes_to_execute") or []) if nid in self.nodes]
+         self._resume_next_nodes = next_nodes
++        for result in agent_results:
++            agent_name = getattr(result, "agent_name", "Agent")
++            text_content = result.message.get("content", [])
++            text_str = "".join(item.get("text", "") + "\n" for item in text_content if isinstance(item, dict) and "text" in item)
++            struct_str = "\nStructured Output: " + result.structured_output.model_dump_json() if result.structured_output else ""
++            node_input.append(ContentBlock(text=f"  - {agent_name}: {text_str}{struct_str}"))
++        # Add dependency outputs
++        node_input.append(ContentBlock(text="\nInputs from previous nodes:"))
++
++        for dep_id, node_result in dependency_results.items():
++            node_input.append(ContentBlock(text=f"\nFrom {dep_id}:"))
++            # Get all agent results from this node (flattened if nested)
++            agent_results = node_result.get_agent_results()
++            for result in agent_results:
++                agent_name = getattr(result, "agent_name", "Agent")
++                text_content = result.message.get("content", [])
++                text_str = "".join(item.get("text", "") + "\n" for item in text_content if isinstance(item, dict) and "text" in item)
++                struct_str = "\nStructured Output: " + result.structured_output.model_dump_json() if result.structured_output else ""
++                node_input.append(ContentBlock(text=f"  - {agent_name}: {text_str}{struct_str}"))
++
++    def _build_node_input(self, node: GraphNode) -> list[ContentBlock]:
++        """Build input text for a node based on dependency outputs.
++
++        If resuming from an interrupt, return user responses.
++
++        Example formatted output:
++        ```
++        Original Task: Analyze the quarterly sales data and create a summary report
++
++        Inputs from previous nodes:
++
++        From data_processor:
++          - Agent: Sales data processed successfully. Found 1,247 transactions totaling $89,432.
++          - Agent: Key trends: 15% increase in Q3, top product category is Electronics.
++
++        From validator:
++          - Agent: Data validation complete. All records verified, no anomalies detected.
++        ```
++        """
++        if self._interrupt_state.activated:
++            context = self._interrupt_state.context
++            if node.node_id in context and context[node.node_id]["activated"]:
++                agent_context = context[node.node_id]
++                agent = cast(Agent, node.executor)
++                agent.messages = agent_context["messages"]
++                agent.state = AgentState(agent_context["state"])
++                agent._interrupt_state = _InterruptState.from_dict(agent_context["interrupt_state"])
++
++                responses = context["responses"]
++                interrupts = agent._interrupt_state.interrupts
++                return [
++                    response for response in responses if response["interruptResponse"]["interruptId"] in interrupts
++                ]
++
++        # Get satisfied dependencies
++        dependency_results = {}
++        for edge in self.edges:
++            if (
++                edge.to_node == node
++                and edge.from_node in self.state.completed_nodes
++                and edge.from_node.node_id in self.state.results
++            ):
++                if edge.should_traverse(self.state):
++                    dependency_results[edge.from_node.node_id] = self.state.results[edge.from_node.node_id]
++
++        if not dependency_results:
++            # No dependencies - return task as ContentBlocks
++            if isinstance(self.state.task, str):
++                return [ContentBlock(text=self.state.task)]
++            else:
++                return cast(list[ContentBlock], self.state.task)
++
++        # Combine task with dependency outputs
++        node_input = []
++
++        # Add original task
++        if isinstance(self.state.task, str):
++            node_input.append(ContentBlock(text=f"Original Task: {self.state.task}"))
++        else:
++            # Add task content blocks with a prefix
++            node_input.append(ContentBlock(text="Original Task:"))
++            node_input.extend(cast(list[ContentBlock], self.state.task))
++
++        # Add dependency outputs
++        node_input.append(ContentBlock(text="\nInputs from previous nodes:"))
++
++        for dep_id, node_result in dependency_results.items():
++            node_input.append(ContentBlock(text=f"\nFrom {dep_id}:"))
++            # Get all agent results from this node (flattened if nested)
++            agent_results = node_result.get_agent_results()
++            for result in agent_results:
++                agent_name = getattr(result, "agent_name", "Agent")
++                text_content = result.message.get("content", [])
++                text_str = "".join(item.get("text", "") + "\n" for item in text_content if isinstance(item, dict) and "text" in item)
++                struct_str = "\nStructured Output: " + result.structured_output.model_dump_json() if result.structured_output else ""
++                node_input.append(ContentBlock(text=f"  - {agent_name}: {text_str}{struct_str}"))
++
++        return node_input

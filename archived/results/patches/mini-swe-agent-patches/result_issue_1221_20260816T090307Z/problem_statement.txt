@@ -1,0 +1,113 @@
+# Issue #1221: [BUG] MCPClient timeout causes connection corruption when tool response arrives later
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.17.1
+
+### Python Version
+
+3.12.5
+
+### Operating System
+
+Macos Tahoe 26.1
+
+### Installation Method
+
+pip (uv)
+
+### Steps to Reproduce
+
+script to reproduce (uv run <script.py>)
+
+```python
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["fastmcp", "strands-agents"]
+# ///
+
+import asyncio
+from datetime import timedelta
+from strands.tools.mcp import MCPClient
+from mcp.client.stdio import stdio_client, StdioServerParameters
+
+SERVER_CODE = '''#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["fastmcp"]
+# ///
+import asyncio
+from fastmcp import FastMCP
+
+mcp = FastMCP("test-server")
+
+@mcp.tool()
+async def slow_tool() -> str:
+    """A tool that takes 3 seconds"""
+    await asyncio.sleep(3)
+    return "completed"
+
+if __name__ == "__main__":
+    mcp.run()
+'''
+
+async def main():
+    with open("/tmp/test_server.py", "w") as f:
+        f.write(SERVER_CODE)
+
+    client = MCPClient(
+        lambda: stdio_client(StdioServerParameters(
+            command="uv",
+            args=["run", "--script", "/tmp/test_server.py"]
+        ))
+    )
+
+    with client:
+        for i in range(5):
+            print(f"\n{'='*20} Attempt {i+1} {'='*20}")
+            try:
+                result = await client.call_tool_async(
+                    tool_use_id=f"test_{i}",
+                    name="slow_tool",
+                    arguments={},
+                    read_timeout_seconds=timedelta(seconds=1)
+                )
+                print(f"Success: {result}")
+            except Exception as e:
+                print(f"Error: {type(e).__name__}: {e}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Sample output: [output.txt](https://github.com/user-attachments/files/23662890/output.txt)
+
+### Expected Behavior
+
+All tool calls should either complete successfully or timeout.
+
+### Actual Behavior
+
+First few tools calls timeout, and the ones that arrive later receive a `anyio.ClosedResourceError`.
+
+### Additional Context
+
+In the output I see that it appears to receive the response for the timed out tool call right before it seems to close the connection:
+
+```
+ERROR:root:Unhandled exception in receive loop: Received response with an unknown request ID: SessionMessage(message=JSONRPCMessage(root=JSONRPCResponse(jsonrpc='2.0', id=1, result={'content': [{'type': 'text', 'text': 'completed'}], 'structuredContent': {'result': 'completed'}, 'isError': False})), metadata=None)
+Traceback (most recent call last):
+  File "/Users/akondu/Library/Caches/uv/environments-v2/test-timeout-bug-96e18d7890cb4991/lib/python3.12/site-packages/mcp/shared/session.py", line 420, in _receive_loop
+    await self._handle_incoming(
+  File "/Users/akondu/Library/Caches/uv/environments-v2/test-timeout-bug-96e18d7890cb4991/lib/python3.12/site-packages/mcp/client/session.py", line 546, in _handle_incoming
+    await self._message_handler(req)
+  File "/Users/akondu/Library/Caches/uv/environments-v2/test-timeout-bug-96e18d7890cb4991/lib/python3.12/site-packages/strands/tools/mcp/mcp_client.py", line 565, in _handle_error_message
+    raise message
+RuntimeError: Received response with an unknown request ID: SessionMessage(message=JSONRPCMessage(root=JSONRPCResponse(jsonrpc='2.0', id=1, result={'content': [{'type': 'text', 'text': 'completed'}], 'structuredContent': {'result': 'completed'}, 'isError': False})), metadata=None)
+ERROR:strands.tools.mcp.mcp_client:tool execution failed
+```

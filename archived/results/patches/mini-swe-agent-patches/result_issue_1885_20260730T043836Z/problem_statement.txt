@@ -1,0 +1,81 @@
+# Issue #1885: [Bug]: Streaming events out of order — TextBlockDelta emitted before ThinkingBlockEnd at the reasoning→answer boundary
+
+### Description
+
+In `Agent._convert_chat_response_to_event` (`src/agentscope/agent/_agent.py`), **text blocks are processed before thinking blocks** within each streamed chunk. As a result, at the reasoning→answer boundary the first answer `TextBlockDeltaEvent` is emitted **before** the `ThinkingBlockEndEvent`.
+
+Any downstream consumer that renders reasoning as `<think>{thinking}</think>{answer}` (a very common pattern) therefore gets the **first answer token(s) trapped inside the `<think>…</think>` block**. With a collapsible "thinking" panel, the visible answer silently loses its first token.
+
+This is **not** model-specific — it reproduces with any well-behaved reasoning model that streams reasoning fully before content in *separate* chunks (DeepSeek `deepseek-reasoner` / `deepseek-v4`, Qwen3 thinking, etc.). The model behaves correctly; the event ordering is wrong.
+
+### Version
+
+- `agentscope==2.0.1` (confirmed). Same code is present in **v2.0.2** and `main` (`_agent.py`: text handled ~L2433, thinking ~L2458).
+
+### Minimal reproduction
+
+```python
+import asyncio
+from agentscope.message import TextBlock, ThinkingBlock
+from agentscope.model import ChatResponse
+from agentscope.agent import Agent
+
+class _Stub:                      # minimal stub for the bound method
+    class state:
+        reply_id = "r"
+convert = Agent._convert_chat_response_to_event.__get__(_Stub())
+
+# A well-behaved reasoning stream: reasoning fully precedes the answer,
+# delivered in SEPARATE chunks (how DeepSeek / Qwen reasoning models stream).
+chunks = [
+    ChatResponse(content=[ThinkingBlock(thinking="reason")], is_last=False),
+    ChatResponse(content=[TextBlock(text="Hello")], is_last=False),  # boundary: reasoning done, answer begins
+]
+
+async def main():
+    block_ids = {"text": None, "thinking": None, "tools": []}
+    seq = []
+    for ch in chunks:
+        async for ev in convert(block_ids, ch):
+            seq.append(type(ev).__name__)
+    print(" -> ".join(seq))
+
+asyncio.run(main())
+```
+
+### Actual output
+
+```
+ThinkingBlockStartEvent -> ThinkingBlockDeltaEvent -> TextBlockStartEvent -> TextBlockDeltaEvent -> ThinkingBlockEndEvent
+```
+
+`ThinkingBlockEndEvent` is emitted **after** `TextBlockDeltaEvent("Hello")`.
+
+### Expected output
+
+The thinking block should close **before** any answer text is emitted:
+
+```
+ThinkingBlockStartEvent -> ThinkingBlockDeltaEvent -> ThinkingBlockEndEvent -> TextBlockStartEvent -> TextBlockDeltaEvent
+```
+
+### Root cause
+
+Within `_convert_chat_response_to_event`, the per-chunk handling order is **text first, then thinking**, and each modality is closed in its own `elif` branch. The boundary chunk carries text only (thinking already finished), so it emits `TextBlockStart`/`TextBlockDelta` first and only afterwards, in the thinking branch, emits `ThinkingBlockEnd`.
+
+The same ordering also mis-sequences a single chunk that carries **both** a `ThinkingBlock` and a `TextBlock` (e.g. a gateway that merges the last reasoning delta and the first content delta): the text is emitted before the thinking start/delta, producing answer text *before* `<think>`.
+
+### Suggested fix
+
+Within a chunk, emit modality **close/transition** events before opening/continuing another modality, and handle **thinking before text**:
+
+1. close any open block whose modality is **absent** in this chunk (`TextBlockEnd` / `ThinkingBlockEnd`),
+2. then open/continue **thinking**,
+3. then open/continue **text**,
+4. then tool calls.
+
+(keeping the existing `data_blocks` keep-alive guard). This yields `… ThinkingBlockEnd -> TextBlockStart -> TextBlockDelta` at the boundary, and `ThinkingBlock* -> TextBlock*` for a both-in-one chunk.
+
+### Downstream workaround
+
+Consumers can defensively close the `<think>` wrapper on the first `TextBlockDeltaEvent` instead of waiting for `ThinkingBlockEndEvent`.

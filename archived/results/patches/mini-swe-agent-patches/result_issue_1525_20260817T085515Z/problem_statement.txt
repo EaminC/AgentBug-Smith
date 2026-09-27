@@ -1,0 +1,115 @@
+# Issue #1525: [BUG] @tool decorator strips null from Optional/Union types
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.15.0 (but code also confirmed to still exist in 1.22.0)
+
+### Python Version
+
+3.12.12
+
+### Operating System
+
+macOS 26.2
+
+### Installation Method
+
+other
+
+### Steps to Reproduce
+
+```python
+from strands import tool
+from enum import Enum
+import json
+
+class Priority(str, Enum):
+    A = 'A'
+    B = 'B'
+
+@tool
+def my_tool(
+    required_field: str,
+    priority: Priority | None,  # Required but nullable
+) -> str:
+    """Test tool.
+
+    Args:
+        required_field: A required string
+        priority: Optional priority level
+    """
+    return str(priority)
+
+# Check the generated schema
+schema = my_tool.tool_spec['inputSchema']['json']
+print("Properties:")
+print(json.dumps(schema['properties']['priority'], indent=2))
+print("\nRequired fields:", schema.get('required', []))
+```
+
+### Expected Behavior
+
+```json
+{
+  "description": "Optional priority level",
+  "anyOf": [
+    {"$ref": "#/$defs/Priority"},
+    {"type": "null"}
+  ]
+}
+```
+
+### Actual Behavior
+
+```none
+Properties:
+{
+  "description": "Optional priority level",
+  "$ref": "#/$defs/Priority"
+}
+
+Required fields: ['required_field', 'priority']
+```
+
+### Additional Context
+
+When Anthropic's Claude is instructed to pass a null value under certain circumstances but the JSONSchema doesn't list `null` as legitimate, it sometimes falls back by passing `"null"` as a string, instead of the `null` value. This leads to tool calling failures.
+
+### Possible Solution
+
+First, my understanding of the root cause:
+
+The `_clean_pydantic_schema` method in `decorator.py` (lines 227-239) strips the `null` option from `anyOf` constructs:
+
+```python
+# Handle anyOf constructs (common for Optional types)
+if "anyOf" in prop_schema:
+    any_of = prop_schema["anyOf"]
+    # Handle Optional[Type] case (represented as anyOf[Type, null])
+    if len(any_of) == 2 and any(item.get("type") == "null" for item in any_of):
+        # Find the non-null type
+        for item in any_of:
+            if item.get("type") != "null":
+                # Copy the non-null properties to the main schema
+                for k, v in item.items():
+                    prop_schema[k] = v
+                # Remove the anyOf construct
+                del prop_schema["anyOf"]
+                break
+```
+
+This converts `anyOf[Priority, null]` to just `$ref: Priority`, losing the nullable semantics.
+
+---
+
+The simplest fix may be simply to remove this logic. However, if there's a compelling reason to have it, making it conditional on the field not being in the `required` array would be appropriate: **If a field is both required and nullable, the developer presumably wants the model to be able to pass `null`.**
+
+### Related Issues
+
+_No response_

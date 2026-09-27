@@ -1,0 +1,228 @@
+# Issue #1077: [BUG] With bedrock guardrails, tool output is redacted breaking the conversation
+
+### Checks
+
+- [x] I have updated to the lastest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched [./issues](./issues?q=) and there are no duplicates of my issue
+
+### Strands Version
+
+1.13.0
+
+### Python Version
+
+3.12
+
+### Operating System
+
+macOS
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+The `"test-guardrail-block-cactus"` is the test guardrail used in the integration tests, that blocks input and output if it contains the word CACTUS.
+
+
+```python
+import json
+from strands import Agent, tool
+from strands.models import BedrockModel
+import boto3
+
+def get_guardrail_id(client, guardrail_name):
+
+def get_guardrail():
+    client = boto3.client("bedrock", region_name="us-west-2")
+
+    guardrail_name = "test-guardrail-block-cactus"    
+    response = client.list_guardrails()
+    for guardrail in response.get("guardrails", []):
+        if guardrail["name"] == guardrail_name:
+            return guardrail["id"]
+    return None
+
+@tool
+def get_users() -> str:
+    "List my users"
+    return """|Name|Email|
+|Jerry Barry|jerry@gmail.com|
+|CACTUS|cactus@email.com|
+"""
+
+bedrock_model = BedrockModel(
+    model_id="...",
+    guardrail_id=get_guardrail(),
+    guardrail_version="DRAFT",
+    guardrail_redact_input = True, # default
+    guardrail_redact_output = False, # default
+)
+
+# Create agent with the guardrail-protected model
+agent = Agent(
+    system_prompt="You are a helpful assistant.",
+    model=bedrock_model,
+    tools=[get_users]
+)
+
+# Use the protected agent for conversations
+response = agent("Who are my users?")
+assert response.stop_reason == "guardrail_intervened"
+print(f"Conversation after first call: {json.dumps(agent.messages, indent=4)}")
+
+response = agent("Hello")
+print(f"Entire conversation: {json.dumps(agent.messages, indent=4)}")
+
+```
+
+### Expected Behavior
+
+Bedrock Guardrails do not actually check tool outputs. In this case, the guardrails triggered on the model **output**. 
+My expectation would be that the model _output_ is indeed redacted, but:
+- the model _input_ should not be redacted if only "output" guardrails triggered
+- in any case, the part of the input that contains tool outputs should certainly not be redacted as it breaks the conversation
+
+
+```
+Entire conversation: [
+    {
+        "role": "user",
+        "content": [
+            {
+                "text": "Who are my users?"
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": [
+            {
+                "text": "I'll help you get a list of your users."
+            },
+            {
+                "toolUse": {
+                    "toolUseId": "tooluse_-lfnT1OcSQqqJRusDse-1g",
+                    "name": "get_users",
+                    "input": {}
+                }
+            }
+        ]
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "toolResult": {
+                    "toolUseId": "tooluse_-lfnT1OcSQqqJRusDse-1g",
+                    "status": "success",
+                    "content": [
+                        {
+                            "text": "|Name|Email|\n|Jerry Bramby|jerry@gmail.com|\n|CACTUS|cactus@email.com|\n"
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": [
+            {
+                "text": "BLOCKED BY GUARDRAILS (due to model output)"
+            }
+        ]
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "text": "Hello.."
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": [
+            {
+                "text": "Hello! How can I help you today?"
+            }
+        ]
+    }
+]
+```
+
+### Actual Behavior
+
+Having `guardrail_redact_input=True`, and output guardrails being triggered, the `tool_result` (being an input) is redacted by strands, breaking the conversation history and causing an error next the time the agent is prompted.
+
+```bash
+Conversation after first call: [
+    {
+        "role": "user",
+        "content": [
+            {
+                "text": "Who are my users?"
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": [
+            {
+                "text": "I'll help you get a list of your users."
+            },
+            {
+                "toolUse": {
+                    "toolUseId": "tooluse_hzAn37L3QmCuULNdi6YAWA",
+                    "name": "get_users",
+                    "input": {}
+                }
+            }
+        ]
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "text": "[User input redacted.]"
+            }
+        ]
+    },
+    {
+        "role": "assistant",
+        "content": [
+            {
+                "text": ""BLOCKED BY GUARDRAILS (due to output)"
+            }
+        ]
+    }
+]
+
+Traceback (most recent call last):
+....
+botocore.errorfactory.ValidationException: An error occurred (ValidationException) when calling the ConverseStream operation: 
+The model returned the following errors: messages.2: `tool_use` ids were found without `tool_result` blocks immediately after: 
+tooluse_hzAn37L3QmCuULNdi6YAWA. Each `tool_use` block must have a corresponding `tool_result` block in the next message.
+└ Bedrock region: us-west-2
+└ Model id: ...
+```
+
+### Additional Context
+
+_No response_
+
+### Possible Solution
+
+See the PR https://github.com/strands-agents/sdk-python/pull/1080 
+ 
+- strands should only redact the "output" if only "output" guardrails triggered
+  - This changes the existing behavior of redacting both input and output if one of the two if guardrailed. I'm not sure how intentional this is, but it might need discussion.
+- In any case, blocks that contains tool outputs should certainly **not** be redacted in any case, as it breaks the conversation.
+
+
+### Related Issues
+
+_No response_

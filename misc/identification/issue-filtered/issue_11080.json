@@ -1,0 +1,25 @@
+{
+  "number": 11080,
+  "title": "Inefficient Chat Compression Logic for Single-Message History",
+  "url": "https://github.com/google-gemini/gemini-cli/issues/11080",
+  "state": "closed",
+  "created_at": "2025-10-14T02:48:44Z",
+  "closed_at": "2025-10-14T04:10:58Z",
+  "body": "## Description\n\nThe `tryCompressChat` function in `packages/core/src/core/client.ts` attempts to\ncompress the chat history if it exceeds a certain token threshold.\n\nIn certain scenarios, such as when the history contains only a single, large\ncontext message, the `findCompressSplitPoint` function returns 0. This results\nin `historyToCompress` being an empty array.\n\nThe code then proceeds to make an API call to the model to summarize this empty\n`historyToCompress`. This is an unnecessary API call that wastes resources, adds\nlatency, and could potentially result in an error from the API.\n\n## Location\n\n`packages/core/src/core/client.ts` within the `tryCompressChat` method.\n\n## Proposed Solution\n\nAdd a check after `historyToCompress` is calculated. If it is empty, return a\n`NOOP` status immediately to avoid the unnecessary API call.\n\n```typescript\n// packages/core/src/core/client.ts\n\n// ... after findCompressSplitPoint\n\nconst historyToCompress = curatedHistory.slice(0, splitPoint);\nconst historyToKeep = curatedHistory.slice(splitPoint);\n\n// Add this check\nif (historyToCompress.length === 0) {\n  return {\n    originalTokenCount,\n    newTokenCount: originalTokenCount,\n    compressionStatus: CompressionStatus.NOOP,\n  };\n}\n\nconst summaryResponse = await this.config;\n// ...\n```\n\nThis change ensures that compression is only attempted when there is actual conversation history to compress beyond the initial context.\n",
+  "labels": [],
+  "linked_prs": [
+    {
+      "number": 11082,
+      "state": "closed",
+      "title": "fix(compression): prevent unnecessary summarization when history is too short",
+      "url": "https://github.com/google-gemini/gemini-cli/pull/11082",
+      "merged": true,
+      "base_branch": "main",
+      "body": "## TLDR\r\n\r\nThis PR fixes an issue where running `/compress` at the start of a session (or when history is very short) would trigger an unnecessary LLM call for summarization. It adds a check to early-exit with `CompressionStatus.NOOP` if there is no history to compress and updates the UI message accordingly.\r\n\r\n## Dive Deeper\r\n\r\nPreviously, the compression logic could proceed to make a `generateContent` call for summarization even if the calculated `historyToCompress` was empty. This often happened if a user ran `/compress` immediately after startup, as the initial system/environment context messages were present in the history.\r\n\r\nChanges included in this PR:\r\n\r\n1.  **Logic (`packages/core/src/core/client.ts`)**: Added a check inside `tryCompressChat` to see if `historyToCompress.length === 0` after the history splitting logic. If so, it returns `CompressionStatus.NOOP` immediately, avoiding an LLM call.\r\n2.  **UX (`packages/cli/src/ui/components/messages/CompressionMessage.tsx`)**: Updated the user-facing message for `CompressionStatus.NOOP` from \"Chat history is already compressed.\" to \"Nothing to compress.\" to better reflect the state at the start of a session.\r\n3.  **Tests (`packages/core/src/core/client.test.ts`)**:\r\n    *   Added a specific test case for the \"too short to compress\" scenario.\r\n    *   Updated existing compression tests to use longer mock chat histories so they don't trigger the new `NOOP` condition prematurely.\r\n\r\n## Reviewer Test Plan\r\n\r\nTo validate these changes:\r\n\r\n1.  Start a new CLI session.\r\n2.  Immediately run the `/compress` command.\r\n3.  **Verify:** The output should say \"Nothing to compress.\" and there should be no loading spinner indicating an LLM summarization call.\r\n4.  Have a multi-turn conversation to build up chat history.\r\n5.  Run `/compress` again.\r\n6.  **Verify:** Compression proceeds normally (assuming history exceeds thresholds).\r\n\r\n## Testing Matrix\r\n\r\n|          | 🍏  | 🪟  | 🐧  |\r\n| -------- | --- | --- | --- |\r\n| npm run  |✅| ❓  | ❓  |\r\n| npx      | ❓  | ❓  | ❓  |\r\n| Docker   | ❓  | ❓  | ❓  |\r\n| Podman   | ❓  | -   | -   |\r\n| Seatbelt |✅| -   | -   |\r\n\r\n## Linked issues / bugs\r\n\r\nCloses #11080\r\n"
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes.\n\nExplanation: The issue concerns chat history compression logic, which is part of the agent's memory mechanism. It involves unnecessary LLM API calls for summarization when there is no history to compress, directly relating to agent memory management and LLM operation. This fits the \"Memory content errors\" and \"LLM operation issues\" categories."
+  }
+}

@@ -1,0 +1,113 @@
+# Issue #1583: Support for `extra_body` field by model metadata
+
+### Issue
+
+It seems that the `extra_body` field is not supported in `openrouter provider` of `litellm` in `Aider`.
+---
+
+First, I use a translator, so please understand that grammar and meaning may not be conveyed properly.
+
+
+Here are the request body fields of `openrouter`.
+Routes the provider through the `provider.order`.
+```js
+fetch("https://openrouter.ai/api/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+    "HTTP-Referer": `${YOUR_SITE_URL}`, // Optional, for including your app on openrouter.ai rankings.
+    "X-Title": `${YOUR_SITE_NAME}`, // Optional. Shows in rankings on openrouter.ai.
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    "model": "mistralai/mixtral-8x7b-instruct",
+    "messages": [
+      {"role": "user", "content": "Hello"},
+    ],
+    "provider": {
+      "order": [
+        "OpenAI",
+        "Together"
+      ]
+    },
+  })
+});
+```
+
+Here is some of the source for `litellm`:
+Note that `litellm` is providing openrouter's additional request body via the `extra_body` field.
+- https://github.com/BerriAI/litellm/blob/1e59395280a73d8b88449d7fab7ffd6bed8915fd/litellm/main.py#L1961-L1973
+```python
+            ## Load Config
+            config = openrouter.OpenrouterConfig.get_config()
+            for k, v in config.items():
+                if k == "extra_body":
+                    # we use openai 'extra_body' to pass openrouter specific params - transforms, route, models
+                    if "extra_body" in optional_params:
+                        optional_params[k].update(v)
+                    else:
+                        optional_params[k] = v
+                elif k not in optional_params:
+                    optional_params[k] = v
+
+
+            data = {"model": model, "messages": messages, **optional_params}
+```
+
+Here is a part of `send_completion` function of `Aider`. I think there should be some `parameter` added here like `extra_body`.
+- https://github.com/paul-gauthier/aider/blob/e6037140be0105ee2575761b69c0e5ec7acf946b/aider/sendchat.py#L49-L76
+```python
+def send_completion(
+    model_name,
+    messages,
+    functions,
+    stream,
+    temperature=0,
+    extra_headers=None,
+    max_tokens=None,
+):
+    from aider.llm import litellm
+
+
+    kwargs = dict(
+        model=model_name,
+        messages=messages,
+        stream=stream,
+    )
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+
+
+    if functions is not None:
+        function = functions[0]
+        kwargs["tools"] = [dict(type="function", function=function)]
+        kwargs["tool_choice"] = {"type": "function", "function": {"name": function["name"]}}
+    if extra_headers is not None:
+        kwargs["extra_headers"] = extra_headers
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+
+```
+
+Finally, I think the following fields should be added to the configuration file of the model's metadata.
+`.aider.model.metadata.json`
+```json
+...
+    "openrouter/google/gemma-2-9b-it:free": {
+        "input_cost_per_token": 0.0,
+        "output_cost_per_token": 0.0,
+        "litellm_provider": "openrouter",
+        "mode": "code",
+        "extra_body": {
+            ...
+        }
+    },
+...
+```
+
+I haven't been able to debug Python, so I can't tell exactly where the content needs to be added. I hope you understand this, and I'd appreciate your review for improvement.
+
+### Version and model info
+
+_No response_

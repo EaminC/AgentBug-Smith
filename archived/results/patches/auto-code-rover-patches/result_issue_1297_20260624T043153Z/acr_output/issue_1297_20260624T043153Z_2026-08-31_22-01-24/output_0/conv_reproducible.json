@@ -1,0 +1,18 @@
+[
+    {
+        "role": "system",
+        "content": "You are an experienced software engineer responsible for reproducing given issues."
+    },
+    {
+        "role": "user",
+        "content": "Here is an issue:\n\nIssue Title: fix(hooks): studio_pre_print_hook crashes Agent when Studio disconnects\n\nDescription:\n### Problem Description\n\nThe `as_studio_forward_message_pre_print_hook` function raises an exception `raise e from None` after 3 retry attempts when the Studio session is disconnected or unreachable, causing the Agent process to crash.\n\n### Steps to Reproduce\n\n1. Start an Agent with Studio hook enabled\n2. Simulate Studio disconnection (e.g., stop Studio service or connect to a non-existent address)\n3. Agent sends a message triggering the `pre_print` hook\n4. Hook retries 3 times then throws an exception, causing Agent to crash\n\nMinimal reproduction code:\n\n```python\nimport asyncio\nfrom agentscope.agent import AgentBase\nfrom agentscope.message import Msg, TextBlock\nfrom agentscope.hooks._studio_hooks import as_studio_forward_message_pre_print_hook\n\nclass TestAgent(AgentBase):\n    def __init__(self, name: str):\n        super().__init__()\n        self.name = name\n        self._disable_console_output = False\n    \n    async def reply(self, msg: Msg) -> Msg:\n        await self.print(msg)\n        return msg\n    \n    async def observe(self, msg: Msg) -> None:\n        pass\n    \n    async def handle_interrupt(self, *args, **kwargs) -> Msg:\n        return Msg(\"test\", \"Interrupt handled\", \"assistant\")\n\n# Register hook with non-existent Studio URL\nTestAgent.register_class_hook(\n    \"pre_print\",\n    \"studio_forward\",\n    lambda self, kwargs: as_studio_forward_message_pre_print_hook(\n        self, kwargs, studio_url=\"http://127.0.0.1:9999\", run_id=\"test\"\n    ),\n)\n\nagent = TestAgent(name=\"TestAgent\")\n\nasync def main():\n    msg = Msg(\"user\", [TextBlock(type=\"text\", text=\"Hello\")], \"user\")\n    await agent.reply(msg)  # Raises ConnectionError exception\n\nasyncio.run(main())\n```\n\n### Expected Behavior\n\nWhen Studio is disconnected, the Agent should continue running normally instead of crashing.\n\n### Actual Behavior\n\nRaises `ConnectionError` exception, causing Agent operation to fail.\n\n### Proposed Fix\n\nReplace `raise e from None` with graceful degradation (log warning and return):\n\n```python\n# Before fix\nraise e from None\n\n# After fix\nlogger.warning(\n    \"Failed to forward message to Studio after %d retries: %s. \"\n    \"Agent will continue running without Studio forwarding.\",\n    n_retry,\n    e,\n)\nreturn\n```\n\n### Environment\n\n- AgentScope version: 1.0.16\n- Python version: 3.13.2\n- OS: Linux/macOS/Windows"
+    },
+    {
+        "role": "user",
+        "content": "Tell me whether the issue contains a reproducible example. Your answer should take the following Json format:\n```\n{\n    \"has-reproducible-example\": ...\n}\n```\nwhere \"has-reproducible-example\" should be either `true` or `false`."
+    },
+    {
+        "role": "assistant",
+        "content": "{\n    \"has-reproducible-example\": true\n}"
+    }
+]

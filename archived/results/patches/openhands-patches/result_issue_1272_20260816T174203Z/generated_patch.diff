@@ -1,0 +1,50 @@
+diff --git a/src/strands/session/repository_session_manager.py b/src/strands/session/repository_session_manager.py
+index ad4733a35..7d9c3cc3f 100644
+--- a/src/strands/session/repository_session_manager.py
++++ b/src/strands/session/repository_session_manager.py
+@@ -162,8 +162,45 @@ class RepositorySessionManager(SessionManager):
+             agent.messages = prepend_messages + [session_message.to_message() for session_message in session_messages]
+ 
+             # Fix broken session histories: https://github.com/strands-agents/sdk-python/issues/859
++            # Fix missing toolUse before toolResult due to cutoffs
++            agent.messages = self._fix_missing_tool_use_before_tool_result(agent.messages)
++
+             agent.messages = self._fix_broken_tool_use(agent.messages)
+ 
++
++    def _fix_missing_tool_use_before_tool_result(self, messages: list[Message]) -> list[Message]:
++        """Insert missing toolUse message before orphaned toolResult due to cutoff in listMessages."""
++        if not messages:
++            return messages
++
++        # Check if last message contains a toolResult without preceding toolUse
++        last_msg = messages[-1]
++        if any("toolResult" in content for content in last_msg.get("content", [])):
++            # Extract all toolUseIds in messages
++            existing_tool_use_ids = set()
++            for msg in messages:
++                for content in msg.get("content", []):
++                    if "toolUse" in content:
++                        existing_tool_use_ids.add(content["toolUse"]["toolUseId"])
++
++            # Check each toolResult in last message for missing toolUse
++            for content in last_msg.get("content", []):
++                if "toolResult" in content:
++                    tool_use_id = content["toolResult"]["toolUseId"]
++                    if tool_use_id not in existing_tool_use_ids:
++                        # Create a dummy toolUse content
++                        dummy_tool_use = {
++                            "toolUse": {
++                                "toolUseId": tool_use_id,
++                                "name": "unknown_tool",
++                                "input": {},
++                            }
++                        }
++                        # Insert dummy toolUse message before last message
++                        messages.insert(len(messages) - 1, {"role": "user", "content": [dummy_tool_use]})
++                        break
++        return messages
++
+     def _fix_broken_tool_use(self, messages: list[Message]) -> list[Message]:
+         """Add tool_result after orphaned tool_use messages.
+ 

@@ -1,0 +1,401 @@
+STDOUT:
+
+[2026-09-01 04:23:30] Total number of tasks: 1
+
+[2026-09-01 04:23:30] Total number of processes: 1
+
+[2026-09-01 04:23:30] Task group info: (number of groups: 1)
+
+[2026-09-01 04:23:30]   local: 1 tasks
+
+[2026-09-01 04:23:30] Running in single process mode.
+
+[2026-09-01 04:23:30] ============= Running task issue_3226_20260822T080137Z =============
+
+=========== Starting AutoCodeRover on the following issue ============
+
+╭─ Issue description ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Issue Title: [BUG] GeminiModel does not convert Vertex AI 429 with plain-text error message to ModelThrottledException                          │
+│                                                                                                                                                 │
+│ Description:                                                                                                                                    │
+│ ## Checks                                                                                                                                       │
+│                                                                                                                                                 │
+│ -  I have updated to the lastest minor and patch version of Strands                                                                             │
+│ -  I have checked the documentation and this is not expected behavior                                                                           │
+│ -  I have searched ./issues and there are no duplicates of my issue                                                                             │
+│                                                                                                                                                 │
+│ ## SDK Language                                                                                                                                 │
+│                                                                                                                                                 │
+│ Python                                                                                                                                          │
+│                                                                                                                                                 │
+│ ## Strands Version                                                                                                                              │
+│                                                                                                                                                 │
+│ 1.47.0 (first observed on 1.45.0; the relevant code on `main` is unchanged)                                                                     │
+│                                                                                                                                                 │
+│ ## Language Runtime Version                                                                                                                     │
+│                                                                                                                                                 │
+│ Python 3.12                                                                                                                                     │
+│                                                                                                                                                 │
+│ ## Operating System                                                                                                                             │
+│                                                                                                                                                 │
+│ macOS 15 (Darwin 25.4.0)                                                                                                                        │
+│                                                                                                                                                 │
+│ ## Installation Method                                                                                                                          │
+│                                                                                                                                                 │
+│ pip                                                                                                                                             │
+│                                                                                                                                                 │
+│ ## Steps to Reproduce                                                                                                                           │
+│                                                                                                                                                 │
+│ When Vertex AI (`vertexai=True`) returns a 429 under concurrent load, the error arrives as a `genai.errors.ClientError` whose `message` is      │
+│ **plain text**, not JSON:                                                                                                                       │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ 429 RESOURCE_EXHAUSTED. Resource exhausted. Please try again later. ...                                                                         │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ `GeminiModel.stream()` detects throttling by `json.loads(error.message)` and matching `message["error"]["status"]`. With a plain-text message,  │
+│ `json.loads` raises `JSONDecodeError`, the handler logs a warning and re-raises the raw `ClientError` — so it is never converted to             │
+│ `ModelThrottledException` and the event loop's built-in retry (`ModelRetryStrategy`) never fires.                                               │
+│                                                                                                                                                 │
+│ Deterministic reproduction (mirrors what the google-genai SDK raises mid-stream for a Vertex AI 429):                                           │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ import asyncio                                                                                                                                  │
+│ from unittest import mock                                                                                                                       │
+│                                                                                                                                                 │
+│ from google import genai                                                                                                                        │
+│                                                                                                                                                 │
+│ from strands.models.gemini import GeminiModel                                                                                                   │
+│                                                                                                                                                 │
+│ # What Vertex AI's 429 looks like: structured code/status, plain-text message                                                                   │
+│ error = genai.errors.ClientError(                                                                                                               │
+│     429,                                                                                                                                        │
+│     {"error": {"status": "RESOURCE_EXHAUSTED", "message": "Resource exhausted. Please try again later."}},                                      │
+│ )                                                                                                                                               │
+│ assert error.code == 429                                                                                                                        │
+│ assert error.status == "RESOURCE_EXHAUSTED"                                                                                                     │
+│                                                                                                                                                 │
+│ model = GeminiModel(model_id="gemini-2.5-flash", client_args={"api_key": "test"})                                                               │
+│ with mock.patch.object(genai.Client, "aio", new_callable=mock.PropertyMock) as aio:                                                             │
+│     aio.return_value.models.generate_content_stream.side_effect = error                                                                         │
+│     events = model.stream([{"role": "user", "content": [{"text": "hi"}]}])                                                                      │
+│     asyncio.run(events.__anext__())  # raises raw ClientError, not ModelThrottledException                                                      │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ Real-world trigger: Vertex AI's pay-as-you-go Gemini models use Dynamic Shared Quota, so any concurrent traffic can receive a 429 regardless of │
+│ configured quota. In my case, 1 out of 30 requests at concurrency 4 hit this (gemini model, `global` endpoint), and the error surfaced directly │
+│ to the user instead of being retried.                                                                                                           │
+│                                                                                                                                                 │
+│ ## Expected Behavior                                                                                                                            │
+│                                                                                                                                                 │
+│ A 429 (`RESOURCE_EXHAUSTED`) from Vertex AI is converted to `ModelThrottledException`, regardless of whether `error.message` happens to be      │
+│ JSON, so the built-in exponential-backoff retry in the event loop handles it.                                                                   │
+│                                                                                                                                                 │
+│ ## Actual Behavior                                                                                                                              │
+│                                                                                                                                                 │
+│ The raw `genai.errors.ClientError` propagates out of `stream()`:                                                                                │
+│                                                                                                                                                 │
+│ ```                                                                                                                                             │
+│ strands  | error_message=<Resource exhausted. Please try again later. ...> | Gemini API returned non-JSON error                                 │
+│ ...                                                                                                                                             │
+│ google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. Resource exhausted. Please try again later. ...                                        │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ No retry is attempted; the request fails immediately.                                                                                           │
+│                                                                                                                                                 │
+│ ## Additional Context                                                                                                                           │
+│                                                                                                                                                 │
+│ - #1062 fixed the `JSONDecodeError` crash for non-JSON error messages (#1024), but the non-JSON path re-raises the raw `ClientError` without    │
+│ ever checking for throttling — which is exactly the path a Vertex AI 429 takes.                                                                 │
+│ - The SDK-level HTTP retry (`HttpRetryOptions`) does not help here: the 429 is raised while iterating the response stream                       │
+│ (`errors.APIError.raise_error_async`), which is outside the request-issuing wrapper that `retry_options` covers.                                │
+│ - The TypeScript SDK has the same root cause: `classifyGoogleError()` in `src/models/google/errors.ts` also relies on                           │
+│ `JSON.parse(error.message)` and returns `undefined` for non-JSON messages, so a plain-text 429 is not classified as throttling there either.    │
+│                                                                                                                                                 │
+│ ## Possible Solution                                                                                                                            │
+│                                                                                                                                                 │
+│ `genai.errors.APIError` already exposes structured `code` and `status` attributes (populated by the google-genai SDK from the response), so the │
+│ handler doesn't need to parse `error.message` at all:                                                                                           │
+│                                                                                                                                                 │
+│ ```python                                                                                                                                       │
+│ except genai.errors.ClientError as error:                                                                                                       │
+│     match error.status:                                                                                                                         │
+│         case "RESOURCE_EXHAUSTED" | "UNAVAILABLE":                                                                                              │
+│             raise ModelThrottledException(error.message) from error                                                                             │
+│         case "INVALID_ARGUMENT":                                                                                                                │
+│             ...                                                                                                                                 │
+│ ```                                                                                                                                             │
+│                                                                                                                                                 │
+│ I'd be happy to submit a PR for the Python SDK with this fix.                                                                                   │
+│                                                                                                                                                 │
+│ ## Related Issues                                                                                                                               │
+│                                                                                                                                                 │
+│ #1024, #1062, #370                                                                                                                              │
+│                                                                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1150, output_tokens=13, cost=0.000180
+╭─ AutoCodeRover ────────────────────────────────────────────────────╮
+│ Please try to write a standalone python file reproducer.py to      │
+│ reproduce the issue. Put the file in a code block.                 │
+│                                                                    │
+│ The file would be put in the root directory of the project and     │
+│ executed by python3 reproducer.py. The script should raise an      │
+│ AssertionError when the issue is present and print a stack trace   │
+│ of the issue. The script should also exit with code 0 when the     │
+│ issue is fixed.                                                    │
+│                                                                    │
+│ Please use the following function to print the stack trace, so     │
+│ that the line numbers of the statements are shown clearly:         │
+│                                                                    │
+│                                                                    │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback    import sys    tb =                        │
+│  traceback.extract_tb(e.__traceback__)                             │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1328, output_tokens=601, cost=0.000560
+╭─ Reproducer Test Generation ───────────────────────────────────────╮
+│                                                                    │
+│  # reproducer.py                                                   │
+│  def print_stacktrace(e: Exception):                               │
+│      import traceback                                              │
+│      import sys                                                    │
+│      tb = traceback.extract_tb(e.__traceback__)                    │
+│      print("Traceback (most recent call last):", file=sys.stderr)  │
+│      for frame in tb:                                              │
+│          line_number = frame.lineno                                │
+│          code_context = frame.line.strip() if frame.line else      │
+│  "Unknown"                                                         │
+│          print(f'  File "{frame.filename}"', file=sys.stderr)      │
+│          print(f"    {line_number}: {code_context}",               │
+│  file=sys.stderr)                                                  │
+│      print(f"{e.__class__.__name__}: {e}", file=sys.stderr)        │
+│                                                                    │
+│                                                                    │
+│  import sys                                                        │
+│  import asyncio                                                    │
+│  from unittest import mock                                         │
+│                                                                    │
+│  try:                                                              │
+│      from google import genai                                      │
+│      from strands.models.gemini import GeminiModel                 │
+│  except ImportError as e:                                          │
+│      print("ERROR: Could not import required modules. Are you in   │
+│  the correct environment?")                                        │
+│      print(e)                                                      │
+│      sys.exit(1)                                                   │
+│                                                                    │
+│                                                                    │
+│  async def reproduce_issue():                                      │
+│      # Construct the ClientError as it would appear from Vertex A  │
+│  429                                                               │
+│      error = genai.errors.ClientError(                             │
+│          429,                                                      │
+│          {"error": {"status": "RESOURCE_EXHAUSTED", "message":     │
+│  "Resource exhausted. Please try again later."}},                  │
+│      )                                                             │
+│      assert error.code == 429                                      │
+│      assert error.status == "RESOURCE_EXHAUSTED"                   │
+│                                                                    │
+│      model = GeminiModel(model_id="gemini-2.5-flash",              │
+│  client_args={"api_key": "test"})                                  │
+│      with mock.patch.object(genai.Client, "aio",                   │
+│  new_callable=mock.PropertyMock) as aio:                           │
+│          aio.return_value.models.generate_content_stream.side_eff  │
+│  t = error                                                         │
+│                                                                    │
+│          # GeminiModel.stream returns an async generator           │
+│          events = model.stream([{"role": "user", "content":        │
+│  [{"text": "hi"}]}])                                               │
+│          try:                                                      │
+│              # The issue is that this raises raw ClientError       │
+│  instead of ModelThrottledException                                │
+│              await events.__anext__()                              │
+│          except Exception as e:                                    │
+│              # We check the type of exception:                     │
+│              from strands.exceptions import ModelThrottledExcepti  │
+│              if isinstance(e, ModelThrottledException):            │
+│                  # Issue is fixed, exit cleanly                    │
+│                  sys.exit(0)                                       │
+│              else:                                                 │
+│                  # Issue is present — print stack trace, then      │
+│  assert fail to signal problem                                     │
+│                  print_stacktrace(e)                               │
+│                  raise AssertionError(f"Issue reproduces: got      │
+│  {e.__class__.__name__}, expected ModelThrottledException") from   │
+│                                                                    │
+│  def main():                                                       │
+│      try:                                                          │
+│          asyncio.run(reproduce_issue())                            │
+│      except AssertionError:                                        │
+│          # reproduce_issue raised AssertionError, means issue      │
+│  present                                                           │
+│          sys.exit(1)                                               │
+│      except Exception as e:                                        │
+│          # Unexpected exception                                    │
+│          print_stacktrace(e)                                       │
+│          sys.exit(2)                                               │
+│                                                                    │
+│      # If no exception raised and exit not triggered, exit zero    │
+│      sys.exit(0)                                                   │
+│                                                                    │
+│                                                                    │
+│  if __name__ == "__main__":                                        │
+│      main()                                                        │
+│                                                                    │
+╰────────────────────────────────────────────────────────────────────╯
+
+[2026-09-01 04:23:42] Task issue_3226_20260822T080137Z failed with exception: .
+
+[2026-09-01 04:23:42] No patch generated. You can try running ACR again.
+
+[2026-09-01 04:23:42] Finished all tasks sequentially.
+
+
+STDERR:
+2026-09-01 04:23:30.664 | INFO     | app.log:log_and_always_print:229 - ============= Running task issue_3226_20260822T080137Z =============
+2026-09-01 04:23:31.147 | INFO     | app.inference:run_one_task:114 - Starting overall retry 0 with model tuzi-deepseek-v3.2/gpt-4.1-mini
+2026-09-01 04:23:34.049 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1150, output_tokens=13, cost=0.000180
+2026-09-01 04:23:41.873 | INFO     | app.log:log_and_cprint:219 - Model (tuzi-deepseek-v3.2/gpt-4.1-mini) API request cost info: input_tokens=1328, output_tokens=601, cost=0.000560
+2026-09-01 04:23:42.012 | ERROR    | app.main:run_raw_task:501 - 
+Traceback (most recent call last):
+
+  File "/root/auto-code-rover/ACR.py", line 4, in <module>
+    main.main()
+    │    └ <function main at 0x78e80bd20d60>
+    └ <module 'app.main' from '/root/auto-code-rover/app/main.py'>
+
+  File "/root/auto-code-rover/app/main.py", line 148, in main
+    run_task_groups(groups, num_processes)
+    │               │       └ 1
+    │               └ {'local': [<app.raw_tasks.RawLocalTask object at 0x78e801f8ce90>]}
+    └ <function run_task_groups at 0x78e801b823e0>
+
+  File "/root/auto-code-rover/app/main.py", line 396, in run_task_groups
+    run_tasks_serial(all_tasks)
+    │                └ [<app.raw_tasks.RawLocalTask object at 0x78e801f8ce90>]
+    └ <function run_tasks_serial at 0x78e801b82480>
+
+  File "/root/auto-code-rover/app/main.py", line 414, in run_tasks_serial
+    run_task_in_subprocess(task)
+    │                      └ <app.raw_tasks.RawLocalTask object at 0x78e801f8ce90>
+    └ <function run_task_in_subprocess at 0x78e801b82660>
+
+  File "/root/auto-code-rover/app/main.py", line 462, in run_task_in_subprocess
+    executor.submit(run_raw_task, task)
+    │        │      │             └ <app.raw_tasks.RawLocalTask object at 0x78e801f8ce90>
+    │        │      └ <function run_raw_task at 0x78e801b82700>
+    │        └ <function ProcessPoolExecutor.submit at 0x78e80b904ae0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e8027a7830>
+
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 823, in submit
+    self._start_executor_manager_thread()
+    │    └ <function ProcessPoolExecutor._start_executor_manager_thread at 0x78e80b904860>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e8027a7830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 762, in _start_executor_manager_thread
+    self._launch_processes()
+    │    └ <function ProcessPoolExecutor._launch_processes at 0x78e80b9049a0>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e8027a7830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 789, in _launch_processes
+    self._spawn_process()
+    │    └ <function ProcessPoolExecutor._spawn_process at 0x78e80b904a40>
+    └ <concurrent.futures.process.ProcessPoolExecutor object at 0x78e8027a7830>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 799, in _spawn_process
+    p.start()
+    │ └ <function BaseProcess.start at 0x78e80bafc2c0>
+    └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+    │    │        │    │      └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+    │    │        │    └ <staticmethod(<function ForkProcess._Popen at 0x78e80bb60fe0>)>
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+    │    └ None
+    └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           │     └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+           └ <class 'multiprocessing.popen_fork.Popen'>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+    │    │       └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+    │    └ <function Popen._launch at 0x78e801b2c360>
+    └ <multiprocessing.popen_fork.Popen object at 0x78e801e497c0>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/popen_fork.py", line 71, in _launch
+    code = process_obj._bootstrap(parent_sentinel=child_r)
+           │           │                          └ 13
+           │           └ <function BaseProcess._bootstrap at 0x78e80bafccc0>
+           └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+    │    └ <function BaseProcess.run at 0x78e80bafc220>
+    └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    │    │        │    │        │    └ {}
+    │    │        │    │        └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+    │    │        │    └ (<concurrent.futures.process._SafeQueue object at 0x78e801e6b770>, <multiprocessing.queues.SimpleQueue object at 0x78e801b419...
+    │    │        └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+    │    └ <function _process_worker at 0x78e80b8ffc40>
+    └ <ForkProcess name='ForkProcess-1' parent=2746465 started>
+  File "/root/miniconda3/envs/acr/lib/python3.12/concurrent/futures/process.py", line 264, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        │         │   │         │       │         └ {}
+        │         │   │         │       └ <concurrent.futures.process._CallItem object at 0x78e80baceb70>
+        │         │   │         └ (<app.raw_tasks.RawLocalTask object at 0x78e801b42300>,)
+        │         │   └ <concurrent.futures.process._CallItem object at 0x78e80baceb70>
+        │         └ <function run_raw_task at 0x78e801b82700>
+        └ <concurrent.futures.process._CallItem object at 0x78e80baceb70>
+
+> File "/root/auto-code-rover/app/main.py", line 494, in run_raw_task
+    run_ok = do_inference(task.to_task(), task_output_dir)
+             │            │    │          └ '/root/auto-code-rover/patches/result_issue_3226_20260822T080137Z/acr_output/issue_3226_20260822T080137Z_2026-09-01_04-23-30'
+             │            │    └ <function RawLocalTask.to_task at 0x78e801b82020>
+             │            └ <app.raw_tasks.RawLocalTask object at 0x78e801b42300>
+             └ <function do_inference at 0x78e801b828e0>
+
+  File "/root/auto-code-rover/app/main.py", line 590, in do_inference
+    run_ok = inference.run_one_task(
+             │         └ <function run_one_task at 0x78e801c48860>
+             └ <module 'app.inference' from '/root/auto-code-rover/app/inference.py'>
+
+  File "/root/auto-code-rover/app/inference.py", line 128, in run_one_task
+    if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+       │                 │         │            │    └ <function PlainTask.get_issue_statement at 0x78e8024d7880>
+       │                 │         │            └ PlainTask(commit_hash='4ca81da5682c1bc6259a0c01dc4752158e326c67', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3226', ...
+       │                 │         └ <app.manage.ProjectApiManager object at 0x78e8022dd280>
+       │                 └ PosixPath('/root/auto-code-rover/patches/result_issue_3226_20260822T080137Z/acr_output/issue_3226_20260822T080137Z_2026-09-01...
+       └ <function _run_one_task at 0x78e801c49b20>
+
+  File "/root/auto-code-rover/app/inference.py", line 277, in _run_one_task
+    test_agent.write_reproducing_test_without_feedback()
+    │          └ <function TestAgent.write_reproducing_test_without_feedback at 0x78e8024d4220>
+    └ <app.agents.agent_reproducer.TestAgent object at 0x78e801ed0f80>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 72, in write_reproducing_test_without_feedback
+    return self._write_reproducing_test(num_feedbacks=1, retries=retries)
+           │    │                                                └ 3
+           │    └ <function TestAgent._write_reproducing_test at 0x78e8024d7ce0>
+           └ <app.agents.agent_reproducer.TestAgent object at 0x78e801ed0f80>
+
+  File "/root/auto-code-rover/app/agents/agent_reproducer.py", line 111, in _write_reproducing_test
+    repro_result = self.task.execute_reproducer(test_content)
+                   │    │    │                  └ '# reproducer.py\ndef print_stacktrace(e: Exception):\n    import traceback\n    import sys\n    tb = traceback.extract_tb(e....
+                   │    │    └ <function Task.execute_reproducer at 0x78e8024d6480>
+                   │    └ PlainTask(commit_hash='4ca81da5682c1bc6259a0c01dc4752158e326c67', local_path='/root/auto-code-rover/.acr_cache/acr_ws_3226', ...
+                   └ <app.agents.agent_reproducer.TestAgent object at 0x78e801ed0f80>
+
+  File "/root/auto-code-rover/app/task.py", line 103, in execute_reproducer
+    raise NotImplementedError
+
+NotImplementedError
+2026-09-01 04:23:42.016 | INFO     | app.log:log_and_always_print:229 - Task issue_3226_20260822T080137Z failed with exception: .
+2026-09-01 04:23:42.017 | INFO     | app.log:log_and_always_print:229 - No patch generated. You can try running ACR again.

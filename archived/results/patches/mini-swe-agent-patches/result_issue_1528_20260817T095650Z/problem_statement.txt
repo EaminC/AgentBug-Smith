@@ -1,0 +1,49 @@
+# Issue #1528: [BUG] Context overflow not detected for OpenAI-compatible endpoints wrapping Bedrock
+
+### Problem Statement
+
+When using OpenAI-compatible endpoints that wrap Bedrock models (e.g., Databricks Model Serving), context overflow errors are not properly detected, preventing conversation managers (like SummarizingConversationManager) from triggering.
+
+**Root Cause:**
+The OpenAI provider only catches BadRequestError with code "context_length_exceeded". However, Databricks endpoints serving Bedrock models return APIError with Bedrock-style error messages like:
+
+- "Input is too long for requested model"
+- "input length and max_tokens exceed context limit"
+- "too many total text bytes"
+
+These errors are not converted to ContextWindowOverflowException, so the agent never attempts to reduce context.
+
+### Proposed Solution
+
+Extend the OpenAI provider's exception handling to recognise Bedrock-style error messages in openai.APIError exceptions and convert them to ContextWindowOverflowException.
+
+Changes:
+1. Add constants for Bedrock-style overflow message patterns
+2. Catch openai.APIError (after more specific exceptions) and check for these patterns
+3. Raise ContextWindowOverflowException when detected
+
+This enables proper context management for OpenAI-compatible endpoints that wrap Bedrock models, maintaining backward compatibility with native OpenAI endpoints.
+
+### Use Case
+
+Users deploying agents with Databricks Model Serving endpoints configured as OpenAI-compatible providers. Databricks serves models from AWS Bedrock but exposes them through an OpenAI-compatible API.
+
+**Scenario:**
+1. Agent is configured with SummarizingConversationManager to handle long conversations
+2. Model provider is OpenAIModel pointing to a Databricks endpoint
+3. Databricks endpoint serves a Bedrock model (e.g., Claude)
+4. Conversation grows beyond the model's context window
+
+**Expected Behaviour:**
+Agent catches the overflow error, triggers reduce_context(), summarises old messages, and retries.
+
+**Actual Behaviour:**
+Agent crashes with OpenAI.APIError: 400 - Input is too long for the requested model because the error is not recognised as a context overflow, so summarisation never triggers.
+
+### Alternatives Solutions
+
+_No response_
+
+### Additional Context
+
+_No response_

@@ -1,0 +1,242 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /app
+configfile: pyproject.toml
+plugins: cov-7.1.0, anyio-4.14.2, mock-3.15.1, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 9 items
+
+tests/agentsmith_fail2pass_1545.py::test_truncation_targets_oldest_message_first FAILED [ 11%]
+tests/agentsmith_fail2pass_1545.py::test_large_tool_result_partially_truncated_with_context_preserved FAILED [ 22%]
+tests/agentsmith_fail2pass_1545.py::test_truncation_does_not_change_status_to_error FAILED [ 33%]
+tests/agentsmith_fail2pass_1545.py::test_image_blocks_inside_tool_result_replaced_with_placeholder FAILED [ 44%]
+tests/agentsmith_fail2pass_1545.py::test_already_truncated_text_not_truncated_again FAILED [ 55%]
+tests/agentsmith_fail2pass_1545.py::test_short_text_in_tool_result_not_truncated FAILED [ 66%]
+tests/agentsmith_fail2pass_1545.py::test_boundary_text_in_tool_result_not_truncated FAILED [ 77%]
+tests/agentsmith_fail2pass_1545.py::test_per_turn_zero_raises_value_error FAILED [ 88%]
+tests/agentsmith_fail2pass_1545.py::test_per_turn_negative_raises_value_error FAILED [100%]
+
+=================================== FAILURES ===================================
+_________________ test_truncation_targets_oldest_message_first _________________
+
+    def test_truncation_targets_oldest_message_first():
+        """Oldest message with tool results is truncated before newer ones."""
+        large_text = "X" * 20000
+        manager = SlidingWindowConversationManager(window_size=10)
+        messages = [
+            {"role": "assistant", "content": [{"toolUse": {"toolUseId": "1", "name": "tool1", "input": {}}}]},
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": large_text}], "status": "success"}}],
+            },
+            {"role": "assistant", "content": [{"toolUse": {"toolUseId": "2", "name": "tool2", "input": {}}}]},
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "2", "content": [{"text": large_text}], "status": "success"}}],
+            },
+        ]
+        test_agent = Agent(messages=messages)
+    
+        manager.reduce_context(test_agent)
+    
+        # The oldest tool result (index 1) must be truncated
+        oldest_text = messages[1]["content"][0]["toolResult"]["content"][0]["text"]
+>       assert "... [truncated:" in oldest_text
+E       AssertionError: assert '... [truncated:' in 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX...XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+tests/agentsmith_fail2pass_1545.py:30: AssertionError
+______ test_large_tool_result_partially_truncated_with_context_preserved _______
+
+    def test_large_tool_result_partially_truncated_with_context_preserved():
+        """Large tool results are truncated in the middle while the beginning and end are preserved."""
+        preserve = 200  # matches _PRESERVE_CHARS
+        # Build text with distinct prefix, middle, and suffix
+        prefix_text = "P" * preserve
+        middle_text = "M" * 500
+        suffix_text = "S" * preserve
+        large_text = prefix_text + middle_text + suffix_text
+    
+        manager = SlidingWindowConversationManager(window_size=10)
+        messages = [
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": large_text}], "status": "success"}}],
+            }
+        ]
+    
+        truncated = manager._truncate_tool_results(messages, 0)
+    
+        assert truncated
+        result_text = messages[0]["content"][0]["toolResult"]["content"][0]["text"]
+>       assert result_text.startswith(prefix_text)
+E       AssertionError: assert False
+E        +  where False = <built-in method startswith of str object at 0x75aead265070>('PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP')
+E        +    where <built-in method startswith of str object at 0x75aead265070> = 'The tool result was too large!'.startswith
+
+tests/agentsmith_fail2pass_1545.py:58: AssertionError
+_______________ test_truncation_does_not_change_status_to_error ________________
+
+    def test_truncation_does_not_change_status_to_error():
+        """Partial truncation must not change the tool result status."""
+        large_text = "Z" * 15000
+        manager = SlidingWindowConversationManager(window_size=10)
+        messages = [
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": large_text}], "status": "success"}}],
+            }
+        ]
+    
+        manager._truncate_tool_results(messages, 0)
+    
+        # Status must remain 'success' after truncation
+>       assert messages[0]["content"][0]["toolResult"]["status"] == "success"
+E       AssertionError: assert 'error' == 'success'
+E         
+E         - success
+E         + error
+
+tests/agentsmith_fail2pass_1545.py:79: AssertionError
+________ test_image_blocks_inside_tool_result_replaced_with_placeholder ________
+
+    def test_image_blocks_inside_tool_result_replaced_with_placeholder():
+        """Image blocks nested inside toolResult content are replaced with a text placeholder."""
+        manager = SlidingWindowConversationManager(window_size=10)
+        image_data = b"base64encodeddata"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "toolResult": {
+                            "toolUseId": "1",
+                            "content": [
+                                {"text": "some text"},
+                                {
+                                    "image": {
+                                        "format": "jpeg",
+                                        "source": {"bytes": image_data},
+                                    }
+                                },
+                            ],
+                            "status": "success",
+                        }
+                    }
+                ],
+            }
+        ]
+    
+        changed = manager._truncate_tool_results(messages, 0)
+    
+        assert changed
+        tool_result_items = messages[0]["content"][0]["toolResult"]["content"]
+        # No image blocks remain
+        assert not any(isinstance(item, dict) and "image" in item for item in tool_result_items)
+        expected_placeholder = f"[image: jpeg, {len(image_data)} bytes]"
+        # Placeholder text block is present
+>       assert any(isinstance(item, dict) and item.get("text") == expected_placeholder for item in tool_result_items)
+E       assert False
+E        +  where False = any(<generator object test_image_blocks_inside_tool_result_replaced_with_placeholder.<locals>.<genexpr> at 0x75aead0b0740>)
+
+tests/agentsmith_fail2pass_1545.py:117: AssertionError
+_______________ test_already_truncated_text_not_truncated_again ________________
+
+    def test_already_truncated_text_not_truncated_again():
+        """A text block that already contains the truncation marker is not truncated a second time."""
+        manager = SlidingWindowConversationManager(window_size=10)
+        already_truncated = "A" * 200 + "...\n\n... [truncated: 990 chars removed] ...\n\n..." + "Z" * 200
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "toolResult": {
+                            "toolUseId": "1",
+                            "content": [{"text": already_truncated}],
+                            "status": "success",
+                        }
+                    }
+                ],
+            }
+        ]
+    
+        changed = manager._truncate_tool_results(messages, 0)
+    
+>       assert not changed
+E       assert not True
+
+tests/agentsmith_fail2pass_1545.py:141: AssertionError
+_________________ test_short_text_in_tool_result_not_truncated _________________
+
+    def test_short_text_in_tool_result_not_truncated():
+        """Text no longer than 2 * _PRESERVE_CHARS must not be modified."""
+        manager = SlidingWindowConversationManager(window_size=10)
+        short_text = "X" * 100  # 100 < 2 * 200
+        messages = [
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": short_text}], "status": "success"}}],
+            }
+        ]
+    
+        changed = manager._truncate_tool_results(messages, 0)
+    
+>       assert not changed
+E       assert not True
+
+tests/agentsmith_fail2pass_1545.py:158: AssertionError
+_______________ test_boundary_text_in_tool_result_not_truncated ________________
+
+    def test_boundary_text_in_tool_result_not_truncated():
+        """Text of exactly 2 * _PRESERVE_CHARS must not be truncated."""
+        manager = SlidingWindowConversationManager(window_size=10)
+        boundary_text = "X" * 400  # exactly 2 * 200
+        messages = [
+            {
+                "role": "user",
+                "content": [{"toolResult": {"toolUseId": "1", "content": [{"text": boundary_text}], "status": "success"}}],
+            }
+        ]
+    
+        changed = manager._truncate_tool_results(messages, 0)
+    
+>       assert not changed
+E       assert not True
+
+tests/agentsmith_fail2pass_1545.py:175: AssertionError
+____________________ test_per_turn_zero_raises_value_error _____________________
+
+    def test_per_turn_zero_raises_value_error():
+>       with pytest.raises(ValueError, match="per_turn"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/agentsmith_fail2pass_1545.py:180: Failed
+__________________ test_per_turn_negative_raises_value_error ___________________
+
+    def test_per_turn_negative_raises_value_error():
+>       with pytest.raises(ValueError, match="per_turn"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/agentsmith_fail2pass_1545.py:185: Failed
+=============================== warnings summary ===============================
+../usr/local/lib/python3.12/site-packages/_pytest/config/__init__.py:1464
+  /usr/local/lib/python3.12/site-packages/_pytest/config/__init__.py:1464: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+--------------- generated xml file: /app/build/test-results.xml ----------------
+=========================== short test summary info ============================
+FAILED tests/agentsmith_fail2pass_1545.py::test_truncation_targets_oldest_message_first
+FAILED tests/agentsmith_fail2pass_1545.py::test_large_tool_result_partially_truncated_with_context_preserved
+FAILED tests/agentsmith_fail2pass_1545.py::test_truncation_does_not_change_status_to_error
+FAILED tests/agentsmith_fail2pass_1545.py::test_image_blocks_inside_tool_result_replaced_with_placeholder
+FAILED tests/agentsmith_fail2pass_1545.py::test_already_truncated_text_not_truncated_again
+FAILED tests/agentsmith_fail2pass_1545.py::test_short_text_in_tool_result_not_truncated
+FAILED tests/agentsmith_fail2pass_1545.py::test_boundary_text_in_tool_result_not_truncated
+FAILED tests/agentsmith_fail2pass_1545.py::test_per_turn_zero_raises_value_error
+FAILED tests/agentsmith_fail2pass_1545.py::test_per_turn_negative_raises_value_error
+========================= 9 failed, 1 warning in 2.59s =========================

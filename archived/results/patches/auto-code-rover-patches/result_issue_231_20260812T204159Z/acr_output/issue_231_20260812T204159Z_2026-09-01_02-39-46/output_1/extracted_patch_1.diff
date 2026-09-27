@@ -1,0 +1,169 @@
+diff --git a/src/strands/event_loop/event_loop.py b/src/strands/event_loop/event_loop.py
+index a356bc3ee..90641811a 100644
+--- a/src/strands/event_loop/event_loop.py
++++ b/src/strands/event_loop/event_loop.py
+@@ -35,6 +35,21 @@ INITIAL_DELAY = 4
+ MAX_DELAY = 240  # 4 minutes
+ 
+ 
++import uuid
++import time
++
++from strands.events.hooks import (
++    HookManager,
++    AgentInitializedEvent,
++    BeforeInvocationEvent,
++    AfterInvocationEvent,
++    MessageAddedEvent,
++    BeforeModelInvocationEvent,
++    AfterModelInvocationEvent,
++    BeforeToolInvocationEvent,
++    AfterToolInvocationEvent,
++)
++
+ def event_loop_cycle(
+     model: Model,
+     system_prompt: Optional[str],
+@@ -86,6 +101,8 @@ def event_loop_cycle(
+         EventLoopException: If an error occurs during execution
+         ContextWindowOverflowException: If the input is too large for the model
+     """
++    hook_manager = HookManager.get_instance()
++
+     # Initialize cycle state
+     kwargs["event_loop_cycle_id"] = uuid.uuid4()
+ 
+@@ -96,8 +113,8 @@ def event_loop_cycle(
+     cycle_start_time, cycle_trace = event_loop_metrics.start_cycle(attributes=attributes)
+     kwargs["event_loop_cycle_trace"] = cycle_trace
+ 
+-    yield {"callback": {"start": True}}
+-    yield {"callback": {"start_event_loop": True}}
++    # Fire AgentInitializedEvent at cycle start
++    hook_manager.fire_event(AgentInitializedEvent(agent=kwargs.get("agent")))
+ 
+     # Create tracer span for this event loop cycle
+     tracer = get_tracer()
+@@ -113,6 +130,9 @@ def event_loop_cycle(
+     # Clean up orphaned empty tool uses
+     clean_orphaned_empty_tool_uses(messages)
+ 
++    # Fire BeforeInvocationEvent before model interaction
++    hook_manager.fire_event(BeforeInvocationEvent(agent=kwargs.get("agent"), messages=messages.copy()))
++
+     # Process messages with exponential backoff for throttling
+     message: Message
+     stop_reason: StopReason
+@@ -130,10 +150,18 @@ def event_loop_cycle(
+         )
+ 
+         try:
+-            # TODO: To maintain backwards compatability, we need to combine the stream event with kwargs before yielding
+-            #       to the callback handler. This will be revisited when migrating to strongly typed events.
++            # Fire BeforeModelInvocationEvent before model starts streaming
++            hook_manager.fire_event(BeforeModelInvocationEvent(agent=kwargs.get("agent"), messages=messages.copy()))
++
+             for event in stream_messages(model, system_prompt, messages, tool_config):
++                # Instead of yielding old untyped callback, consider adapting
++                # but for now continue as original stream_messages yields events
++                # Give hooks a chance to consume or monitor events here if needed
++
++                # Example (optional): hook_manager.fire_event(SomeStreamingEvent(...))
++
+                 if "callback" in event:
++                    # This preserved for in-loop callbacks; can be removed later after full migration
+                     yield {"callback": {**event["callback"], **(kwargs if "delta" in event["callback"] else {})}}
+ 
+             stop_reason, message, usage, metrics = event["stop"]
+@@ -141,6 +169,10 @@ def event_loop_cycle(
+ 
+             if model_invoke_span:
+                 tracer.end_model_invoke_span(model_invoke_span, message, usage, stop_reason)
++
++            # Fire AfterModelInvocationEvent
++            hook_manager.fire_event(AfterModelInvocationEvent(agent=kwargs.get("agent"), message=message, usage=usage, stop_reason=stop_reason))
++
+             break  # Success! Break out of retry loop
+ 
+         except ContextWindowOverflowException as e:
+@@ -153,7 +185,15 @@ def event_loop_cycle(
+                 tracer.end_span_with_error(model_invoke_span, str(e), e)
+ 
+             if attempt + 1 == MAX_ATTEMPTS:
+-                yield {"callback": {"force_stop": True, "force_stop_reason": str(e)}}
++                # Fire event loop throttled force stop
++                hook_manager.fire_event(
++                    AfterInvocationEvent(
++                        agent=kwargs.get("agent"),
++                        stop_reason="force_stop",
++                        message=None,
++                        error=str(e),
++                    )
++                )
+                 raise e
+ 
+             logger.debug(
+@@ -167,7 +207,8 @@ def event_loop_cycle(
+             time.sleep(current_delay)
+             current_delay = min(current_delay * 2, MAX_DELAY)
+ 
+-            yield {"callback": {"event_loop_throttled_delay": current_delay, **kwargs}}
++            # Could fire an event about throttled delay here if desired
++            continue
+ 
+         except Exception as e:
+             if model_invoke_span:
+@@ -181,7 +222,8 @@ def event_loop_cycle(
+ 
+         # Add the response message to the conversation
+         messages.append(message)
+-        yield {"callback": {"message": message}}
++        # Fire message added event
++        hook_manager.fire_event(MessageAddedEvent(agent=kwargs.get("agent"), message=message))
+ 
+         # Update metrics
+         event_loop_metrics.update_usage(usage)
+@@ -201,7 +243,10 @@ def event_loop_cycle(
+                     kwargs["request_state"],
+                 )
+ 
+-            # Handle tool execution
++            # Fire before tool invocation event
++            hook_manager.fire_event(BeforeToolInvocationEvent(agent=kwargs.get("agent"), message=message))
++
++            # Handle tool execution (do not yield direct callbacks here, but can fire events inside)
+             yield from _handle_tool_execution(
+                 stop_reason,
+                 message,
+@@ -218,8 +263,15 @@ def event_loop_cycle(
+                 cycle_start_time,
+                 kwargs,
+             )
++
++            # Fire after tool invocation event
++            hook_manager.fire_event(AfterToolInvocationEvent(agent=kwargs.get("agent"), message=message))
++
+             return
+ 
++        # Fire AfterInvocationEvent at cycle end
++        hook_manager.fire_event(AfterInvocationEvent(agent=kwargs.get("agent"), stop_reason=stop_reason, message=message))
++
+         # End the cycle and return results
+         event_loop_metrics.end_cycle(cycle_start_time, cycle_trace, attributes)
+         if cycle_span:
+@@ -243,7 +295,14 @@ def event_loop_cycle(
+             tracer.end_span_with_error(cycle_span, str(e), e)
+ 
+         # Handle any other exceptions
+-        yield {"callback": {"force_stop": True, "force_stop_reason": str(e)}}
++        hook_manager.fire_event(
++            AfterInvocationEvent(
++                agent=kwargs.get("agent"),
++                stop_reason="force_stop",
++                message=None,
++                error=str(e),
++            )
++        )
+         logger.exception("cycle failed")
+         raise EventLoopException(e, kwargs["request_state"]) from e
+ 

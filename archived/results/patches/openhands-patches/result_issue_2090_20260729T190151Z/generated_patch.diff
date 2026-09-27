@@ -1,0 +1,132 @@
+diff --git a/src/agentscope/agent/_agent.py b/src/agentscope/agent/_agent.py
+index b15128a2..c4281f41 100644
+--- a/src/agentscope/agent/_agent.py
++++ b/src/agentscope/agent/_agent.py
+@@ -2057,10 +2057,22 @@ class Agent:
+             elif isinstance(block, ToolCallBlock):
+                 remain_result_ids.pop(block.id, None)
+ 
+-        # Find the largest index of the remaining tool results, which doesn't
+-        # have the corresponding tool calls in the reserved parts
+-        if remain_result_ids:
+-            block_index = max(remain_result_ids.values())
++        # Repeatedly adjust the boundary to avoid splitting tool call/result pairs
++        while True:
++            # Find remaining tool result ids that don't have matching calls
++            remain_result_ids = {}
++            for i in range(len(boundary_msg_content) - 1, block_index, -1):
++                block = boundary_msg_content[i]
++                if isinstance(block, ToolResultBlock):
++                    remain_result_ids[block.id] = i
++                elif isinstance(block, ToolCallBlock):
++                    remain_result_ids.pop(block.id, None)
++            if not remain_result_ids:
++                break
++            new_block_index = max(remain_result_ids.values())
++            if new_block_index == block_index:
++                break
++            block_index = new_block_index
+ 
+         # Split the boundary msg content
+         boundary_msg_to_compress.content = boundary_msg_content[
+diff --git a/tests/compress_context_test.py b/tests/compress_context_test.py
+index e589a2e8..36bc5e7d 100644
+--- a/tests/compress_context_test.py
++++ b/tests/compress_context_test.py
+@@ -98,6 +98,96 @@ class ContextCompressionTest(IsolatedAsyncioTestCase):
+ 
+     async def asyncSetUp(self) -> None:
+         """The async setup method."""
++import json
++from agentscope.message import AssistantMsg, ToolCallBlock, ToolResultBlock, TextBlock, ToolResultState, UserMsg
++from agentscope.agent import Agent
++from agentscope.state import AgentState
++from agentscope.tool import Toolkit
++from tests.utils import MockModel
++import asyncio
++
++
++class MultiToolContextSplitTest:
++    async def test_multi_tool_batch_not_split(self):
++        agent = Agent(
++            name="Friday",
++            system_prompt="",
++            model=MockModel(context_size=1000),
++            toolkit=Toolkit(),
++            state=AgentState(
++                session_id="multi-tool-compression",
++                context=[
++                    UserMsg("User", "old" * 80),
++                    AssistantMsg(
++                        "Friday",
++                        [
++                            ToolCallBlock(
++                                id="tc1",
++                                name="first_tool",
++                                input=json.dumps({"value": "a" * 80}),
++                            ),
++                            ToolCallBlock(
++                                id="tc2",
++                                name="second_tool",
++                                input=json.dumps({"value": "b" * 80}),
++                            ),
++                            ToolResultBlock(
++                                id="tc1",
++                                name="first_tool",
++                                output=[TextBlock(text="first result " * 8)],
++                                state=ToolResultState.SUCCESS,
++                            ),
++                            ToolResultBlock(
++                                id="tc2",
++                                name="second_tool",
++                                output=[TextBlock(text="second result " * 8)],
++                                state=ToolResultState.SUCCESS,
++                            ),
++                            TextBlock(text="Both tools completed."),
++                        ],
++                    ),
++                    UserMsg("User", "latest question"),
++                ],
++            ),
++        )
++
++        to_compress, to_reserve = await agent._split_context_for_compression(
++            to_reserved_tokens=86,
++            tools=[],
++        )
++
++        compress_block_ids = [[(block.type, block.id) for block in msg.get_content_blocks()] for msg in to_compress]
++        reserve_block_ids = [[(block.type, block.id) for block in msg.get_content_blocks()] for msg in to_reserve]
++
++        # Assert no split of call-result pairs: calls and corresponding results should be in the same part
++        calls_in_compress = {id for blocks in compress_block_ids for (t, id) in blocks if t == "tool_call"}
++        results_in_compress = {id for blocks in compress_block_ids for (t, id) in blocks if t == "tool_result"}
++        calls_in_reserve = {id for blocks in reserve_block_ids for (t, id) in blocks if t == "tool_call"}
++        results_in_reserve = {id for blocks in reserve_block_ids for (t, id) in blocks if t == "tool_result"}
++
++        # Every tool call in compress must have all its tool results there
++        for call_id in calls_in_compress:
++            assert call_id in results_in_compress, f"Tool call {call_id} is split from its results in compress"
++
++        # Every tool call in reserve must have all its tool results there
++        for call_id in calls_in_reserve:
++            assert call_id in results_in_reserve, f"Tool call {call_id} is split from its results in reserve"
++
++        # Output some debug info (optional)
++        print("Compressed blocks:", compress_block_ids)
++        print("Reserved blocks:", reserve_block_ids)
++
++        # Also verify that reserved has the latest tool result and text block
++        first_reserve_msg = to_reserve[0]
++        formatted = await agent.formatter.format(to_reserve)
++        assert formatted[0]["role"] == "tool"
++        assert formatted[0]["tool_call_id"] == "tc2"
++
++
++async def test_multi_tool_batch_not_split():
++    test = MultiToolContextSplitTest()
++    await test.test_multi_tool_batch_not_split()
++
+ 
+     async def test_split_function(self) -> None:
+         """The template test."""

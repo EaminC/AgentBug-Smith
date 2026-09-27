@@ -1,0 +1,91 @@
+diff --git a/src/agentscope/agent/_agent.py b/src/agentscope/agent/_agent.py
+index e6a61f07..3b8414be 100644
+--- a/src/agentscope/agent/_agent.py
++++ b/src/agentscope/agent/_agent.py
+@@ -1674,17 +1674,47 @@ class Agent:
+         # ===================================================================
+         # Step 2: Check permission by toolkit and permission engine
+         # ===================================================================
++        async def call_next_handler(
++            *, tool_call: ToolCallBlock, tool: object, tool_input: object
++        ) -> PermissionDecision:
++            return await self._engine.check_permission(tool, tool_input)
++
++        # Compose the input kwargs for the middleware chain
++        input_kwargs = {
++            "tool_call": deepcopy(tool_call),
++            "tool": deepcopy(tool),
++            "tool_input": deepcopy(parsed_input),
++        }
++
+         if tool_call.state == ToolCallState.ALLOWED:
+             # Already allowed by user confirmation, skip permission checking
+             decision = PermissionDecision(
+                 behavior=PermissionBehavior.ALLOW,
+                 message="Already allowed by user confirmation.",
+             )
++        elif self._check_permission_middlewares:
++            # Run permission check through middlewares
++            for mw in reversed(self._check_permission_middlewares):
++                next_handler = call_next_handler
++
++                async def _make_handler(
++                    curr_mw: object,
++                    curr_nh: object,
++                ):
++                    async def handler(**kwargs: object) -> PermissionDecision:
++                        return await curr_mw.on_check_permission(
++                            agent=self, input_kwargs=kwargs, next_handler=curr_nh
++                        )
++
++                    return handler
++
++                call_next_handler = await _make_handler(mw, next_handler)
++
++            decision = await call_next_handler(**input_kwargs)
+         else:
+-            decision = await self._engine.check_permission(
+-                tool,
+-                parsed_input,
+-            )
++            decision = await self._engine.check_permission(tool, parsed_input)
++
++
+ 
+         # ===================================================================
+         # Step 3: Handle the permission and execute the tool call if allowed
+diff --git a/src/agentscope/middleware/_base.py b/src/agentscope/middleware/_base.py
+index 2fc4de95..5d6296e7 100644
+--- a/src/agentscope/middleware/_base.py
++++ b/src/agentscope/middleware/_base.py
+@@ -73,6 +73,30 @@ class MiddlewareBase:  # pylint: disable=unused-argument
+         Args:
+             agent: The Agent instance executing this middleware
+             input_kwargs: Dictionary containing:
++    async def on_check_permission(
++        self,
++        agent: "Agent",
++        input_kwargs: dict,
++        next_handler: Callable[..., Awaitable["PermissionDecision"]],
++    ) -> "PermissionDecision":
++        """Hook for intercepting the permission checking process.
++
++        Args:
++            agent: The Agent instance executing this middleware.
++            input_kwargs: Dictionary containing:
++                - tool_call: the validated tool-call metadata.
++                - tool: the resolved tool instance.
++                - tool_input: the parsed and validated tool input.
++            next_handler: Callable that executes the next middleware or the built-in permission engine.
++
++        Returns:
++            A PermissionDecision instance.
++        """
++        raise RuntimeError(
++            f"{type(self).__name__} does not implement on_check_permission",
++        )
++
++
+                 - inputs: Msg | list[Msg] | UserConfirmResultEvent |
+                 ExternalExecutionResultEvent | None — the unified inputs
+                 that trigger this reply (new message(s), a resumption

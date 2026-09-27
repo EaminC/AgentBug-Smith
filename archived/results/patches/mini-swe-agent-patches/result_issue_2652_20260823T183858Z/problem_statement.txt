@@ -1,0 +1,103 @@
+# Issue #2652: [BUG] Empty content block ({}) in BedrockModel raises bare StopIteration → corrupts Future under asyncio.to_thread (Py 3.11 hang)
+
+### Checks
+
+- [x] I have updated to the latest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched ./issues and there are no duplicates of my issue (related: #1993, #1056 — same line 740, different trigger; neither covers the empty-dict / `StopIteration` case)
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+1.42.0 (line unchanged on `main` as of this report)
+
+### Language Runtime Version
+
+Python 3.11
+
+### Operating System
+
+Amazon Linux 2023 (reproduces on any Python 3.11)
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+`BedrockModel._format_request_message_content` (`strands/models/bedrock.py:740`) ends with:
+
+```python
+raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+```
+
+When a content block is an **empty dict** `{}` (no recognized key), `next(iter(content))` is evaluated *while building the f-string* — and on an empty dict it raises a bare **`StopIteration`** before the intended `TypeError` is ever constructed.
+
+Minimal repro (no async, no OTEL — shows the bare `StopIteration` directly):
+
+```python
+from strands.models.bedrock import BedrockModel
+
+m = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+# A message whose content list contains an empty block:
+m._format_bedrock_messages([{"role": "user", "content": [{}]}])
+# -> raises StopIteration (not the intended TypeError)
+```
+
+In real use this surfaces when conversation **history** contains a message with an empty content block (e.g. a tool/UI integration that persists a block with no recognized key). The block falls through every `if "x" in content` branch to line 740.
+
+### Expected Behavior
+
+An unsupported or empty content block should raise a catchable, descriptive `TypeError` (as the code intends and the docstring promises: "Raises: TypeError: If the content block type is not supported by Bedrock."), regardless of whether the block is empty.
+
+### Actual Behavior
+
+A bare `StopIteration` escapes. Because `_format_request_message_content` is reached via `_stream`, which the SDK dispatches through `asyncio.to_thread`, the `StopIteration` propagates into the chained `concurrent.futures.Future`. On **Python 3.11**, `Future.set_exception` rejects it:
+
+```
+TypeError: StopIteration interacts badly with generators and cannot be raised into a Future
+```
+
+This fires in a **detached `_chain_future._set_state` callback** with **no application frames** in the visible traceback — the originating `bedrock.py:740` is erased from the surfaced error, making it extremely hard to diagnose (the agent simply hangs, with only asyncio-internal frames shown). Captured stack at the point of escape:
+
+```
+  File ".../strands/models/bedrock.py", line 963, in _stream
+    request = self._format_request(messages, tool_specs, system_prompt_content, tool_choice)
+  File ".../strands/models/bedrock.py", line 274, in _format_request
+    "messages": self._format_bedrock_messages(messages),
+  File ".../strands/models/bedrock.py", line 489, in _format_bedrock_messages
+    formatted_content = self._format_request_message_content(content_block)
+  File ".../strands/models/bedrock.py", line 740, in _format_request_message_content
+    raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+                                     ^^^^^^^^^^^^^^^^^^^
+StopIteration
+```
+
+(On Python 3.12+ the symptom changes — `Future.set_exception` wraps `StopIteration` as a `RuntimeError` rather than re-raising `TypeError` — so the turn fails fast instead of hanging indefinitely, but the underlying bug remains.)
+
+### Additional Context
+
+The hang is especially severe because the offending content block lives in conversation **history**: once an empty block is persisted, *every subsequent turn* that loads that history hits line 740 and wedges, even though the turn itself is otherwise valid.
+
+### Possible Solution
+
+Make line 740 robust to empty/keyless content so it always raises the intended `TypeError`, never a bare `StopIteration`:
+
+```python
+content_type = next(iter(content), None)
+raise TypeError(f"content_type=<{content_type}> | unsupported type")
+```
+
+The key point: `next(iter(content))` must never be the expression that raises, because a bare `StopIteration` is mis-propagated by asyncio when the call runs under `asyncio.to_thread`. An explicit empty-block guard at the top of the method would also work.
+
+Note #1993 hardened this same path by adding `reasoningContent` to a skip-list, but the underlying `next(iter(...))` fragility — and specifically the empty-dict case — were not addressed.
+
+### Related Issues
+
+- #1993 (OpenAIResponsesModel / `reasoningContent` block → `TypeError` at this line)
+- #1056 (`reasoning_content` unsupported type)
+
+Both hit line 740 with a *populated* unsupported block, so `next(iter(content))` returns a key and the intended `TypeError` is raised cleanly. This report is the **empty-dict `{}` → bare `StopIteration`** variant, which additionally triggers the async Future corruption / hang.

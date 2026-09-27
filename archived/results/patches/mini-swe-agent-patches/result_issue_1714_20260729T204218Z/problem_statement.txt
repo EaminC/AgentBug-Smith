@@ -1,0 +1,59 @@
+# Issue #1714: [Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点
+
+## [Bug] 每次执行命令时弹出 cmd 窗口并抢占前台焦点
+
+### 环境信息
+
+- **QwenPaw Desktop 版本**: 1.1.9
+- **操作系统**: Windows 11 家庭版 25H2 (AMD64)
+- **框架**: Tauri
+
+### Bug 描述
+
+每次 Agent 通过 `execute_shell_command` 工具执行命令时，都会弹出一个 cmd 窗口（或 PowerShell 窗口），并且该窗口会抢占前台焦点，打断用户正在进行的操作。
+
+### 复现步骤
+
+1. 打开 QwenPaw Desktop
+2. 向 Agent 发送需要执行 shell 命令的任务（如文件操作、运行脚本等）
+3. 观察执行过程
+4. **预期行为**: 命令在后台静默执行，不弹出任何窗口，不抢占焦点
+5. **实际行为**: 每次执行命令时弹出 cmd/PowerShell 窗口，并自动获取前台焦点
+
+### 影响
+
+- **严重干扰工作流**: 用户在等待 Agent 完成任务时切换到其他窗口工作，但每次命令执行都会被强制切回 QwenPaw 的终端窗口
+- **频繁打断**: 一个任务可能涉及多次命令执行，导致窗口不断弹出，严重影响用户体验
+- **误操作风险**: 焦点被抢占后，用户的键盘输入可能误操作到弹出的终端窗口
+
+### 根因分析
+
+在 Windows 上，当一个进程使用 `CreateProcess` API 创建子进程时，如果未设置 `CREATE_NO_WINDOW` 标志，子进程会创建一个新的控制台窗口并获取焦点。
+
+QwenPaw Desktop 的后端（qwenpaw-backend.exe）在执行 `execute_shell_command` 工具时，调用子进程的方式可能未使用 `CREATE_NO_WINDOW` 标志，导致每次命令执行都弹出控制台窗口。
+
+### 期望修复
+
+在调用 `CreateProcess` 创建子进程时，添加 `CREATE_NO_WINDOW` 标志：
+
+```cpp
+// Windows API 调用示例
+STARTUPINFO si = { sizeof(si) };
+PROCESS_INFORMATION pi;
+CreateProcess(
+    NULL, commandLine, NULL, NULL, FALSE,
+    CREATE_NO_WINDOW,  // ← 添加此标志
+    NULL, NULL, &si, &pi
+);
+或者在使用 Rust 的 std::process::Command 时：
+
+use std::os::windows::process::CommandExt;
+Command::new("cmd")
+    .args(&["/c", "your_command"])
+    .creation_flags(0x08000000)  // CREATE_NO_WINDOW
+    .output()?;
+临时变通方法
+用户可以在 config.json 中将 shell_command_executable 改为 pwsh.exe（PowerShell Core），但此方法不能完全解决问题，因为 PowerShell 窗口仍可能弹出。
+
+补充信息
+此问题在 Windows 平台上普遍存在，影响所有使用 execute_shell_command 工具的场景。建议在修复时同时考虑提供配置选项，让用户可以选择是否显示终端窗口（用于调试场景）。

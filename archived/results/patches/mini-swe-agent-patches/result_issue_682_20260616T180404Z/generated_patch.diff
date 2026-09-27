@@ -1,0 +1,86 @@
+diff --git a/gpt_engineer/core/steps.py b/gpt_engineer/core/steps.py
+index fe73e62..d28c41f 100644
+--- a/gpt_engineer/core/steps.py
++++ b/gpt_engineer/core/steps.py
+@@ -649,6 +649,7 @@ class Config(str, Enum):
+ 
+ STEPS = {
+     Config.DEFAULT: [
++    automated_code_review,
+         simple_gen,
+         gen_entrypoint,
+         execute_entrypoint,
+@@ -704,3 +705,73 @@ This setup allows for modularity and flexibility in handling different user requ
+ # Future steps that can be added:
+ # run_tests_and_fix_files
+ # execute_entrypoint_and_fix_files_if_it_results_in_error
++
++def automated_code_review(ai: AI, dbs: DBs) -> List[dict]:
++    """
++    Automated code review step.
++
++    1. Asks the LLM what QA tasks a QA person would manually test based on the project specification.
++    2. For each QA task, asks the LLM if the generated code is expected to pass or if something seems broken.
++    3. Outputs code blocks that overwrite files if it detects issues and can fix them.
++
++    Writes any code fixes back to the workspace.
++
++    Parameters:
++    - ai (AI): An instance of the AI model.
++    - dbs (DBs): An instance containing various DBs related to input, memory, logs, and workspace.
++
++    Returns:
++    - List[dict]: The list of messages from the LLM during the code review.
++    """
++
++    # Load the project specification prompt
++    project_spec = dbs.input.get('prompt', '')
++
++    # Ask what QA would test
++    qa_tasks_prompt = f"Based on the project specification: {project_spec}\nList the QA tests that a QA person would manually perform to verify the functionality of this project."
++
++    messages = [SystemMessage(content="You are a helpful software QA engineer.")]
++    messages = ai.next(messages, qa_tasks_prompt, step_name='automated_code_review_get_tasks')
++
++    qa_tasks = messages[-1].content.strip().split('\n')
++
++    review_results = []
++
++    for task in qa_tasks:
++        task = task.strip('- ').strip()
++        if not task:
++            continue
++
++        # Ask if the generated code is expected to pass this QA task
++        review_prompt = f"Is the generated code expected to pass this QA task? {task}\nIf no, please describe what seems to be broken and how to fix it with example code."
++
++        messages_task = [SystemMessage(content="You are a software QA engineer reviewing generated code.")]
++        messages_task = ai.next(messages_task, review_prompt, step_name='automated_code_review_review_task')
++        result = messages_task[-1].content.strip()
++
++        review_results.append(f"QA Task: {task}\nResult: {result}\n")
++
++        # If fixes are suggested, extract and apply them
++        if '```' in result:
++            regex = r"```(\w*)\n([\s\S]+?)```"
++            import re
++            matches = re.finditer(regex, result, re.DOTALL)
++            for match in matches:
++                language = match.group(1).strip()
++                code_block = match.group(2)
++                if language:  # Use only if language is given
++                    # Overwrite the corresponding file with the code
++                    # Here, we assume the language block starts with a comment specifying the filepath
++                    first_line_end = code_block.find('\n')
++                    first_line = code_block[:first_line_end].strip() if first_line_end > 0 else ''
++                    filepath = None
++                    if first_line.startswith('# filepath:'):
++                        filepath = first_line[len('# filepath:'):].strip()
++                        code_to_write = code_block[first_line_end+1:]
++                        # Save the fixed code back to the workspace
++                        dbs.workspace[filepath] = code_to_write
++
++    # Save the review results in memory for the record
++    dbs.memory['automated_code_review'] = '\n'.join(review_results)
++
++    return messages

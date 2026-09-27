@@ -1,0 +1,84 @@
+# Issue #1277: [Bug]:AgentScope中DashScopeChatModel 为什么多模态模型走的是同步调用?而非await?
+
+---
+
+**[Bug]: [DashScopeChatModel.__call__](cci:1://file:///D:/work/worknote/project/TeachingAnalyzer/agentscope/src/agentscope/model/_dashscope_model.py:160:4-296:30) 多模态路径使用同步 `MultiModalConversation.call()`，阻塞 asyncio 事件循环**
+
+**问题描述**
+
+[DashScopeChatModel.__call__](cci:1://file:///D:/work/worknote/project/TeachingAnalyzer/agentscope/src/agentscope/model/_dashscope_model.py:160:4-296:30) 是 `async def` 方法，但当 `multimodality=True`（或通过模型名自动检测）时，调用的是**同步** `dashscope.MultiModalConversation.call()`，而非**异步** `dashscope.AioMultiModalConversation.call()`。这会在整个 LLM API 调用期间阻塞 asyncio 事件循环。
+
+非多模态路径正确使用了 `await dashscope.aigc.generation.AioGeneration.call()`，因此这个不一致仅影响多模态模型。
+
+在实际使用中，将 AgentScope 集成到 FastAPI 等异步 Web 框架时，**多模态模型调用期间所有 HTTP 端点均无响应**。
+
+**复现步骤**
+
+1. 创建 [DashScopeChatModel](cci:2://file:///D:/work/worknote/project/TeachingAnalyzer/agentscope/src/agentscope/model/_dashscope_model.py:49:0-631:70)，设置 `multimodality=True`（或使用 `qwen-vl-plus` 等模型）：
+
+```python
+from agentscope.model import DashScopeChatModel
+
+model = DashScopeChatModel(
+    model_name="qwen-vl-plus",
+    api_key="sk-xxx",
+    stream=True,
+    multimodality=True,
+)
+```
+
+2. 在 FastAPI 异步端点中调用模型：
+
+```python
+@app.post("/evaluate")
+async def evaluate():
+    response = await model(messages=[...])  # 阻塞整个事件循环
+    return response
+```
+
+3. 模型调用执行期间，**所有其他 FastAPI 端点均无响应**（健康检查、WebSocket 连接等全部挂起）。
+
+**期望行为**
+
+多模态路径应使用 `await dashscope.AioMultiModalConversation.call()`（DashScope SDK 已提供），避免阻塞 asyncio 事件循环，与非多模态路径行为保持一致。
+
+**根因分析**
+
+[src/agentscope/model/_dashscope_model.py](cci:7://file:///D:/work/worknote/project/TeachingAnalyzer/agentscope/src/agentscope/model/_dashscope_model.py:0:0-0:0) 第 273 行：
+
+```python
+# 当前代码（阻塞）：
+response = dashscope.MultiModalConversation.call(
+    api_key=self.api_key,
+    **kwargs,
+)
+
+# 期望代码（非阻塞）：
+response = await dashscope.AioMultiModalConversation.call(
+    api_key=self.api_key,
+    **kwargs,
+)
+```
+
+两个 API 签名完全一致，唯一区别：
+- `MultiModalConversation.call()` → 同步函数，返回 `Response | Generator`
+- `AioMultiModalConversation.call()` → 异步协程，返回 `Response | AsyncGenerator`
+
+下游 [_parse_dashscope_stream_response](cci:1://file:///d:/work/worknote/project/Professional%20evaluation/agentscope/src/agentscope/model/_dashscope_model.py:299:4-477:13) 的类型标注已包含 `Union[AsyncGenerator, Generator]`，因此修改应该是向后兼容的。
+
+**错误信息**
+
+无显式错误信息。表现为 asyncio 事件循环被阻塞，导致所有并发异步任务（HTTP 处理器、WebSocket 连接、后台任务）在同步 API 调用完成前全部停滞。
+
+**环境信息：**
+
+- AgentScope 版本：1.0.16
+- Python 版本：3.11.14
+- 操作系统：Windows 11
+- DashScope SDK 版本：最新
+
+**补充说明**
+
+- 同步 MultiModalConversation.call() 调用在 PR #1215 之前就已存在（用于 qvq/-vl 模型名自动检测场景）。PR #1215 添加了 multimodality 参数使其可显式控制，但未将底层调用更新为异步版本 AioMultiModalConversation.call()，使得该同步阻塞问题扩展到了更多模型场景。
+- 修复仅需一行代码：将 `dashscope.MultiModalConversation.call(` 替换为 `await dashscope.AioMultiModalConversation.call(`。
+- 目前我们通过 `asyncio.run_in_executor()` 将同步调用放入线程池作为临时方案，但这增加了不必要的复杂性。

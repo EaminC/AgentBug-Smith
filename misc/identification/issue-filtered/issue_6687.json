@@ -1,0 +1,29 @@
+{
+  "number": 6687,
+  "title": "Tool Calls Fail with Empty Arguments in OpenAI-Compatible Provider",
+  "url": "https://github.com/vercel/ai/issues/6687",
+  "state": "closed",
+  "created_at": "2025-06-09T15:45:56Z",
+  "closed_at": "2025-07-16T06:22:32Z",
+  "body": "### Description\nTool calls fail to execute when certain models (particularly Claude models via OpenAI-compatible providers) return empty string `\"\"` for tool arguments instead of valid JSON `\"{}\"`. This causes the tool call to be detected but never executed, resulting in premature stream termination.\n\n### Expected Behavior\n- Tool calls with no parameters should work correctly\n- The AI SDK should handle both `\"arguments\": \"{}\"` and `\"arguments\": \"\"` formats\n- Tool execution should proceed normally for parameterless tools\n\n### Actual Behavior\n- Tool calls are detected (finishReason shows 'tool-calls')\n- No actual tool execution occurs (tool function never called)\n- Stream terminates prematurely without calling the tool\n- Tool call count remains 0 despite indication of tool usage\n\n### Root Cause\nThe issue occurs in the stream parsing logic where `isParsableJson(\"\")` returns `false`, causing the tool call to be considered \"incomplete\" and never triggering the tool execution.\n\n**Location**: `packages/openai-compatible/src/openai-compatible-chat-language-model.ts` around line 600\n```typescript\nif (isParsableJson(toolCall.function.arguments)) {\n  // This condition fails for empty string \"\"\n  controller.enqueue({\n    type: 'tool-call',\n    // ...\n  });\n}\n```\n\n### Impact\n- Affects compatibility with Claude and potentially other models\n- Breaks tool calling functionality for parameterless tools\n- Silent failure - no error thrown, just premature termination\n\n### Minimal Reproduction Example\n```typescript\nimport { createOpenAICompatible } from '@ai-sdk/openai-compatible';\nimport { streamText, tool } from 'ai';\nimport { z } from 'zod';\n\nasync function reproduceIssue() {\n  const provider = createOpenAICompatible({\n    baseURL: 'https://your-provider-url/v1',\n    apiKey: 'your-api-key',\n    name: 'your-provider',\n  });\n\n  const model = provider.chatModel('claude-sonnet-4-0'); // or any model that returns empty arguments\n\n  const result = streamText({\n    model,\n    prompt: 'List files in my knowledge base',\n    toolChoice: 'auto',\n    tools: {\n      list_files: tool({\n        description: 'List all files in the knowledge base',\n        parameters: z.object({}), // No parameters required\n        execute: async () => {\n          console.log('Tool executed!'); // This will never be called\n          return { files: ['file1.txt', 'file2.txt'] };\n        },\n      }),\n    },\n    maxSteps: 10,\n  });\n\n  let toolCallCount = 0;\n  for await (const chunk of result.fullStream) {\n    if (chunk.type === 'tool-call') {\n      toolCallCount++;\n      console.log('Tool call detected:', chunk);\n    }\n  }\n\n  console.log('Tool calls executed:', toolCallCount); // Will be 0\n  console.log('Finish reason:', await result.finishReason); // Will be 'tool-calls'\n}\n```\n\n### Raw Response Analysis \nThe problematic response chunk from Claude models:\n```json\n{\n  \"choices\": [{\n    \"delta\": {\n      \"tool_calls\": [{\n        \"id\": \"toolu_xxx\",\n        \"type\": \"function\", \n        \"function\": {\n          \"name\": \"list_files\",\n          \"arguments\": \"\"  // <- Empty string instead of \"{}\"\n        },\n        \"index\": 0\n      }]\n    }\n  }]\n}\n```\n\n### AI SDK Version\n\nai: 4.3.1\n@ai-sdk/openai-compatible: 0.2.14",
+  "labels": [
+    "bug",
+    "ai/provider",
+    "provider/openai-compatible"
+  ],
+  "linked_prs": [
+    {
+      "number": 7326,
+      "state": "closed",
+      "title": "fix (provider/openai-incompatible): support empty tool calls",
+      "url": "https://github.com/vercel/ai/pull/7326",
+      "merged": true,
+      "base_branch": "main",
+      "body": "## Background\r\n\r\nEmpty tool calls were broken when streaming with the openai compatible provider (see #6687 ).\r\n\r\n## Summary\r\n\r\nSend pending tool calls when a response is finished. The tool calls cannot be sent earlier because it is unclear if they are a complete empty call or just the start of a regular tool call.\r\n\r\n## Related Issues\r\n\r\nFixes #6687 "
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes.  \nThis is an agent issue because it involves tool invocation failures caused by LLM provider-specific output formatting (empty string for tool arguments), affecting tool execution logic in an agent system. It directly relates to tool implementation and LLM provider compatibility within the agent taxonomy."
+  }
+}

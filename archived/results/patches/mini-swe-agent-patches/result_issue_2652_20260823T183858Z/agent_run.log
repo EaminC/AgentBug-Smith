@@ -1,0 +1,833 @@
+This is mini-swe-agent version 2.4.6.
+Check the v2 migration guide at https://klieret.short.gy/mini-v2-migration
+Loading global config from '/root/.config/mini-swe-agent/.env'
+Warning: Input is not a terminal (fd=0).
+Building agent config from specs: ['mini.yaml']
+
+System:
+You are a helpful assistant that can interact with a computer.
+
+User:
+Please solve this issue: # Issue #2652: [BUG] Empty content block ({}) in 
+BedrockModel raises bare StopIteration → corrupts Future under asyncio.to_thread
+(Py 3.11 hang)
+
+### Checks
+
+- [x] I have updated to the latest minor and patch version of Strands
+- [x] I have checked the documentation and this is not expected behavior
+- [x] I have searched ./issues and there are no duplicates of my issue (related:
+#1993, #1056 — same line 740, different trigger; neither covers the empty-dict /
+`StopIteration` case)
+
+### SDK Language
+
+Python
+
+### Strands Version
+
+1.42.0 (line unchanged on `main` as of this report)
+
+### Language Runtime Version
+
+Python 3.11
+
+### Operating System
+
+Amazon Linux 2023 (reproduces on any Python 3.11)
+
+### Installation Method
+
+pip
+
+### Steps to Reproduce
+
+`BedrockModel._format_request_message_content` (`strands/models/bedrock.py:740`)
+ends with:
+
+```python
+raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+```
+
+When a content block is an **empty dict** `{}` (no recognized key), 
+`next(iter(content))` is evaluated *while building the f-string* — and on an 
+empty dict it raises a bare **`StopIteration`** before the intended `TypeError` 
+is ever constructed.
+
+Minimal repro (no async, no OTEL — shows the bare `StopIteration` directly):
+
+```python
+from strands.models.bedrock import BedrockModel
+
+m = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+# A message whose content list contains an empty block:
+m._format_bedrock_messages([{"role": "user", "content": [{}]}])
+# -> raises StopIteration (not the intended TypeError)
+```
+
+In real use this surfaces when conversation **history** contains a message with 
+an empty content block (e.g. a tool/UI integration that persists a block with no
+recognized key). The block falls through every `if "x" in content` branch to 
+line 740.
+
+### Expected Behavior
+
+An unsupported or empty content block should raise a catchable, descriptive 
+`TypeError` (as the code intends and the docstring promises: "Raises: TypeError:
+If the content block type is not supported by Bedrock."), regardless of whether 
+the block is empty.
+
+### Actual Behavior
+
+A bare `StopIteration` escapes. Because `_format_request_message_content` is 
+reached via `_stream`, which the SDK dispatches through `asyncio.to_thread`, the
+`StopIteration` propagates into the chained `concurrent.futures.Future`. On 
+**Python 3.11**, `Future.set_exception` rejects it:
+
+```
+TypeError: StopIteration interacts badly with generators and cannot be raised 
+into a Future
+```
+
+This fires in a **detached `_chain_future._set_state` callback** with **no 
+application frames** in the visible traceback — the originating `bedrock.py:740`
+is erased from the surfaced error, making it extremely hard to diagnose (the 
+agent simply hangs, with only asyncio-internal frames shown). Captured stack at 
+the point of escape:
+
+```
+  File ".../strands/models/bedrock.py", line 963, in _stream
+    request = self._format_request(messages, tool_specs, system_prompt_content, 
+tool_choice)
+  File ".../strands/models/bedrock.py", line 274, in _format_request
+    "messages": self._format_bedrock_messages(messages),
+  File ".../strands/models/bedrock.py", line 489, in _format_bedrock_messages
+    formatted_content = self._format_request_message_content(content_block)
+  File ".../strands/models/bedrock.py", line 740, in 
+_format_request_message_content
+    raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+                                     ^^^^^^^^^^^^^^^^^^^
+StopIteration
+```
+
+(On Python 3.12+ the symptom changes — `Future.set_exception` wraps 
+`StopIteration` as a `RuntimeError` rather than re-raising `TypeError` — so the 
+turn fails fast instead of hanging indefinitely, but the underlying bug 
+remains.)
+
+### Additional Context
+
+The hang is especially severe because the offending content block lives in 
+conversation **history**: once an empty block is persisted, *every subsequent 
+turn* that loads that history hits line 740 and wedges, even though the turn 
+itself is otherwise valid.
+
+### Possible Solution
+
+Make line 740 robust to empty/keyless content so it always raises the intended 
+`TypeError`, never a bare `StopIteration`:
+
+```python
+content_type = next(iter(content), None)
+raise TypeError(f"content_type=<{content_type}> | unsupported type")
+```
+
+The key point: `next(iter(content))` must never be the expression that raises, 
+because a bare `StopIteration` is mis-propagated by asyncio when the call runs 
+under `asyncio.to_thread`. An explicit empty-block guard at the top of the 
+method would also work.
+
+Note #1993 hardened this same path by adding `reasoningContent` to a skip-list, 
+but the underlying `next(iter(...))` fragility — and specifically the empty-dict
+case — were not addressed.
+
+### Related Issues
+
+- #1993 (OpenAIResponsesModel / `reasoningContent` block → `TypeError` at this 
+line)
+- #1056 (`reasoning_content` unsupported type)
+
+Both hit line 740 with a *populated* unsupported block, so `next(iter(content))`
+returns a key and the intended `TypeError` is raised cleanly. This report is the
+**empty-dict `{}` → bare `StopIteration`** variant, which additionally triggers 
+the async Future corruption / hang.
+
+
+You can execute bash commands and edit files to implement the necessary changes.
+
+## Recommended Workflow
+
+This workflow should be done step-by-step so that you can iterate on your 
+changes and any possible problems.
+
+1. Analyze the codebase by finding and reading relevant files
+2. Create a script to reproduce the issue
+3. Edit the source code to resolve the issue
+4. Verify your fix works by running your script again
+5. Test edge cases to ensure your fix is robust
+6. Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+   Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+## Command Execution Rules
+
+You are operating in an environment where
+
+1. You issue at least one command
+2. The system executes the command(s) in a subshell
+3. You see the result(s)
+4. You write your next command(s)
+
+Each response should include:
+
+1. **Reasoning text** where you explain your analysis and plan
+2. At least one tool call with your command
+
+**CRITICAL REQUIREMENTS:**
+
+- Your response SHOULD include reasoning text explaining what you're doing
+- Your response MUST include AT LEAST ONE bash tool call
+- Directory or environment variable changes are not persistent. Every action is 
+executed in a new subshell.
+- However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd 
+/path/to/working/dir && ...` or write/load environment variables from files
+- Submit your changes and finish your work by issuing the following command: 
+`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.
+  Do not combine it with any other command. <important>After this command, you 
+cannot continue working on this task.</important>
+
+Example of a CORRECT response:
+<example_response>
+I need to understand the structure of the repository first. Let me check what 
+files are in the current directory to get a better understanding of the 
+codebase.
+
+[Makes bash tool call with {"command": "ls -la"} as arguments]
+</example_response>
+
+<system_information>
+Linux 6.8.0-137-generic #137-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 17 20:28:23 UTC 
+2026 x86_64
+</system_information>
+
+## Useful command examples
+
+### Create a new file:
+
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
+```
+
+### Edit files with sed:```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+
+# Replace first occurrence on line 1
+sed -i '1s/old_string/new_string/' filename.py
+
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+
+```bash
+anything
+```
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 1, $0.00):
+```
+rg -p strands --json-path '.data.lines[0].text' -w 
+'_format_request_message_content' -j 5 --json-seq
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: rg: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 2, $0.00):
+```
+ag --json '_format_request_message_content' strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+127
+<output>
+/bin/sh: 1: ag: not found
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 3, $0.00):
+```
+grep -n '_format_request_message_content' strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+2
+<output>
+grep: strands/models/bedrock.py: No such file or directory
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 4, $0.00):
+```
+grep -r '_format_request_message_content' .
+```
+
+Tool:
+<returncode>
+0
+<output>
+./tests/agentsmith_fail2pass_2652.py:def 
+test_format_request_message_content_empty_block_raises_type_error():
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content(content, exp_result):
+./strands-py/tests/strands/models/test_openai_responses.py:    tru_result = 
+OpenAIResponsesModel._format_request_message_content(content)
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content_unsupported_type():
+./strands-py/tests/strands/models/test_openai_responses.py:        
+OpenAIResponsesModel._format_request_message_content(content)
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content_role_assistant():
+./strands-py/tests/strands/models/test_openai_responses.py:    
+"""_format_request_message_content uses output_text for assistant role."""
+./strands-py/tests/strands/models/test_openai_responses.py:    result = 
+OpenAIResponsesModel._format_request_message_content(content, role="assistant")
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content_role_user():
+./strands-py/tests/strands/models/test_openai_responses.py:    
+"""_format_request_message_content uses input_text for user role (default)."""
+./strands-py/tests/strands/models/test_openai_responses.py:    result = 
+OpenAIResponsesModel._format_request_message_content(content, role="user")
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content_image_size_limit():
+./strands-py/tests/strands/models/test_openai_responses.py:        
+OpenAIResponsesModel._format_request_message_content(content)
+./strands-py/tests/strands/models/test_openai_responses.py:def 
+test_format_request_message_content_document_size_limit():
+./strands-py/tests/strands/models/test_openai_responses.py:        
+OpenAIResponsesModel._format_request_message_content(content)
+./strands-py/tests/strands/models/test_litellm.py:def 
+test_format_request_message_content(content, exp_result):
+./strands-py/tests/strands/models/test_litellm.py:def 
+test_format_request_message_content_reasoning():
+./strands-py/tests/strands/models/test_litellm.py:def 
+test_format_request_message_content_video():
+./strands-py/tests/strands/models/test_openai.py:def 
+test_format_request_message_content(content, exp_result):
+./strands-py/tests/strands/models/test_openai.py:def 
+test_format_request_message_content_unsupported_type():
+./strands-py/tests/strands/models/test_bedrock.py:def 
+test_format_request_message_content_normalizes_empty_tool_result_content(model, 
+model_id):
+./strands-py/tests/strands/models/test_bedrock.py:    """Test that 
+_format_request_message_content replaces empty toolResult content with a minimal
+text block.
+./strands-py/tests/strands/models/test_bedrock.py:def 
+test_format_request_message_content_does_not_mutate_empty_tool_result(model, 
+model_id):
+./strands-py/tests/strands/models/test_bedrock.py:def 
+test_format_request_message_content_preserves_nonempty_tool_result_content(model
+, model_id):
+./strands-py/tests/strands/models/test_bedrock.py:    """Test that 
+_format_request_message_content does not modify non-empty toolResult content."""
+./strands-py/src/strands/models/bedrock.py:                formatted_content = 
+self._format_request_message_content(content_block)
+./strands-py/src/strands/models/bedrock.py:    def 
+_format_request_message_content(self, content: ContentBlock) -> dict[str, Any] |
+None:
+./strands-py/src/strands/models/bedrock.py:                    
+formatted_message_content = self._format_request_message_content(
+./strands-py/src/strands/models/anthropic.py:    def 
+_format_request_message_content(self, content: ContentBlock) -> dict[str, Any]:
+./strands-py/src/strands/models/anthropic.py:                    
+self._format_request_message_content(
+./strands-py/src/strands/models/anthropic.py:                
+formatted_contents.append(self._format_request_message_content(content))
+./strands-py/src/strands/models/writer.py:    def 
+_format_request_message_contents_vision(self, contents: list[ContentBlock]) -> 
+list[dict[str, Any]]:
+./strands-py/src/strands/models/writer.py:    def 
+_format_request_message_contents(self, contents: list[ContentBlock]) -> str:
+./strands-py/src/strands/models/writer.py:            formatted_contents = 
+self._format_request_message_contents_vision(contents)
+./strands-py/src/strands/models/writer.py:            formatted_contents = 
+self._format_request_message_contents(contents)  # type: ignore [assignment]
+./strands-py/src/strands/models/writer.py:                formatted_contents: 
+str | list[dict[str, Any]] = self._format_request_message_contents_vision(
+./strands-py/src/strands/models/writer.py:                formatted_contents = 
+self._format_request_message_contents(filtered_contents)
+./strands-py/src/strands/models/ollama.py:    def 
+_format_request_message_contents(self, role: str, content: ContentBlock) -> 
+list[dict[str, Any]]:
+./strands-py/src/strands/models/ollama.py:                for 
+formatted_tool_result_content in self._format_request_message_contents(
+./strands-py/src/strands/models/ollama.py:                
+formatted_messages.extend(self._format_request_message_contents(message["role"],
+content))
+./strands-py/src/strands/models/mistral.py:    def 
+_format_request_message_content(self, content: ContentBlock) -> str | dict[str, 
+Any]:
+./strands-py/src/strands/models/mistral.py:                    formatted_content
+= self._format_request_message_content(content)
+./strands-py/src/strands/models/openai_responses.py:                
+cls._format_request_message_content(content, role=role)
+./strands-py/src/strands/models/openai_responses.py:    def 
+_format_request_message_content(cls, content: ContentBlock, *, role: Role = 
+"user") -> dict[str, Any]:
+./strands-py/src/strands/models/llamaapi.py:    def 
+_format_request_message_content(self, content: ContentBlock) -> dict[str, Any]:
+./strands-py/src/strands/models/llamaapi.py:            "content": 
+[self._format_request_message_content(content) for content in contents],
+./strands-py/src/strands/models/llamaapi.py:            formatted_contents = 
+[self._format_request_message_content(content) for content in filtered_contents]
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 5, $0.00):
+```
+head -60 strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+"""AWS Bedrock model provider.
+
+- Docs: https://aws.amazon.com/bedrock/
+"""
+
+import asyncio
+import json
+import logging
+import os
+import warnings
+from collections.abc import AsyncGenerator, Callable, Iterable, ValuesView
+from typing import Any, Literal, TypeVar, cast
+
+import boto3
+from botocore.config import Config as BotocoreConfig
+from botocore.exceptions import ClientError
+from pydantic import BaseModel
+from typing_extensions import Unpack, override
+
+from strands.types.media import S3Location, SourceLocation
+
+from .._exception_notes import add_exception_note
+from ..event_loop import streaming
+from ..tools import convert_pydantic_to_tool_spec
+from ..tools._tool_helpers import noop_tool
+from ..types.content import ContentBlock, Messages, SystemContentBlock
+from ..types.exceptions import (
+    ContextWindowOverflowException,
+    ModelThrottledException,
+    ProviderTokenCountError,
+)
+from ..types.streaming import CitationsDelta, StreamEvent
+from ..types.tools import ToolChoice, ToolSpec
+from ._defaults import resolve_config_metadata
+from ._strict_schema import ensure_strict_json_schema
+from ._validation import validate_config_keys
+from .model import BaseModelConfig, CacheConfig, CacheToolsConfig, Model
+
+logger = logging.getLogger(__name__)
+
+# See: `BedrockModel._get_default_model_with_warning` for why we need both
+DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+_DEFAULT_BEDROCK_MODEL_ID = "{}.anthropic.claude-sonnet-4-6"
+DEFAULT_BEDROCK_REGION = "us-west-2"
+
+BEDROCK_CONTEXT_WINDOW_OVERFLOW_MESSAGES = [
+    "Input is too long for requested model",
+    "input length and `max_tokens` exceed context limit",
+    "too many total text bytes",
+    "prompt is too long",
+]
+
+# Models that should include tool result status (include_tool_result_status = 
+True)
+_MODELS_INCLUDE_STATUS = [
+    "anthropic.claude",
+]
+
+# Cache of model IDs for which CountTokens API calls should be skipped.
+_SKIP_COUNT_TOKENS_MODELS: set[str] = set()
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 6, $0.00):
+```
+sed -n 730,750p strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+            if "content" in citations:
+                filtered_content: list[dict[str, Any]] = []
+                for generated_content in citations["content"]:
+                    if "text" in generated_content:
+                        filtered_content.append({"text": 
+generated_content["text"]})
+                if filtered_content:
+                    result["content"] = filtered_content
+
+            return {"citationsContent": result}
+
+        raise TypeError(f"content_type=<{next(iter(content))}> | unsupported 
+type")
+
+    def _has_blocked_guardrail(self, guardrail_data: dict[str, Any]) -> bool:
+        """Check if guardrail data contains any blocked policies.
+
+        Args:
+            guardrail_data: Guardrail data from trace information.
+
+        Returns:
+            True if any blocked guardrail is detected, False otherwise.
+        """
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 7, $0.01):
+```
+sed -n 710,750p strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+            citations = content["citationsContent"]
+            result = {}
+
+            if "citations" in citations:
+                result["citations"] = []
+                for citation in citations["citations"]:
+                    filtered_citation: dict[str, Any] = {}
+                    if "location" in citation:
+                        filtered_citation["location"] = citation["location"]
+                    if "sourceContent" in citation:
+                        filtered_source_content: list[dict[str, Any]] = []
+                        for source_content in citation["sourceContent"]:
+                            if "text" in source_content:
+                                filtered_source_content.append({"text": 
+source_content["text"]})
+                        if filtered_source_content:
+                            filtered_citation["sourceContent"] = 
+filtered_source_content
+                    if "title" in citation:
+                        filtered_citation["title"] = citation["title"]
+                    result["citations"].append(filtered_citation)
+
+            if "content" in citations:
+                filtered_content: list[dict[str, Any]] = []
+                for generated_content in citations["content"]:
+                    if "text" in generated_content:
+                        filtered_content.append({"text": 
+generated_content["text"]})
+                if filtered_content:
+                    result["content"] = filtered_content
+
+            return {"citationsContent": result}
+
+        raise TypeError(f"content_type=<{next(iter(content))}> | unsupported 
+type")
+
+    def _has_blocked_guardrail(self, guardrail_data: dict[str, Any]) -> bool:
+        """Check if guardrail data contains any blocked policies.
+
+        Args:
+            guardrail_data: Guardrail data from trace information.
+
+        Returns:
+            True if any blocked guardrail is detected, False otherwise.
+        """
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 8, $0.01):
+```
+head -40 strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+"""AWS Bedrock model provider.
+
+- Docs: https://aws.amazon.com/bedrock/
+"""
+
+import asyncio
+import json
+import logging
+import os
+import warnings
+from collections.abc import AsyncGenerator, Callable, Iterable, ValuesView
+from typing import Any, Literal, TypeVar, cast
+
+import boto3
+from botocore.config import Config as BotocoreConfig
+from botocore.exceptions import ClientError
+from pydantic import BaseModel
+from typing_extensions import Unpack, override
+
+from strands.types.media import S3Location, SourceLocation
+
+from .._exception_notes import add_exception_note
+from ..event_loop import streaming
+from ..tools import convert_pydantic_to_tool_spec
+from ..tools._tool_helpers import noop_tool
+from ..types.content import ContentBlock, Messages, SystemContentBlock
+from ..types.exceptions import (
+    ContextWindowOverflowException,
+    ModelThrottledException,
+    ProviderTokenCountError,
+)
+from ..types.streaming import CitationsDelta, StreamEvent
+from ..types.tools import ToolChoice, ToolSpec
+from ._defaults import resolve_config_metadata
+from ._strict_schema import ensure_strict_json_schema
+from ._validation import validate_config_keys
+from .model import BaseModelConfig, CacheConfig, CacheToolsConfig, Model
+
+logger = logging.getLogger(__name__)
+
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 9, $0.01):
+```
+sed -n 740,750p strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+        raise TypeError(f"content_type=<{next(iter(content))}> | unsupported 
+type")
+
+    def _has_blocked_guardrail(self, guardrail_data: dict[str, Any]) -> bool:
+        """Check if guardrail data contains any blocked policies.
+
+        Args:
+            guardrail_data: Guardrail data from trace information.
+
+        Returns:
+            True if any blocked guardrail is detected, False otherwise.
+        """
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 10, $0.01):
+The code at line 740 in strands-py/src/strands/models/bedrock.py where the error
+occurs is:
+
+```python
+raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
+```
+
+The problem arises because `next(iter(content))` throws a `StopIteration` 
+exception when `content` is an empty dictionary. This causes the bare 
+`StopIteration` to propagate, which is problematic especially under Python 
+3.11's asyncio.
+
+The proposed fix is to provide a default value to `next()` to prevent the 
+`StopIteration` from being raised:
+
+```python
+content_type = next(iter(content), None)
+raise TypeError(f"content_type=<{content_type}> | unsupported type")
+```
+
+I will now edit the file to apply this fix.
+
+```
+sed -i '740s/raise TypeError(f"content_type=<{next(iter(content))}> | 
+unsupported type")/content_type = next(iter(content), None)\n        raise 
+TypeError(f"content_type=<{content_type}> | unsupported type")/' 
+strands-py/src/strands/models/bedrock.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 11, $0.01):
+I have updated the code at line 740 in strands-py/src/strands/models/bedrock.py 
+so that it safely fetches the first key of the content dictionary or None if 
+empty, before raising the TypeError.
+
+Next, I will create a minimal reproduction script to verify the fix.
+
+```
+cat <<'EOF' > reproduce_empty_dict_error.py
+from strands.models.bedrock import BedrockModel
+
+m = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+try:
+    m._format_bedrock_messages([{"role": "user", "content": [{}]}])
+except TypeError as e:
+    print(f'Caught expected TypeError: {e}')
+except Exception as e:
+    print(f'Caught unexpected exception type: {type(e).__name__}: {e}')
+else:
+    print('No exception raised, but expected TypeError')
+EOF
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 12, $0.01):
+```
+python3 reproduce_empty_dict_error.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+Caught expected TypeError: content_type=<None> | unsupported type
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 13, $0.01):
+The fix works correctly: when passing a content list containing an empty dict, 
+the method now raises the intended `TypeError` with a descriptive message 
+instead of crashing with a bare `StopIteration`.
+
+Next, I will run additional edge tests to ensure robustness, especially with 
+non-empty unsupported content blocks. After this, I will conclude the fix.
+
+```
+cat <<'EOF' > test_bedrock_content_types.py
+from strands.models.bedrock import BedrockModel
+
+m = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+
+# Test with empty dict block
+try:
+    m._format_bedrock_messages([{"role": "user", "content": [{}]}])
+except TypeError as e:
+    print(f'Empty dict test passed: {e}')
+else:
+    print('Empty dict test failed: no exception')
+
+# Test with unsupported but non-empty dict block
+try:
+    m._format_bedrock_messages([{"role": "user", "content": [{"unknown_key": 
+"value"}]}])
+except TypeError as e:
+    print(f'Unsupported non-empty dict test passed: {e}')
+else:
+    print('Unsupported non-empty dict test failed: no exception')
+
+# Test with supported content block (simulate by patching 
+_format_request_message_content)
+try:
+    # Temporarily patch to return something for known content
+    original = m._format_request_message_content
+    def fake_content(content):
+        if "text" in content:
+            return {"formatted": content["text"]}
+        raise TypeError("unsupported")
+    m._format_request_message_content = fake_content
+
+    result = m._format_bedrock_messages([{"role": "user", "content": [{"text": 
+"hello"}]}])
+    print('Supported content test passed, result:', result)
+finally:
+    m._format_request_message_content = original
+EOF
+```
+
+Tool:
+<returncode>
+0
+<output>
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 14, $0.01):
+```
+python3 test_bedrock_content_types.py
+```
+
+Tool:
+<returncode>
+0
+<output>
+Empty dict test passed: content_type=<None> | unsupported type
+Unsupported non-empty dict test passed: content_type=<unknown_key> | unsupported
+type
+Supported content test passed, result: [{'content': [{'formatted': 'hello'}], 
+'role': 'user'}]
+
+────────────────────────────────────────────────────────────────────────────────
+
+mini-swe-agent (step 15, $0.01):
+The tests confirm that:
+
+- An empty dict content block raises the descriptive `TypeError` with 
+content_type=None.
+- An unsupported but non-empty dict content block raises the descriptive 
+`TypeError` with the first unknown key.
+- A simulated supported content block processes correctly.
+
+This fix addresses the reported issue #2652 by preventing the bare 
+`StopIteration` and ensuring the correct exception is raised in all cases.
+
+Now I will finalize and submit the changes.
+
+```
+echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+```
+
+Tool:
+<returncode>
+-1
+<output>
+
+<exception_info>
+action was not executed
+
+Exit:
+
+Saved trajectory to '/output/trajectory.json'

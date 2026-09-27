@@ -1,0 +1,59 @@
+# Issue #2055: [Bug]: LocalWorkspace.list_tools raises AttributeError on current main
+
+## Description
+
+<img width="1076" height="744" alt="Image" src="https://github.com/user-attachments/assets/c5ec59df-e713-413e-9d10-a7cf378c71ac" />
+
+`LocalWorkspace.list_tools()` raises the following exception on the current `main` branch:
+
+```text
+AttributeError: 'LocalWorkspace' object has no attribute '_glob_helper_path'
+```
+
+This prevents the agent service from constructing the toolkit for a local workspace when a user starts a chat.
+
+## Reproduction
+
+Environment:
+
+- AgentScope: editable installation from current `main`
+- Python: 3.11.12
+- Workspace: `LocalWorkspace`
+
+```python
+import asyncio
+import tempfile
+
+from agentscope.workspace import LocalWorkspace
+
+
+async def main() -> None:
+    with tempfile.TemporaryDirectory() as path:
+        workspace = LocalWorkspace(workdir=path)
+        await workspace.initialize()
+        try:
+            await workspace.list_tools()
+        finally:
+            await workspace.close()
+
+
+asyncio.run(main())
+```
+
+## Root cause
+
+This appears to be a regression introduced by commit `81538d35`.
+
+The v2.0.4 release and the parent of that commit both define the following default on `WorkspaceBase`:
+
+```python
+_glob_helper_path: str | None = None
+```
+
+The commit removed that attribute while retaining the access in `WorkspaceBase.list_tools()`. `SandboxedWorkspaceBase` overrides `_glob_helper_path`, but `LocalWorkspace` inherits directly from `WorkspaceBase`, so the attribute is missing.
+
+## Suggested fix
+
+Restore the default `_glob_helper_path: str | None = None` class attribute on `WorkspaceBase` and add a regression test covering `LocalWorkspace.list_tools()`.
+
+@DavdGao, I would be happy to submit the small fix and regression test if this approach looks good.
