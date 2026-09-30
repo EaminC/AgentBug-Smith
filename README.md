@@ -3,16 +3,18 @@
 </p>
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2609.37864"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2609.37864-b31b1b?logo=arxiv"></a>
   <a href="https://github.com/EaminC/AgentBug-Smith"><img alt="Code" src="https://img.shields.io/badge/Code-EaminC%2FAgentBug-Smith-black?logo=github"></a>
   <a href="https://huggingface.co/buckets/EaminChan/live-harness-bench"><img alt="Benchmark" src="https://img.shields.io/badge/Benchmark-Live--Harness%20Bench-yellow?logo=huggingface"></a>
 </p>
 
-Code and experiment records for AgentBug-Smith and Live-Harness Bench.
+Code and experiment records for AgentBug-Smith and Live-Harness Bench. Paper: [arXiv:2609.37864](https://arxiv.org/abs/2609.37864).
 
 The 200 executable instances are a file benchmark: [Live-Harness Bench](https://huggingface.co/buckets/EaminChan/live-harness-bench). This repository is the harness that builds those instances and the logs behind the paper's tables.
 
 ## News
 
+- Paper on arXiv: [AgentBug-Smith: Automatically Reproducing Real-World Harness Bugs in Agentic Systems](https://arxiv.org/abs/2609.37864) (`arXiv:2609.37864`).
 - The comparison logs for reproduction, identification, and skill distillation now live under `rq/`.
 - Live-Harness Bench (200 instances) is published as a bucket. Each directory is one issue with a Dockerfile, a fail-to-pass test, and the developer patch.
 
@@ -174,10 +176,13 @@ SWE-Factory and SWE-bench-Live stay upstream. `baselines/swe-factory/` and `base
 ## Citation
 
 ```bibtex
-@misc{agentbugsmith2026,
-  title={AgentBug-Smith: Automatically Reproducing Harness Bugs in Agentic Systems},
+@misc{cheng2026agentbugsmith,
+  title={AgentBug-Smith: Automatically Reproducing Real-World Harness Bugs in Agentic Systems},
   year={2026},
-  url={https://github.com/EaminC/AgentBug-Smith}
+  eprint={2609.37864},
+  archivePrefix={arXiv},
+  primaryClass={cs.SE},
+  url={https://arxiv.org/abs/2609.37864}
 }
 ```
 
