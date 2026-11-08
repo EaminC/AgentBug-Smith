@@ -18,6 +18,38 @@ from repo.workspace import IssueWorkspace, PROJECT_ROOT
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$", re.I)
 
+# github.com:443 is often blackholed on campus networks while these HTTPS proxies still
+# speak the git protocol. Prefix + the canonical https URL.
+_GITHUB_CLONE_MIRROR_PREFIXES = (
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+)
+
+
+def _clone_url_candidates(https_url: str) -> List[str]:
+    urls = [https_url]
+    if https_url.startswith("https://github.com/"):
+        urls.extend(prefix + https_url for prefix in _GITHUB_CLONE_MIRROR_PREFIXES)
+    return urls
+
+
+def _git_ls_remote_ok(url: str, *, timeout: int = 15) -> bool:
+    """True when ``git ls-remote`` answers. A hung github.com:443 connect returns False."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", url],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
 
 def read_linked_pr_base_sha(issue_json_path: Path | str) -> Optional[str]:
     """
@@ -190,6 +222,11 @@ def clone_issue_repo(ws: IssueWorkspace, *, verbose: bool = False) -> Path:
     """
     ``git clone`` into ``ws.local_repo_path`` if missing. If the directory exists
     and is already a git repo, skip clone.
+
+    The canonical URL is ``https://github.com/...``. When that host does not answer
+    the git protocol (campus firewalls often drop port 443 to github.com), retry
+    through an HTTPS mirror. The mirror stays as ``origin``, so later ``git fetch``
+    uses the same path.
     """
     dest = ws.local_repo_path
     git_dir = dest / ".git"
@@ -210,20 +247,42 @@ def clone_issue_repo(ws: IssueWorkspace, *, verbose: bool = False) -> Path:
         )
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    url = ws.clone_url
-    if verbose:
-        print(paint("1;36", "\n========== git clone =========="), file=sys.stderr)
-        log_line("[repo]", paint("36", url))
-        log_line("[repo]", paint("90", "->"), paint("32", str(dest)))
-        print(paint("34", "---------- running git ----------"), file=sys.stderr)
+    candidates = _clone_url_candidates(ws.clone_url)
+    errors: List[str] = []
+    cloned = False
+    for index, url in enumerate(candidates):
+        if index == 0 and url.startswith("https://github.com/") and not _git_ls_remote_ok(url):
+            msg = f"{url}: git protocol unreachable, trying a mirror"
+            errors.append(msg)
+            if verbose:
+                print(msg, file=sys.stderr)
+            continue
+        if verbose:
+            print(paint("1;36", "\n========== git clone =========="), file=sys.stderr)
+            log_line("[repo]", paint("36", url))
+            log_line("[repo]", paint("90", "->"), paint("32", str(dest)))
+            print(paint("34", "---------- running git ----------"), file=sys.stderr)
 
-    env = os.environ.copy()
-    subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(dest)],
-        check=True,
-        cwd=str(ws.project_root),
-        env=env,
-    )
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", url, str(dest)],
+                check=True,
+                cwd=str(ws.project_root),
+                env=env,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{url}: {exc}")
+            if dest.exists():
+                shutil.rmtree(dest, onerror=remove_readonly)
+            continue
+        cloned = True
+        break
+
+    if not cloned:
+        detail = "\n".join(errors) if errors else "no clone URL"
+        raise RuntimeError(f"git clone failed:\n{detail}")
     # Force LF line endings and disable autocrlf to prevent patch failures
     subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=str(dest), check=True)
     subprocess.run(["git", "rm", "--cached", "-r", "."], cwd=str(dest), check=True)
