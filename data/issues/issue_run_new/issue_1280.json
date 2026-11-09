@@ -1,0 +1,31 @@
+{
+  "number": 1280,
+  "title": "[Bug]:recover_historical_plan does not trigger plan change hooks",
+  "url": "https://github.com/agentscope-ai/agentscope/issues/1280",
+  "state": "closed",
+  "created_at": "2026-03-04T05:20:10Z",
+  "closed_at": "2026-03-11T09:31:30Z",
+  "body": "## Description\n\n  When recovering a historical plan via `PlanNotebook.recover_historical_plan`, the current plan is updated, but registered plan change hooks are not triggered.\n\n  This causes UI/observer integrations (that rely on hooks) to miss the recover event and stay stale.\n\n  **Related PR(s):** # (optional)\n\n  **Security considerations:** None.\n\n  ## Component(s) Affected\n\n  - [x] Core / Backend (app, agents, config, providers, utils, local_models)\n  - [ ] Console (frontend web UI)\n  - [ ] Channels (DingTalk, Feishu, QQ, Discord, iMessage, etc.)\n  - [ ] Skills\n  - [ ] CLI\n  - [ ] Documentation (website)\n  - [x] Tests\n  - [ ] CI/CD\n  - [ ] Scripts / Deploy\n\n  ## Environment\n\n  - **CoPaw version:** from source (`main` branch)  \n  - **OS:** Ubuntu 22.04 \n  - **Install method:** from source (`pip install -e .`)\n  - **Python version (if applicable):** 3.13.1\n\n  ## Steps to Reproduce\n\n  1. Create a `PlanNotebook` instance and register a plan change hook (append to a list/counter).\n  2. Call `create_plan(...)` and then `finish_plan(...)`.\n  3. Record hook count (should be 2 so far).\n  4. Get historical plan id from storage and call `recover_historical_plan(plan_id)`.\n  5. Check hook count again.\n\n  ## Actual vs Expected\n\n  - **Actual:** Hook count does not change after `recover_historical_plan` (e.g. stays `2 -> 2`).\n  - **Expected:** Recovering a historical plan should trigger plan change hooks once (e.g. `2 -> 3`).\n\n  ## Logs / Screenshots\n\n  ```text\n  hook_calls_before_recover = 2\n  hook_calls_after_recover  = 2\n  current_plan_name         = demo-plan\n  hook_calls                = ['demo-plan', None]\n\n  Expected after recover: hook count should increase by 1.\n  Actual: it does not increase, so the bug is reproduced.\n\n  ## Additional Notes\n\n  Likely root cause: in src/agentscope/plan/_plan_notebook.py (recover_historical_plan), self.current_plan is assigned but _trigger_plan_change_hooks() is not called before return.\n\n  Suggested fix should stay minimal and low-coupling:\n\n  - only add hook trigger in recover_historical_plan\n  - add one regression test asserting hook count increments on recover",
+  "labels": [],
+  "linked_prs": [
+    {
+      "number": 1279,
+      "state": "closed",
+      "title": "fix(plan): trigger hooks when recovering historical plans",
+      "url": "https://github.com/agentscope-ai/agentscope/pull/1279",
+      "merged": true,
+      "base_branch": "main",
+      "base_sha": "28cfb99a21902d330dab6cb3762a739198cf972f",
+      "head_sha": "6c21de42ccd51b03c11725d66f59391a9aee7677",
+      "patch": "diff --git a/src/agentscope/plan/_plan_notebook.py b/src/agentscope/plan/_plan_notebook.py\nindex b7277fa2..db6812a3 100644\n--- a/src/agentscope/plan/_plan_notebook.py\n+++ b/src/agentscope/plan/_plan_notebook.py\n@@ -815,6 +815,7 @@ class PlanNotebook(StateModule):\n                 ],\n             )\n         self.current_plan = historical_plan\n+        await self._trigger_plan_change_hooks()\n         return res\n \n     def list_tools(\ndiff --git a/tests/plan_test.py b/tests/plan_test.py\nindex 788696a2..a3610af8 100644\n--- a/tests/plan_test.py\n+++ b/tests/plan_test.py\n@@ -782,3 +782,42 @@ Subtask at index 2:\n         notebook.remove_plan_change_hook(\"test\")\n         with self.assertRaises(ValueError):\n             notebook.remove_plan_change_hook(\"bad_hook\")\n+\n+    async def test_recover_historical_plan_triggers_hook(self) -> None:\n+        \"\"\"Test recovering a historical plan triggers plan change hooks.\"\"\"\n+        notebook = PlanNotebook()\n+        hook_calls: list[str | None] = []\n+\n+        def hook(_nb: PlanNotebook, plan: Plan | None) -> None:\n+            hook_calls.append(plan.name if plan else None)\n+\n+        notebook.register_plan_change_hook(\"recover_hook\", hook)\n+\n+        await notebook.create_plan(\n+            \"P1\",\n+            \"desc\",\n+            \"outcome\",\n+            [SubTask(name=\"t1\", description=\"d\", expected_outcome=\"e\")],\n+        )\n+        await notebook.finish_plan(\"done\", \"final\")\n+\n+        self.assertEqual(\n+            len(hook_calls),\n+            2,\n+        )\n+        self.assertEqual(\n+            hook_calls,\n+            [\"P1\", None],\n+        )\n+\n+        historical_plan = (await notebook.storage.get_plans())[0]\n+        await notebook.recover_historical_plan(historical_plan.id)\n+\n+        self.assertEqual(\n+            len(hook_calls),\n+            3,\n+        )\n+        self.assertEqual(\n+            hook_calls[-1],\n+            \"P1\",\n+        )\n",
+      "test_paths_in_patch": [
+        "tests/plan_test.py"
+      ]
+    }
+  ],
+  "ai_judgment": {
+    "is_agent_issue": true,
+    "response": "Yes"
+  },
+  "existing_test_paths": []
+}

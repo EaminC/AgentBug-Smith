@@ -11,6 +11,11 @@ Manifest formats (UTF-8 JSON):
 - Object with key ``issues``: ``{"issues": ["data/issue_71.json", ...]}``
 
 Paths are resolved relative to the project root (parent of ``exp/``).
+
+Use ``--script`` to run a variant pipeline with the same structure, e.g.::
+
+    python exp/batch_end_end.py data/issue_run_new_manifest.json \
+        --script exp/end-end-agentless-ablation.py --continue-on-error
 """
 
 from __future__ import annotations
@@ -29,10 +34,25 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _load_end_end_module():
-    """Load ``exp/end-end.py`` (hyphenated filename) without editing that file."""
+DEFAULT_SCRIPT = "exp/end-end.py"
+
+
+def _load_end_end_module(script: str | Path = DEFAULT_SCRIPT):
+    """
+    Load a pipeline script (default ``exp/end-end.py``; hyphenated filenames are fine)
+    without editing that file. Relative paths are resolved against the current directory
+    first, then the project root.
+
+    The script must expose the same module-level names as ``end-end.py``:
+    ``_ISSUE_JSON``, ``_run``, ``_MODEL``, ``_AGENTSMITH_ROOT``, ``StatsTool``,
+    ``result_run_with_tee``.
+    """
     root = _project_root()
-    path = root / "exp" / "end-end.py"
+    path = Path(script)
+    if not path.is_absolute():
+        path = path.resolve() if path.resolve().is_file() else (root / path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"pipeline script not found: {path}")
     spec = importlib.util.spec_from_file_location("end_end_runtime", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load module from {path}")
@@ -50,6 +70,39 @@ def _parse_manifest(raw: Any) -> list[str]:
             raise ValueError("manifest key 'issues' must be an array")
         return [str(x) for x in v]
     raise ValueError("manifest must be a JSON array or an object with an 'issues' array")
+
+
+def _issue_image_tag(mod: Any, issue_json: Path) -> str | None:
+    """
+    Image tag the pipeline builds for this issue: ``test-build-<repo dir name>``
+    (same naming as ``dockerbuild`` and ``testrun.verify._docker_image_tag``).
+    """
+    try:
+        ws = mod.load_issue_workspace(issue_json)
+        return f"test-build-{Path(ws.local_repo_path).resolve().name.lower()}"
+    except Exception as e:
+        print(f"[batch] Warning: cannot determine image tag for {issue_json}: {e}", file=sys.stderr)
+        return None
+
+
+def _remove_issue_image(mod: Any, issue_json: Path) -> None:
+    """Remove the tagged image built for this issue, if it exists."""
+    tag = _issue_image_tag(mod, issue_json)
+    if not tag:
+        return
+    try:
+        exists = subprocess.run(
+            ["docker", "image", "inspect", tag], capture_output=True, check=False
+        ).returncode == 0
+        if not exists:
+            print(f"[batch] No image '{tag}' to remove.")
+            return
+        print(f"[batch] Removing issue image '{tag}'...")
+        res = subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            print(f"[batch] Warning: failed to remove image '{tag}': {res.stderr.strip()}", file=sys.stderr)
+    except Exception as e:
+        print(f"[batch] Warning: image cleanup failed for '{tag}': {e}", file=sys.stderr)
 
 
 def _run_one_issue(mod: Any, issue_json: Path) -> None:
@@ -89,6 +142,12 @@ def main() -> None:
         help="JSON file listing issue JSON paths (array or {issues: [...]})",
     )
     ap.add_argument(
+        "--script",
+        default=DEFAULT_SCRIPT,
+        help=f"Pipeline script to run for each issue (default: {DEFAULT_SCRIPT}), "
+        "e.g. exp/end-end-agentless-ablation.py",
+    )
+    ap.add_argument(
         "--continue-on-error",
         action="store_true",
         help="Run remaining issues after a failure (default: stop on first error).",
@@ -104,7 +163,8 @@ def main() -> None:
     with open(manifest_path, encoding="utf-8") as f:
         paths = _parse_manifest(json.load(f))
 
-    mod = _load_end_end_module()
+    mod = _load_end_end_module(args.script)
+    print(f"[batch] pipeline script: {mod.__file__}")
     failed: list[tuple[str, BaseException]] = []
 
     for rel in paths:
@@ -133,6 +193,8 @@ def main() -> None:
                 continue
             raise
         finally:
+            # Remove this issue's tagged build image (``docker system prune -f`` keeps tagged images)
+            _remove_issue_image(mod, issue_json)
             # Clean up dangling Docker images/containers to prevent disk exhaustion
             print("[batch] Running 'docker system prune -f' to clean up artifacts...")
             try:
