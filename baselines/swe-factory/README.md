@@ -99,6 +99,22 @@ See **`sf`** in this folder for the same pipeline as individual commands (with f
 ./run_pipeline.sh baseline/issue_pr_map.json
 ```
 
+## Instances with no in-patch test
+
+`build_dataset.py` drops a PR when `test_patch` is empty. Two rebuttal3 launchers keep those PRs in the same pipeline. Everything after `instances.jsonl` is unchanged.
+
+| Script | What it does |
+|--------|----------------|
+| `run_rebuttal3_swe-factory_keep_no_ipt.sh` | Rewrites `instances.jsonl` from `instances.jsonl.all`. Empty `test_patch` stays empty (`ipt_source=kept_empty`). |
+| `run_rebuttal3_swe-factory_agentless_ipt.sh` | One chat completion per empty `test_patch` (Forge `MODEL` / `FORGE_API_KEY`, same client shape as `src/forge/api.py`). The reply is saved as `tests/agentless_ipt_<pr>.py` inside `test_patch`. A failed call falls back to a one-line placeholder so the instance is still kept. |
+
+```bash
+./run_rebuttal3_swe-factory_keep_no_ipt.sh baseline/issue_pr_map.json
+./run_rebuttal3_swe-factory_agentless_ipt.sh baseline/issue_pr_map.json
+```
+
+The agentless test only exists so SWE-Builder sees an in-patch test. It is not a fail2pass oracle.
+
 ## Files in this folder
 
 | File | Purpose |
@@ -106,5 +122,9 @@ See **`sf`** in this folder for the same pipeline as individual commands (with f
 | `README.md` | This usage guide |
 | `issue_pr_map.json` | Example/sample issue–PR map (3 fields per entry) |
 | `run_e2e_from_issue_map.sh` | One-shot e2e script; input = one `issue_pr_map.json` |
+| `run_RQ1_swe-factory.sh` | Original comparison runner (env, logs, cost tracker) |
+| `run_rebuttal3_swe-factory_keep_no_ipt.sh` | Rebuttal3 runner that does not drop empty `test_patch` |
+| `run_rebuttal3_swe-factory_agentless_ipt.sh` | Rebuttal3 runner that fills empty `test_patch` with one LLM call |
+| `prepare_instances.py` | Shared step used by the two IPT launchers |
 | `check_pipeline_counts.py` | Report per-step counts from pipeline JSON/JSONL |
 | `sf` | Reference list of manual commands (no timestamping) |
