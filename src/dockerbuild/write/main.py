@@ -285,6 +285,18 @@ def build_dockerwrite_prompt(
                 "Do not concatenate or append to the text above."
             )
             parts.append("If the Dockerfile is already acceptable, you may output an equivalent full file.")
+    else:
+        parts.append("=" * 80)
+        parts.append("NO env.dockerfile YET")
+        parts.append("=" * 80)
+        parts.append(
+            "There is no env.dockerfile at the repository root. Create that file now "
+            "(exact name: env.dockerfile). Write one complete Dockerfile as its full contents."
+        )
+        parts.append(
+            "Do not only print the Dockerfile in the chat. Save it to disk at the repo root. "
+            "Do not wait for an existing file to overwrite."
+        )
 
     parts.append("")
 
