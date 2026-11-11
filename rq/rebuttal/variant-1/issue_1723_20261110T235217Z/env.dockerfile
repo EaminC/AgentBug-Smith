@@ -11,7 +11,7 @@ ENV ANTHROPIC_MODEL="openrouter2/openai/gpt-4.1-mini"
 ENV ANTHROPIC_SMALL_FAST_MODEL="openrouter2/openai/gpt-4.1-mini"
 ENV OPENAI_BASE_URL="https://api.forge.tensorblock.co/v1"
 ENV OPENAI_API_KEY="forge-key"
-ENV TAVILY_API_KEY="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"
+ENV TAVILY_API_KEY="tvly-key"
 ENV GITHUB_TOKEN="ghp_key"
 # --- end inject ---
 
