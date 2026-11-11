@@ -6,6 +6,7 @@ for passing to :func:`dockerbuild.write.dockerwrite` as ``feedback`` on failure.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,6 +34,40 @@ def _docker_unavailable_hint(detail: str) -> str:
         ]
         return "\n".join(lines)
     return ""
+
+
+# Concrete signatures of transient network / registry failures. Matched only against the
+# tail of the build output, so package names like ``pytest-timeout`` or
+# ``pytest-block-network`` in a failing RUN command do not trigger a retry.
+_NETWORK_ERROR_RE = re.compile(
+    r"temporary failure (in )?(name )?resol(ution|ving)"
+    r"|could not resolve host"
+    r"|name or service not known"
+    r"|no such host"
+    r"|network is unreachable"
+    r"|no route to host"
+    r"|connection (timed out|reset by peer|refused)"
+    r"|read timed out"
+    r"|(read|connect)timeouterror"
+    r"|max retries exceeded with url"
+    r"|tls handshake timeout"
+    r"|i/o timeout"
+    r"|net/http: request canceled"
+    r"|toomanyrequests"
+    r"|failed to resolve source metadata"
+    r"|failed to do request"
+    r"|failed to fetch https?://"
+    r"|unable to connect to (deb|archive|security)\."
+    r"|could not fetch url"
+    r"|http error (429|5\d\d)"
+    r"|\b(502 bad gateway|503 service unavailable|504 gateway time-?out)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_network_error(output: str, tail_chars: int = 6000) -> bool:
+    """True only for real network/registry failures, not for dependency or build errors."""
+    return bool(_NETWORK_ERROR_RE.search(output[-tail_chars:]))
 
 
 def check_docker_permission() -> Tuple[bool, Optional[str]]:
@@ -170,23 +205,15 @@ def dockerbuild(
             )
             output = (result.stdout or "") + (result.stderr or "")
 
-            is_network_error = (
-                "network" in output.lower()
-                or "timeout" in output.lower()
-                or "could not connect" in output.lower()
-                or (
-                    "failed to solve" in output.lower()
-                    and "docker.io" in output.lower()
-                )
-            )
+            is_network_error = result.returncode != 0 and _is_transient_network_error(output)
 
-            if (
-                result.returncode != 0
-                and is_network_error
-                and retry_count < max_network_retries - 1
-            ):
+            if is_network_error and retry_count < max_network_retries - 1:
                 retry_count += 1
-                wait_time = 2**retry_count
+                wait_time = 10 * retry_count
+                # Retry with the layer cache: layers that already succeeded in this build are
+                # fresh, so --no-cache would only re-download everything and slow the retry.
+                if "--no-cache" in cmd:
+                    cmd.remove("--no-cache")
                 _v(
                     paint(
                         "33",

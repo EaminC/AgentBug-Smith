@@ -71,7 +71,7 @@ import time
 from datetime import timedelta
 
 
-_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues/issue_run_new" / "issue_174.json"
+_ISSUE_JSON = _AGENTSMITH_ROOT / "data/issues/issue_run_new" / "issue_3899.json"
 _MODEL = os.getenv("MODEL", "tensorblock/gpt-4.1-mini")
 
 

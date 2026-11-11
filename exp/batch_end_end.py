@@ -122,6 +122,7 @@ def _run_one_issue(mod: Any, issue_json: Path) -> None:
         )
         _usage_stats.start()
         try:
+            print("[batch] Running issue", issue_json)
             mod._run(run_dir)
         finally:
             _usage_stats.end()
